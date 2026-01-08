@@ -35,3 +35,4 @@ tempfile = "3"
 
 directories = "5"
 dunce = "1"
+num_cpus = "1"

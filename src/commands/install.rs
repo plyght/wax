@@ -1,9 +1,12 @@
 use crate::bottle::{detect_platform, BottleDownloader};
+use crate::builder::Builder;
 use crate::cache::Cache;
 use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask};
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
+use crate::formula_parser::FormulaParser;
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
+use crate::tap::TapManager;
 use crate::ui::print_success;
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -12,19 +15,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument, warn};
 
 #[instrument(skip(cache))]
 pub async fn install(
     cache: &Cache,
-    formula_name: &str,
+    package_names: &[String],
     dry_run: bool,
     cask: bool,
     user: bool,
     global: bool,
+    _build_from_source: bool,
 ) -> Result<()> {
+    if package_names.is_empty() {
+        return Err(WaxError::InvalidInput("No packages specified".to_string()));
+    }
+
     if cask {
-        return install_cask(cache, formula_name, dry_run).await;
+        return install_multiple_casks(cache, package_names, dry_run).await;
     }
 
     let install_mode = match InstallMode::from_flags(user, global)? {
@@ -58,45 +66,99 @@ pub async fn install(
     let start = std::time::Instant::now();
 
     let formulae = cache.load_formulae().await?;
-    let formula = formulae
-        .iter()
-        .find(|f| f.name == formula_name)
-        .ok_or_else(|| WaxError::FormulaNotFound(formula_name.to_string()))?;
-
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
     let installed: HashSet<String> = installed_packages.keys().cloned().collect();
 
-    if installed.contains(formula_name) {
+    let mut all_to_install = Vec::new();
+    let mut already_installed = Vec::new();
+    let mut errors = Vec::new();
+
+    for package_name in package_names {
+        if installed.contains(package_name) {
+            already_installed.push(package_name.clone());
+            continue;
+        }
+
+        let formula = match formulae.iter().find(|f| &f.name == package_name) {
+            Some(f) => f,
+            None => {
+                errors.push((package_name.clone(), "Formula not found".to_string()));
+                continue;
+            }
+        };
+
+        match resolve_dependencies(formula, &formulae, &installed) {
+            Ok(deps) => {
+                for dep in deps {
+                    if !all_to_install.contains(&dep) {
+                        all_to_install.push(dep);
+                    }
+                }
+            }
+            Err(e) => {
+                errors.push((package_name.clone(), format!("{}", e)));
+                continue;
+            }
+        }
+    }
+
+    if !already_installed.is_empty() {
         println!(
-            "{} {} is already installed",
+            "{} Already installed: {}",
             style("ℹ").blue().bold(),
-            formula_name
+            already_installed.join(", ")
         );
+    }
+
+    if !errors.is_empty() {
+        for (pkg, err) in &errors {
+            eprintln!("{} {}: {}", style("✗").red().bold(), pkg, err);
+        }
+        if all_to_install.is_empty() {
+            return Err(WaxError::InstallError(
+                "Cannot install any packages (all failed validation)".to_string(),
+            ));
+        }
+    }
+
+    if all_to_install.is_empty() {
+        println!("{} Nothing to install", style("✓").green().bold());
         return Ok(());
     }
 
-    let to_install = resolve_dependencies(formula, &formulae, &installed)?;
+    let package_list = package_names
+        .iter()
+        .filter(|p| !already_installed.contains(p) && !errors.iter().any(|(e, _)| e == *p))
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
 
-    if to_install.is_empty() {
+    if all_to_install.len() > package_names.len() {
         println!(
-            "{} All dependencies satisfied, installing {}",
-            style("ℹ").blue().bold(),
-            formula_name
-        );
-    } else {
-        println!(
-            "{} Installing {} with {} {}",
+            "{} Installing {} with {} total {} (including dependencies)",
             style("→").cyan().bold(),
-            formula_name,
-            to_install.len(),
-            if to_install.len() == 1 {
-                "dependency"
+            package_list,
+            all_to_install.len(),
+            if all_to_install.len() == 1 {
+                "package"
             } else {
-                "dependencies"
+                "packages"
             }
         );
-        println!("  Packages: {}", to_install.join(", "));
+        println!("  All packages: {}", all_to_install.join(", "));
+    } else {
+        println!(
+            "{} Installing {} {}",
+            style("→").cyan().bold(),
+            all_to_install.len(),
+            if all_to_install.len() == 1 {
+                "package"
+            } else {
+                "packages"
+            }
+        );
+        println!("  Packages: {}", all_to_install.join(", "));
     }
 
     if dry_run {
@@ -110,7 +172,7 @@ pub async fn install(
     let multi = MultiProgress::new();
     let downloader = Arc::new(BottleDownloader::new());
 
-    let packages_to_install: Vec<_> = to_install
+    let packages_to_install: Vec<_> = all_to_install
         .iter()
         .map(|name| {
             formulae
@@ -182,17 +244,40 @@ pub async fn install(
     let results = futures::future::join_all(tasks).await;
 
     let mut extracted_packages = Vec::new();
+    let mut failed_packages = Vec::new();
+
     for result in results {
         match result {
             Ok(Ok(data)) => extracted_packages.push(data),
-            Ok(Err(e)) => return Err(e),
+            Ok(Err(e)) => {
+                failed_packages.push(format!("{}", e));
+            }
             Err(e) => {
-                return Err(WaxError::InstallError(format!(
-                    "Download task failed: {}",
-                    e
-                )))
+                failed_packages.push(format!("Task error: {}", e));
             }
         }
+    }
+
+    if !failed_packages.is_empty() {
+        for err in &failed_packages {
+            eprintln!("{} {}", style("✗").red().bold(), err);
+        }
+        if extracted_packages.is_empty() {
+            return Err(WaxError::InstallError(
+                "All package downloads failed".to_string(),
+            ));
+        }
+        println!(
+            "{} Continuing with {} successful {} ({}  failed)",
+            style("⚠").yellow().bold(),
+            extracted_packages.len(),
+            if extracted_packages.len() == 1 {
+                "package"
+            } else {
+                "packages"
+            },
+            failed_packages.len()
+        );
     }
 
     let cellar = install_mode.cellar_path();
@@ -226,9 +311,15 @@ pub async fn install(
     }
 
     let elapsed = start.elapsed();
+    let package_summary = if package_names.len() == 1 {
+        package_names[0].clone()
+    } else {
+        format!("{} packages", package_names.len())
+    };
+
     print_success(&format!(
         "Installed {} in {:.1}s",
-        formula_name,
+        package_summary,
         elapsed.as_secs_f64()
     ));
 
@@ -369,4 +460,124 @@ fn extract_app_name(artifacts: &[crate::api::CaskArtifact]) -> Option<String> {
         }
     }
     None
+}
+
+#[instrument(skip(cache))]
+async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> Result<()> {
+    if cask_names.len() == 1 {
+        return install_cask(cache, &cask_names[0], dry_run).await;
+    }
+
+    let start = std::time::Instant::now();
+    let casks = cache.load_casks().await?;
+    let state = CaskState::new()?;
+    let installed_casks = state.load().await?;
+
+    let mut to_install = Vec::new();
+    let mut already_installed = Vec::new();
+    let mut errors = Vec::new();
+
+    for cask_name in cask_names {
+        if installed_casks.contains_key(cask_name) {
+            already_installed.push(cask_name.clone());
+            continue;
+        }
+
+        if casks.iter().any(|c| &c.token == cask_name) {
+            to_install.push(cask_name.clone());
+        } else {
+            errors.push((cask_name.clone(), "Cask not found".to_string()));
+        }
+    }
+
+    if !already_installed.is_empty() {
+        println!(
+            "{} Already installed: {}",
+            style("ℹ").blue().bold(),
+            already_installed.join(", ")
+        );
+    }
+
+    if !errors.is_empty() {
+        for (cask, err) in &errors {
+            eprintln!("{} {}: {}", style("✗").red().bold(), cask, err);
+        }
+    }
+
+    if to_install.is_empty() {
+        if errors.is_empty() {
+            println!("{} Nothing to install", style("✓").green().bold());
+        }
+        return if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(WaxError::CaskNotFound(
+                "No valid casks to install".to_string(),
+            ))
+        };
+    }
+
+    println!(
+        "{} Installing {} {}",
+        style("→").cyan().bold(),
+        to_install.len(),
+        if to_install.len() == 1 {
+            "cask"
+        } else {
+            "casks"
+        }
+    );
+    println!("  Casks: {}", to_install.join(", "));
+
+    if dry_run {
+        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        return Ok(());
+    }
+
+    let mut installed_count = 0;
+    let mut failed = Vec::new();
+
+    for cask_name in &to_install {
+        match install_cask(cache, cask_name, false).await {
+            Ok(_) => installed_count += 1,
+            Err(e) => {
+                eprintln!(
+                    "{} Failed to install {}: {}",
+                    style("✗").red().bold(),
+                    cask_name,
+                    e
+                );
+                failed.push(cask_name.clone());
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+
+    if failed.is_empty() {
+        print_success(&format!(
+            "Installed {} {} in {:.1}s",
+            installed_count,
+            if installed_count == 1 {
+                "cask"
+            } else {
+                "casks"
+            },
+            elapsed.as_secs_f64()
+        ));
+        Ok(())
+    } else {
+        println!(
+            "{} Installed {}/{} casks in {:.1}s ({} failed)",
+            style("⚠").yellow().bold(),
+            installed_count,
+            to_install.len(),
+            elapsed.as_secs_f64(),
+            failed.len()
+        );
+        Err(WaxError::InstallError(format!(
+            "Some casks failed: {}",
+            failed.join(", ")
+        )))
+    }
 }

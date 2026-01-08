@@ -4,6 +4,7 @@ pub mod list;
 pub mod lock;
 pub mod search;
 pub mod sync;
+pub mod tap;
 pub mod uninstall;
 pub mod update;
 pub mod upgrade;

@@ -54,7 +54,16 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
         InstallMode::User => (true, false),
         InstallMode::Global => (false, true),
     };
-    install::install(cache, formula_name, false, false, user_flag, global_flag).await?;
+    install::install(
+        cache,
+        &[formula_name.to_string()],
+        false,
+        false,
+        user_flag,
+        global_flag,
+        false,
+    )
+    .await?;
 
     println!(
         "{} Upgraded {} to {}",

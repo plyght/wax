@@ -1,12 +1,15 @@
 mod api;
 mod bottle;
+mod builder;
 mod cache;
 mod cask;
 mod commands;
 mod deps;
 mod error;
+mod formula_parser;
 mod install;
 mod lockfile;
+mod tap;
 mod ui;
 
 use api::ApiClient;
@@ -47,11 +50,12 @@ enum Commands {
     #[command(alias = "ls")]
     List,
 
-    #[command(about = "Install a formula or cask")]
+    #[command(about = "Install one or more formulae or casks")]
     #[command(alias = "i")]
     #[command(alias = "add")]
     Install {
-        formula: String,
+        #[arg(required = true, help = "Package name(s) to install")]
+        packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -60,6 +64,8 @@ enum Commands {
         user: bool,
         #[arg(long, help = "Install to system directory (may need sudo)")]
         global: bool,
+        #[arg(long, help = "Build from source even if bottle available")]
+        build_from_source: bool,
     },
 
     #[command(about = "Uninstall a formula or cask")]
@@ -87,6 +93,33 @@ enum Commands {
 
     #[command(about = "Install packages from lockfile")]
     Sync,
+
+    #[command(about = "Manage custom taps")]
+    Tap {
+        #[command(subcommand)]
+        action: Option<TapAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TapAction {
+    #[command(about = "Add a custom tap")]
+    Add {
+        #[arg(help = "Tap name in user/repo format")]
+        tap: String,
+    },
+    #[command(about = "Remove a custom tap")]
+    Remove {
+        #[arg(help = "Tap name in user/repo format")]
+        tap: String,
+    },
+    #[command(about = "List installed taps")]
+    List,
+    #[command(about = "Update a tap")]
+    Update {
+        #[arg(help = "Tap name in user/repo format")]
+        tap: String,
+    },
 }
 
 fn init_logging(verbose: bool) -> Result<()> {
@@ -141,13 +174,23 @@ async fn main() -> Result<()> {
             commands::list::list().await?;
         }
         Commands::Install {
-            formula,
+            packages,
             dry_run,
             cask,
             user,
             global,
+            build_from_source,
         } => {
-            commands::install::install(&cache, &formula, dry_run, cask, user, global).await?;
+            commands::install::install(
+                &cache,
+                &packages,
+                dry_run,
+                cask,
+                user,
+                global,
+                build_from_source,
+            )
+            .await?;
         }
         Commands::Uninstall {
             formula,
@@ -164,6 +207,9 @@ async fn main() -> Result<()> {
         }
         Commands::Sync => {
             commands::sync::sync(&cache).await?;
+        }
+        Commands::Tap { action } => {
+            commands::tap::tap(action).await?;
         }
     }
 

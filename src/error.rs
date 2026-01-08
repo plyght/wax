@@ -41,9 +41,21 @@ pub enum WaxError {
     #[error("Lockfile error: {0}")]
     LockfileError(String),
 
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[allow(dead_code)]
     #[error("Operation not supported on this platform: {0}")]
     PlatformNotSupported(String),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
+
+    #[error("Build error: {0}")]
+    BuildError(String),
+
+    #[error("Tap error: {0}")]
+    TapError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WaxError>;
