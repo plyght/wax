@@ -63,13 +63,6 @@ impl InstallState {
         self.save(&packages).await?;
         Ok(())
     }
-
-    pub async fn is_installed(&self, name: &str) -> bool {
-        match self.load().await {
-            Ok(packages) => packages.contains_key(name),
-            Err(_) => false,
-        }
-    }
 }
 
 impl Default for InstallState {

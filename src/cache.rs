@@ -79,29 +79,6 @@ impl Cache {
         let casks = serde_json::from_str(&json)?;
         Ok(casks)
     }
-
-    pub async fn load_metadata(&self) -> Result<Option<CacheMetadata>> {
-        match fs::read_to_string(self.metadata_path()).await {
-            Ok(json) => {
-                let metadata = serde_json::from_str(&json)?;
-                Ok(Some(metadata))
-            }
-            Err(_) => Ok(None),
-        }
-    }
-
-    pub async fn is_stale(&self, max_age_secs: i64) -> bool {
-        match self.load_metadata().await {
-            Ok(Some(metadata)) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64;
-                now - metadata.last_updated > max_age_secs
-            }
-            _ => true,
-        }
-    }
 }
 
 impl Default for Cache {

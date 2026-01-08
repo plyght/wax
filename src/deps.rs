@@ -105,11 +105,7 @@ pub fn resolve_dependencies(
             .find(|f| f.name == name)
             .ok_or_else(|| WaxError::FormulaNotFound(name.clone()))?;
 
-        let deps = f
-            .dependencies
-            .as_ref()
-            .map(|d| d.clone())
-            .unwrap_or_default();
+        let deps = f.dependencies.clone().unwrap_or_default();
 
         graph.add_node(name.clone(), deps.clone());
 
