@@ -22,6 +22,21 @@ pub enum WaxError {
 
     #[error("Homebrew directory not found")]
     HomebrewNotFound,
+
+    #[error("Checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
+
+    #[error("Bottle not available for platform: {0}")]
+    BottleNotAvailable(String),
+
+    #[error("Dependency cycle detected: {0}")]
+    DependencyCycle(String),
+
+    #[error("Installation failed: {0}")]
+    InstallError(String),
+
+    #[error("Package not installed: {0}")]
+    NotInstalled(String),
 }
 
 pub type Result<T> = std::result::Result<T, WaxError>;

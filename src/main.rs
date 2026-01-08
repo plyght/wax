@@ -1,7 +1,10 @@
 mod api;
+mod bottle;
 mod cache;
 mod commands;
+mod deps;
 mod error;
+mod install;
 mod ui;
 
 use api::ApiClient;
@@ -37,6 +40,27 @@ enum Commands {
 
     #[command(about = "List installed packages")]
     List,
+
+    #[command(about = "Install a formula")]
+    Install {
+        formula: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    #[command(about = "Uninstall a formula")]
+    Uninstall {
+        formula: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    #[command(about = "Upgrade a formula to the latest version")]
+    Upgrade {
+        formula: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn init_logging(verbose: bool) -> Result<()> {
@@ -85,6 +109,15 @@ async fn main() -> Result<()> {
         }
         Commands::List => {
             commands::list::list().await?;
+        }
+        Commands::Install { formula, dry_run } => {
+            commands::install::install(&cache, &formula, dry_run).await?;
+        }
+        Commands::Uninstall { formula, dry_run } => {
+            commands::uninstall::uninstall(&cache, &formula, dry_run).await?;
+        }
+        Commands::Upgrade { formula, dry_run } => {
+            commands::upgrade::upgrade(&cache, &formula, dry_run).await?;
         }
     }
 

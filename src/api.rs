@@ -15,6 +15,23 @@ pub struct Formula {
     pub installed: Option<Vec<InstalledVersion>>,
     pub dependencies: Option<Vec<String>>,
     pub build_dependencies: Option<Vec<String>>,
+    pub bottle: Option<BottleInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BottleInfo {
+    pub stable: Option<BottleStable>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BottleStable {
+    pub files: std::collections::HashMap<String, BottleFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BottleFile {
+    pub url: String,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
