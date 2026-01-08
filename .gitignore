@@ -1,0 +1,14 @@
+/target
+/Cargo.lock
+
+.DS_Store
+
+.wax/
+*.log
+
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
