@@ -206,7 +206,7 @@ pub fn homebrew_prefix() -> PathBuf {
 
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    
+
     match os {
         "macos" => match arch {
             "aarch64" => PathBuf::from("/opt/homebrew"),

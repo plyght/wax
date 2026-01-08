@@ -23,7 +23,10 @@ pub struct CaskState {
 impl CaskState {
     pub fn new() -> Result<Self> {
         let state_path = if let Some(base_dirs) = directories::BaseDirs::new() {
-            base_dirs.data_local_dir().join("wax").join("installed_casks.json")
+            base_dirs
+                .data_local_dir()
+                .join("wax")
+                .join("installed_casks.json")
         } else {
             dirs::home_dir()
                 .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
@@ -92,7 +95,8 @@ impl CaskInstaller {
         #[cfg(not(target_os = "macos"))]
         {
             return Err(WaxError::PlatformNotSupported(
-                "Cask installation is only supported on macOS. Use formulae for Linux packages.".to_string()
+                "Cask installation is only supported on macOS. Use formulae for Linux packages."
+                    .to_string(),
             ));
         }
         #[cfg(target_os = "macos")]
@@ -109,7 +113,7 @@ impl CaskInstaller {
         #[cfg(not(target_os = "macos"))]
         {
             Err(WaxError::PlatformNotSupported(
-                "Applications directory concept is macOS-specific".to_string()
+                "Applications directory concept is macOS-specific".to_string(),
             ))
         }
     }

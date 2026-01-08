@@ -47,6 +47,10 @@ impl Cache {
         self.cache_dir.join("metadata.json")
     }
 
+    pub fn is_initialized(&self) -> bool {
+        self.formulae_path().exists() && self.casks_path().exists()
+    }
+
     #[instrument(skip(self, formulae))]
     pub async fn save_formulae(&self, formulae: &[Formula]) -> Result<()> {
         self.ensure_cache_dir().await?;

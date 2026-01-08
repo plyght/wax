@@ -69,7 +69,7 @@ fn detect_homebrew_prefix() -> Result<PathBuf> {
 
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    
+
     let candidates = match os {
         "macos" => match arch {
             "aarch64" => vec![PathBuf::from("/opt/homebrew"), PathBuf::from("/usr/local")],

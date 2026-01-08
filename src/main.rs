@@ -132,10 +132,10 @@ async fn main() -> Result<()> {
             commands::update::update(&api_client, &cache).await?;
         }
         Commands::Search { query } => {
-            commands::search::search(&cache, &query).await?;
+            commands::search::search(&api_client, &cache, &query).await?;
         }
         Commands::Info { formula } => {
-            commands::info::info(&cache, &formula).await?;
+            commands::info::info(&api_client, &cache, &formula).await?;
         }
         Commands::List => {
             commands::list::list().await?;

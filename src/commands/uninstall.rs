@@ -73,7 +73,8 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
 
     let install_mode = package.install_mode;
     let cellar = install_mode.cellar_path();
-    let removed_links = remove_symlinks(formula_name, &package.version, &cellar, false, install_mode).await?;
+    let removed_links =
+        remove_symlinks(formula_name, &package.version, &cellar, false, install_mode).await?;
 
     println!(
         "{} Removed {} symlinks",
@@ -119,10 +120,10 @@ async fn uninstall_cask(_cache: &Cache, cask_name: &str, dry_run: bool) -> Resul
 
     #[cfg(target_os = "macos")]
     let app_path = std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name));
-    
+
     #[cfg(not(target_os = "macos"))]
     return Err(WaxError::PlatformNotSupported(
-        "Cask uninstallation is only supported on macOS".to_string()
+        "Cask uninstallation is only supported on macOS".to_string(),
     ));
 
     if !app_path.exists() {

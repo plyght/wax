@@ -1,10 +1,17 @@
+use crate::api::ApiClient;
 use crate::cache::Cache;
+use crate::commands::update;
 use crate::error::Result;
 use crate::ui::print_info;
 use tracing::instrument;
 
-#[instrument(skip(cache))]
-pub async fn search(cache: &Cache, query: &str) -> Result<()> {
+#[instrument(skip(api_client, cache))]
+pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Result<()> {
+    if !cache.is_initialized() {
+        println!("Initializing package index (first time only)...");
+        update::update(api_client, cache).await?;
+    }
+
     let formulae = cache.load_formulae().await?;
     let casks = cache.load_casks().await?;
 

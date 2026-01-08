@@ -41,6 +41,7 @@ pub enum WaxError {
     #[error("Lockfile error: {0}")]
     LockfileError(String),
 
+    #[allow(dead_code)]
     #[error("Operation not supported on this platform: {0}")]
     PlatformNotSupported(String),
 }

@@ -16,13 +16,13 @@ pub enum InstallMode {
 impl InstallMode {
     pub fn detect() -> Self {
         let prefix = homebrew_prefix();
-        
+
         if let Ok(_metadata) = std::fs::metadata(&prefix) {
             if is_writable(&prefix) {
                 return InstallMode::Global;
             }
         }
-        
+
         InstallMode::User
     }
 
@@ -71,15 +71,15 @@ impl InstallMode {
 
 fn is_writable(path: &Path) -> bool {
     use std::fs::OpenOptions;
-    
+
     let test_file = path.join(".wax_write_test");
     let result = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(&test_file);
-    
-    if let Ok(_) = result {
+
+    if result.is_ok() {
         let _ = std::fs::remove_file(&test_file);
         true
     } else {
@@ -108,7 +108,10 @@ pub struct InstallState {
 impl InstallState {
     pub fn new() -> Result<Self> {
         let state_path = if let Some(base_dirs) = directories::BaseDirs::new() {
-            base_dirs.data_local_dir().join("wax").join("installed.json")
+            base_dirs
+                .data_local_dir()
+                .join("wax")
+                .join("installed.json")
         } else {
             dirs::home_dir()
                 .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
@@ -219,7 +222,7 @@ pub async fn create_symlinks(
                 }
                 #[cfg(not(unix))]
                 {
-                    return Err(WaxError::InstallError(
+                    return Err(WaxError::PlatformNotSupported(
                         "Symlinks not supported on this platform".to_string(),
                     ));
                 }

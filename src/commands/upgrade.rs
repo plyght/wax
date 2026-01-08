@@ -47,7 +47,7 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
     }
 
     let install_mode = installed.install_mode;
-    
+
     uninstall::uninstall(cache, formula_name, false, false).await?;
 
     let (user_flag, global_flag) = match install_mode {

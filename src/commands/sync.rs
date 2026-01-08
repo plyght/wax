@@ -193,7 +193,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         );
     }
     install_mode.validate()?;
-    
+
     let cellar = install_mode.cellar_path();
 
     for (name, version, platform, extract_dir) in extracted_packages {
