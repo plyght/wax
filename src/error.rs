@@ -40,6 +40,9 @@ pub enum WaxError {
 
     #[error("Lockfile error: {0}")]
     LockfileError(String),
+
+    #[error("Operation not supported on this platform: {0}")]
+    PlatformNotSupported(String),
 }
 
 pub type Result<T> = std::result::Result<T, WaxError>;

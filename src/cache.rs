@@ -18,10 +18,14 @@ pub struct Cache {
 
 impl Cache {
     pub fn new() -> Result<Self> {
-        let cache_dir = dirs::home_dir()
-            .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
-            .join(".wax")
-            .join("cache");
+        let cache_dir = if let Some(base_dirs) = directories::BaseDirs::new() {
+            base_dirs.cache_dir().join("wax")
+        } else {
+            dirs::home_dir()
+                .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
+                .join(".wax")
+                .join("cache")
+        };
 
         Ok(Self { cache_dir })
     }

@@ -168,22 +168,31 @@ pub fn detect_platform() -> String {
                 _ => "sonoma".to_string(),
             }
         }
+        ("linux", "x86_64") => "x86_64_linux".to_string(),
+        ("linux", "aarch64") => "aarch64_linux".to_string(),
         _ => "unknown".to_string(),
     }
 }
 
 fn macos_version() -> String {
-    if let Ok(output) = std::process::Command::new("sw_vers")
-        .arg("-productVersion")
-        .output()
+    #[cfg(target_os = "macos")]
     {
-        if let Ok(version) = String::from_utf8(output.stdout) {
-            if let Some(major) = version.trim().split('.').next() {
-                return major.to_string();
+        if let Ok(output) = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+        {
+            if let Ok(version) = String::from_utf8(output.stdout) {
+                if let Some(major) = version.trim().split('.').next() {
+                    return major.to_string();
+                }
             }
         }
+        "14".to_string()
     }
-    "14".to_string()
+    #[cfg(not(target_os = "macos"))]
+    {
+        "14".to_string()
+    }
 }
 
 pub fn homebrew_prefix() -> PathBuf {
@@ -195,14 +204,22 @@ pub fn homebrew_prefix() -> PathBuf {
         }
     }
 
+    let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    match arch {
-        "aarch64" => PathBuf::from("/opt/homebrew"),
-        "x86_64" => PathBuf::from("/usr/local"),
+    
+    match os {
+        "macos" => match arch {
+            "aarch64" => PathBuf::from("/opt/homebrew"),
+            _ => PathBuf::from("/usr/local"),
+        },
+        "linux" => {
+            let linuxbrew = PathBuf::from("/home/linuxbrew/.linuxbrew");
+            if linuxbrew.exists() {
+                linuxbrew
+            } else {
+                PathBuf::from("/usr/local")
+            }
+        }
         _ => PathBuf::from("/usr/local"),
     }
-}
-
-pub fn cellar_path() -> PathBuf {
-    homebrew_prefix().join("Cellar")
 }

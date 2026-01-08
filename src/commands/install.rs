@@ -1,9 +1,9 @@
-use crate::bottle::{cellar_path, detect_platform, BottleDownloader};
+use crate::bottle::{detect_platform, BottleDownloader};
 use crate::cache::Cache;
 use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask};
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
-use crate::install::{create_symlinks, InstallState, InstalledPackage};
+use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::ui::print_success;
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -15,10 +15,45 @@ use tokio::sync::Semaphore;
 use tracing::{debug, instrument};
 
 #[instrument(skip(cache))]
-pub async fn install(cache: &Cache, formula_name: &str, dry_run: bool, cask: bool) -> Result<()> {
+pub async fn install(
+    cache: &Cache,
+    formula_name: &str,
+    dry_run: bool,
+    cask: bool,
+    user: bool,
+    global: bool,
+) -> Result<()> {
     if cask {
         return install_cask(cache, formula_name, dry_run).await;
     }
+
+    let install_mode = match InstallMode::from_flags(user, global)? {
+        Some(mode) => mode,
+        None => {
+            let detected = InstallMode::detect();
+            if detected == InstallMode::User {
+                println!(
+                    "{} No write access to system directory, defaulting to per-user installation",
+                    style("ℹ").blue().bold()
+                );
+                println!(
+                    "  Install location: {}",
+                    style(detected.prefix().display()).cyan()
+                );
+                println!(
+                    "  Binaries will be in: {}",
+                    style(detected.bin_path().display()).cyan()
+                );
+                println!(
+                    "  Add to PATH: export PATH=\"{}:$PATH\"\n",
+                    detected.bin_path().display()
+                );
+            }
+            detected
+        }
+    };
+
+    install_mode.validate()?;
 
     let start = std::time::Instant::now();
 
@@ -160,7 +195,7 @@ pub async fn install(cache: &Cache, formula_name: &str, dry_run: bool, cask: boo
         }
     }
 
-    let cellar = cellar_path();
+    let cellar = install_mode.cellar_path();
 
     for (name, version, extract_dir) in extracted_packages {
         let formula_cellar = cellar.join(&name).join(&version);
@@ -173,7 +208,7 @@ pub async fn install(cache: &Cache, formula_name: &str, dry_run: bool, cask: boo
             copy_dir_all(&extract_dir, &formula_cellar)?;
         }
 
-        create_symlinks(&name, &version, &cellar, false).await?;
+        create_symlinks(&name, &version, &cellar, false, install_mode).await?;
 
         let package = InstalledPackage {
             name: name.clone(),
@@ -183,6 +218,7 @@ pub async fn install(cache: &Cache, formula_name: &str, dry_run: bool, cask: boo
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64,
+            install_mode,
         };
         state.add(package).await?;
 

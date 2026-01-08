@@ -6,12 +6,99 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, instrument};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallMode {
+    User,
+    Global,
+}
+
+impl InstallMode {
+    pub fn detect() -> Self {
+        let prefix = homebrew_prefix();
+        
+        if let Ok(_metadata) = std::fs::metadata(&prefix) {
+            if is_writable(&prefix) {
+                return InstallMode::Global;
+            }
+        }
+        
+        InstallMode::User
+    }
+
+    pub fn from_flags(user: bool, global: bool) -> Result<Option<Self>> {
+        match (user, global) {
+            (true, true) => Err(WaxError::InstallError(
+                "Cannot specify both --user and --global".to_string(),
+            )),
+            (true, false) => Ok(Some(InstallMode::User)),
+            (false, true) => Ok(Some(InstallMode::Global)),
+            (false, false) => Ok(None),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if *self == InstallMode::Global {
+            let prefix = homebrew_prefix();
+            if !is_writable(&prefix) {
+                return Err(WaxError::InstallError(format!(
+                    "Cannot write to {}. Use --user for per-user installation or run with sudo for global installation.",
+                    prefix.display()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn prefix(&self) -> PathBuf {
+        match self {
+            InstallMode::User => {
+                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                home.join(".local").join("wax")
+            }
+            InstallMode::Global => homebrew_prefix(),
+        }
+    }
+
+    pub fn cellar_path(&self) -> PathBuf {
+        self.prefix().join("Cellar")
+    }
+
+    pub fn bin_path(&self) -> PathBuf {
+        self.prefix().join("bin")
+    }
+}
+
+fn is_writable(path: &Path) -> bool {
+    use std::fs::OpenOptions;
+    
+    let test_file = path.join(".wax_write_test");
+    let result = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&test_file);
+    
+    if let Ok(_) = result {
+        let _ = std::fs::remove_file(&test_file);
+        true
+    } else {
+        false
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledPackage {
     pub name: String,
     pub version: String,
     pub platform: String,
     pub install_date: i64,
+    #[serde(default = "default_install_mode")]
+    pub install_mode: InstallMode,
+}
+
+fn default_install_mode() -> InstallMode {
+    InstallMode::Global
 }
 
 pub struct InstallState {
@@ -20,10 +107,14 @@ pub struct InstallState {
 
 impl InstallState {
     pub fn new() -> Result<Self> {
-        let state_path = dirs::home_dir()
-            .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
-            .join(".wax")
-            .join("installed.json");
+        let state_path = if let Some(base_dirs) = directories::BaseDirs::new() {
+            base_dirs.data_local_dir().join("wax").join("installed.json")
+        } else {
+            dirs::home_dir()
+                .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
+                .join(".wax")
+                .join("installed.json")
+        };
 
         Ok(Self { state_path })
     }
@@ -77,14 +168,15 @@ pub async fn create_symlinks(
     version: &str,
     cellar_path: &Path,
     dry_run: bool,
+    install_mode: InstallMode,
 ) -> Result<Vec<PathBuf>> {
     debug!(
-        "Creating symlinks for {} {} (dry_run={})",
-        formula_name, version, dry_run
+        "Creating symlinks for {} {} (dry_run={}, mode={:?})",
+        formula_name, version, dry_run, install_mode
     );
 
     let formula_path = cellar_path.join(formula_name).join(version);
-    let prefix = homebrew_prefix();
+    let prefix = install_mode.prefix();
 
     let mut created_links = Vec::new();
 
@@ -147,14 +239,15 @@ pub async fn remove_symlinks(
     version: &str,
     cellar_path: &Path,
     dry_run: bool,
+    install_mode: InstallMode,
 ) -> Result<Vec<PathBuf>> {
     debug!(
-        "Removing symlinks for {} {} (dry_run={})",
-        formula_name, version, dry_run
+        "Removing symlinks for {} {} (dry_run={}, mode={:?})",
+        formula_name, version, dry_run, install_mode
     );
 
     let formula_path = cellar_path.join(formula_name).join(version);
-    let prefix = homebrew_prefix();
+    let prefix = install_mode.prefix();
 
     let mut removed_links = Vec::new();
 

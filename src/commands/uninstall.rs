@@ -1,4 +1,3 @@
-use crate::bottle::cellar_path;
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
@@ -72,8 +71,9 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
         return Ok(());
     }
 
-    let cellar = cellar_path();
-    let removed_links = remove_symlinks(formula_name, &package.version, &cellar, false).await?;
+    let install_mode = package.install_mode;
+    let cellar = install_mode.cellar_path();
+    let removed_links = remove_symlinks(formula_name, &package.version, &cellar, false, install_mode).await?;
 
     println!(
         "{} Removed {} symlinks",
@@ -117,7 +117,13 @@ async fn uninstall_cask(_cache: &Cache, cask_name: &str, dry_run: bool) -> Resul
         return Ok(());
     }
 
+    #[cfg(target_os = "macos")]
     let app_path = std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name));
+    
+    #[cfg(not(target_os = "macos"))]
+    return Err(WaxError::PlatformNotSupported(
+        "Cask uninstallation is only supported on macOS".to_string()
+    ));
 
     if !app_path.exists() {
         println!(

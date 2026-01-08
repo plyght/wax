@@ -56,16 +56,36 @@ pub async fn list() -> Result<()> {
 }
 
 fn detect_homebrew_prefix() -> Result<PathBuf> {
-    if cfg!(target_arch = "aarch64") {
-        let path = PathBuf::from("/opt/homebrew");
-        if path.exists() {
-            return Ok(path);
+    if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
+        if output.status.success() {
+            if let Ok(prefix) = String::from_utf8(output.stdout) {
+                let path = PathBuf::from(prefix.trim());
+                if path.join("Cellar").exists() {
+                    return Ok(path);
+                }
+            }
         }
     }
 
-    let path = PathBuf::from("/usr/local");
-    if path.join("Cellar").exists() {
-        return Ok(path);
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    
+    let candidates = match os {
+        "macos" => match arch {
+            "aarch64" => vec![PathBuf::from("/opt/homebrew"), PathBuf::from("/usr/local")],
+            _ => vec![PathBuf::from("/usr/local"), PathBuf::from("/opt/homebrew")],
+        },
+        "linux" => vec![
+            PathBuf::from("/home/linuxbrew/.linuxbrew"),
+            PathBuf::from("/usr/local"),
+        ],
+        _ => vec![PathBuf::from("/usr/local")],
+    };
+
+    for path in candidates {
+        if path.join("Cellar").exists() {
+            return Ok(path);
+        }
     }
 
     Err(WaxError::HomebrewNotFound)

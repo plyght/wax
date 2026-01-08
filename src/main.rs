@@ -56,6 +56,10 @@ enum Commands {
         dry_run: bool,
         #[arg(long)]
         cask: bool,
+        #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
+        user: bool,
+        #[arg(long, help = "Install to system directory (may need sudo)")]
+        global: bool,
     },
 
     #[command(about = "Uninstall a formula or cask")]
@@ -86,11 +90,15 @@ enum Commands {
 }
 
 fn init_logging(verbose: bool) -> Result<()> {
-    let log_dir = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".wax")
-        .join("logs");
+    let log_dir = if let Some(base_dirs) = directories::BaseDirs::new() {
+        base_dirs.cache_dir().join("wax").join("logs")
+    } else {
+        std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".wax")
+            .join("logs")
+    };
 
     std::fs::create_dir_all(&log_dir)?;
 
@@ -136,8 +144,10 @@ async fn main() -> Result<()> {
             formula,
             dry_run,
             cask,
+            user,
+            global,
         } => {
-            commands::install::install(&cache, &formula, dry_run, cask).await?;
+            commands::install::install(&cache, &formula, dry_run, cask, user, global).await?;
         }
         Commands::Uninstall {
             formula,

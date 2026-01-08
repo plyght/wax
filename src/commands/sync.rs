@@ -1,7 +1,7 @@
-use crate::bottle::{cellar_path, detect_platform, BottleDownloader};
+use crate::bottle::{detect_platform, BottleDownloader};
 use crate::cache::Cache;
 use crate::error::{Result, WaxError};
-use crate::install::{create_symlinks, InstallState, InstalledPackage};
+use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::lockfile::Lockfile;
 use crate::ui::print_success;
 use console::style;
@@ -181,7 +181,20 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         }
     }
 
-    let cellar = cellar_path();
+    let install_mode = InstallMode::detect();
+    if install_mode == InstallMode::User {
+        println!(
+            "{} Using per-user installation mode (no sudo required)",
+            style("ℹ").blue().bold()
+        );
+        println!(
+            "  Install location: {}",
+            style(install_mode.prefix().display()).cyan()
+        );
+    }
+    install_mode.validate()?;
+    
+    let cellar = install_mode.cellar_path();
 
     for (name, version, platform, extract_dir) in extracted_packages {
         let formula_cellar = cellar.join(&name).join(&version);
@@ -194,7 +207,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
             copy_dir_all(&extract_dir, &formula_cellar)?;
         }
 
-        create_symlinks(&name, &version, &cellar, false).await?;
+        create_symlinks(&name, &version, &cellar, false, install_mode).await?;
 
         let package = InstalledPackage {
             name: name.clone(),
@@ -204,6 +217,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64,
+            install_mode,
         };
         state.add(package).await?;
 

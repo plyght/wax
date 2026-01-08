@@ -22,10 +22,14 @@ pub struct CaskState {
 
 impl CaskState {
     pub fn new() -> Result<Self> {
-        let state_path = dirs::home_dir()
-            .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
-            .join(".wax")
-            .join("installed_casks.json");
+        let state_path = if let Some(base_dirs) = directories::BaseDirs::new() {
+            base_dirs.data_local_dir().join("wax").join("installed_casks.json")
+        } else {
+            dirs::home_dir()
+                .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
+                .join(".wax")
+                .join("installed_casks.json")
+        };
 
         Ok(Self { state_path })
     }
@@ -84,6 +88,32 @@ impl CaskInstaller {
         }
     }
 
+    fn check_platform_support() -> Result<()> {
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Err(WaxError::PlatformNotSupported(
+                "Cask installation is only supported on macOS. Use formulae for Linux packages.".to_string()
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Ok(())
+        }
+    }
+
+    fn applications_dir() -> Result<PathBuf> {
+        #[cfg(target_os = "macos")]
+        {
+            Ok(PathBuf::from("/Applications"))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err(WaxError::PlatformNotSupported(
+                "Applications directory concept is macOS-specific".to_string()
+            ))
+        }
+    }
+
     #[instrument(skip(self, progress))]
     pub async fn download_cask(
         &self,
@@ -125,6 +155,7 @@ impl CaskInstaller {
 
     #[instrument(skip(self))]
     pub async fn install_dmg(&self, dmg_path: &Path, app_name: &str) -> Result<()> {
+        Self::check_platform_support()?;
         info!("Installing DMG: {:?}", dmg_path);
 
         let mount_point = PathBuf::from("/Volumes").join(format!("wax-{}", uuid::Uuid::new_v4()));
@@ -181,11 +212,11 @@ impl CaskInstaller {
     }
 
     async fn copy_app(&self, source: &Path, app_name: &str) -> Result<()> {
-        let app_dest = PathBuf::from("/Applications").join(app_name);
+        let app_dest = Self::applications_dir()?.join(app_name);
 
         if app_dest.exists() {
             return Err(WaxError::InstallError(format!(
-                "{} already exists in /Applications",
+                "{} already exists in Applications directory",
                 app_name
             )));
         }
@@ -229,6 +260,7 @@ impl CaskInstaller {
 
     #[instrument(skip(self))]
     pub async fn install_pkg(&self, pkg_path: &Path) -> Result<()> {
+        Self::check_platform_support()?;
         info!("Installing PKG: {:?}", pkg_path);
 
         println!("\n⚠️  PKG installer requires administrator privileges");
@@ -255,6 +287,7 @@ impl CaskInstaller {
 
     #[instrument(skip(self))]
     pub async fn install_zip(&self, zip_path: &Path, app_name: &str) -> Result<()> {
+        Self::check_platform_support()?;
         info!("Installing ZIP: {:?}", zip_path);
 
         let temp_dir = tempfile::tempdir()?;

@@ -1,7 +1,7 @@
 use crate::cache::Cache;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
-use crate::install::InstallState;
+use crate::install::{InstallMode, InstallState};
 use console::style;
 use tracing::instrument;
 
@@ -46,9 +46,15 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
         return Ok(());
     }
 
+    let install_mode = installed.install_mode;
+    
     uninstall::uninstall(cache, formula_name, false, false).await?;
 
-    install::install(cache, formula_name, false, false).await?;
+    let (user_flag, global_flag) = match install_mode {
+        InstallMode::User => (true, false),
+        InstallMode::Global => (false, true),
+    };
+    install::install(cache, formula_name, false, false, user_flag, global_flag).await?;
 
     println!(
         "{} Upgraded {} to {}",
