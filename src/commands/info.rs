@@ -12,7 +12,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<(
         update::update(api_client, cache).await?;
     }
 
-    let formulae = cache.load_formulae().await?;
+    let formulae = cache.load_all_formulae().await?;
 
     let formula = formulae
         .iter()

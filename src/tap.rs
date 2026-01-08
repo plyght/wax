@@ -45,11 +45,16 @@ impl Tap {
     }
 
     pub fn formula_dir(&self) -> PathBuf {
-        self.path.join("Formula")
+        let formula_subdir = self.path.join("Formula");
+        if formula_subdir.exists() {
+            formula_subdir
+        } else {
+            self.path.clone()
+        }
     }
 
     pub fn is_installed(&self) -> bool {
-        self.path.exists() && self.formula_dir().exists()
+        self.path.exists()
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::api::Formula;
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::builder::Builder;
 use crate::cache::Cache;
@@ -10,12 +11,110 @@ use crate::tap::TapManager;
 use crate::ui::print_success;
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use sha2::Digest;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
+
+async fn install_from_source_task(
+    formula: Formula,
+    cellar: &Path,
+    install_mode: InstallMode,
+    state: &InstallState,
+    platform: &str,
+) -> Result<()> {
+    info!("Installing {} from source", formula.name);
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {prefix:.bold} {msg}")
+            .unwrap(),
+    );
+    spinner.set_prefix(format!("[>]"));
+    spinner.set_message(format!("Fetching formula for {}...", formula.name));
+    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let ruby_content = FormulaParser::fetch_formula_rb(&formula.name).await?;
+
+    spinner.set_message("Parsing formula...");
+    let parsed_formula = FormulaParser::parse_ruby_formula(&formula.name, &ruby_content)?;
+
+    spinner.set_message(format!(
+        "Building from source (this may take several minutes)..."
+    ));
+
+    let temp_dir = TempDir::new()?;
+    let source_tarball = temp_dir.path().join(format!(
+        "{}-{}.tar.gz",
+        formula.name, parsed_formula.source.version
+    ));
+
+    let client = reqwest::Client::new();
+    let response = client.get(&parsed_formula.source.url).send().await?;
+
+    if !response.status().is_success() {
+        return Err(WaxError::BuildError(format!(
+            "Failed to download source: HTTP {}",
+            response.status()
+        )));
+    }
+
+    let content = response.bytes().await?;
+    let sha256 = format!("{:x}", sha2::Sha256::digest(&content));
+    tokio::fs::write(&source_tarball, &content).await?;
+    if sha256 != parsed_formula.source.sha256 {
+        return Err(WaxError::ChecksumMismatch {
+            expected: parsed_formula.source.sha256.clone(),
+            actual: sha256,
+        });
+    }
+
+    let build_dir = temp_dir.path().join("build");
+    let install_prefix = temp_dir.path().join("install");
+    tokio::fs::create_dir_all(&install_prefix).await?;
+
+    let builder = Builder::new();
+    builder
+        .build_from_source(
+            &parsed_formula,
+            &source_tarball,
+            &build_dir,
+            &install_prefix,
+            Some(&spinner),
+        )
+        .await?;
+
+    spinner.set_message("Installing to Cellar...");
+
+    let version = &parsed_formula.source.version;
+    let formula_cellar = cellar.join(&formula.name).join(version);
+    tokio::fs::create_dir_all(&formula_cellar).await?;
+
+    copy_dir_all(&install_prefix, &formula_cellar)?;
+
+    create_symlinks(&formula.name, version, cellar, false, install_mode).await?;
+
+    let package = InstalledPackage {
+        name: formula.name.clone(),
+        version: version.clone(),
+        platform: platform.to_string(),
+        install_date: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+        install_mode,
+    };
+    state.add(package).await?;
+
+    spinner.finish_with_message(format!("Built and installed {}", formula.name));
+    println!("{} Installed {}", style("✓").green().bold(), formula.name);
+
+    Ok(())
+}
 
 #[instrument(skip(cache))]
 pub async fn install(
@@ -25,7 +124,7 @@ pub async fn install(
     cask: bool,
     user: bool,
     global: bool,
-    _build_from_source: bool,
+    build_from_source: bool,
 ) -> Result<()> {
     if package_names.is_empty() {
         return Err(WaxError::InvalidInput("No packages specified".to_string()));
@@ -65,7 +164,10 @@ pub async fn install(
 
     let start = std::time::Instant::now();
 
-    let formulae = cache.load_formulae().await?;
+    let mut tap_manager = TapManager::new()?;
+    tap_manager.load().await?;
+
+    let formulae = cache.load_all_formulae().await?;
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
     let installed: HashSet<String> = installed_packages.keys().cloned().collect();
@@ -80,10 +182,21 @@ pub async fn install(
             continue;
         }
 
-        let formula = match formulae.iter().find(|f| &f.name == package_name) {
+        let formula = if package_name.contains('/') {
+            formulae
+                .iter()
+                .find(|f| &f.full_name == package_name || &f.name == package_name)
+        } else {
+            formulae.iter().find(|f| &f.name == package_name)
+        };
+
+        let formula = match formula {
             Some(f) => f,
             None => {
-                errors.push((package_name.clone(), "Formula not found".to_string()));
+                errors.push((
+                    package_name.clone(),
+                    "Formula not found. If using a custom tap, install it with: wax tap add user/repo".to_string(),
+                ));
                 continue;
             }
         };
@@ -169,6 +282,8 @@ pub async fn install(
     let platform = detect_platform();
     debug!("Detected platform: {}", platform);
 
+    let cellar = install_mode.cellar_path();
+
     let multi = MultiProgress::new();
     let downloader = Arc::new(BottleDownloader::new());
 
@@ -188,6 +303,26 @@ pub async fn install(
     let temp_dir = Arc::new(TempDir::new()?);
 
     for pkg in packages_to_install {
+        let has_bottle = pkg
+            .bottle
+            .as_ref()
+            .and_then(|b| b.stable.as_ref())
+            .and_then(|s| s.files.get(&platform).or_else(|| s.files.get("all")))
+            .is_some();
+
+        if !has_bottle || build_from_source {
+            if build_from_source && has_bottle {
+                println!(
+                    "{} Building {} from source (--build-from-source specified)",
+                    style("→").cyan().bold(),
+                    pkg.name
+                );
+            }
+
+            install_from_source_task(pkg.clone(), &cellar, install_mode, &state, &platform).await?;
+            continue;
+        }
+
         let bottle_info = pkg
             .bottle
             .as_ref()
@@ -279,8 +414,6 @@ pub async fn install(
             failed_packages.len()
         );
     }
-
-    let cellar = install_mode.cellar_path();
 
     for (name, version, extract_dir) in extracted_packages {
         let formula_cellar = cellar.join(&name).join(&version);

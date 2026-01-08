@@ -12,15 +12,37 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
         update::update(api_client, cache).await?;
     }
 
-    let formulae = cache.load_formulae().await?;
+    let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_casks().await?;
 
     let query_lower = query.to_lowercase();
 
-    let mut formula_matches: Vec<_> = formulae
+    let core_formulae: Vec<_> = formulae
+        .iter()
+        .filter(|f| !f.full_name.contains('/') || f.full_name.starts_with("homebrew/"))
+        .collect();
+
+    let tap_formulae: Vec<_> = formulae
+        .iter()
+        .filter(|f| f.full_name.contains('/') && !f.full_name.starts_with("homebrew/"))
+        .collect();
+
+    let mut formula_matches: Vec<_> = core_formulae
         .iter()
         .filter(|f| {
             f.name.to_lowercase().contains(&query_lower)
+                || f.desc
+                    .as_ref()
+                    .map(|d| d.to_lowercase().contains(&query_lower))
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    let mut tap_matches: Vec<_> = tap_formulae
+        .iter()
+        .filter(|f| {
+            f.name.to_lowercase().contains(&query_lower)
+                || f.full_name.to_lowercase().contains(&query_lower)
                 || f.desc
                     .as_ref()
                     .map(|d| d.to_lowercase().contains(&query_lower))
@@ -43,9 +65,11 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
         .collect();
 
     formula_matches.sort_by_key(|f| &f.name);
+    tap_matches.sort_by_key(|f| &f.full_name);
     cask_matches.sort_by_key(|c| &c.token);
 
     let formula_matches = &formula_matches[..formula_matches.len().min(20)];
+    let tap_matches = &tap_matches[..tap_matches.len().min(10)];
     let cask_matches = &cask_matches[..cask_matches.len().min(20)];
 
     if !formula_matches.is_empty() {
@@ -53,6 +77,14 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
         for formula in formula_matches {
             let desc = formula.desc.as_deref().unwrap_or("No description");
             println!("{:<30} {}", formula.name, desc);
+        }
+    }
+
+    if !tap_matches.is_empty() {
+        println!("\n==> From Custom Taps");
+        for formula in tap_matches {
+            let desc = formula.desc.as_deref().unwrap_or("No description");
+            println!("{:<30} {}", formula.full_name, desc);
         }
     }
 
@@ -64,7 +96,7 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
         }
     }
 
-    if formula_matches.is_empty() && cask_matches.is_empty() {
+    if formula_matches.is_empty() && tap_matches.is_empty() && cask_matches.is_empty() {
         print_info(&format!("No formulae or casks matching '{}'", query));
     }
 

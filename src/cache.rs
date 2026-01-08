@@ -1,9 +1,10 @@
 use crate::api::{Cask, Formula};
 use crate::error::{Result, WaxError};
+use crate::tap::TapManager;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
@@ -49,6 +50,15 @@ impl Cache {
 
     fn metadata_path(&self) -> PathBuf {
         self.cache_dir.join("metadata.json")
+    }
+
+    fn taps_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("taps")
+    }
+
+    fn tap_cache_path(&self, tap_name: &str) -> PathBuf {
+        self.taps_cache_dir()
+            .join(format!("{}.json", tap_name.replace('/', "-")))
     }
 
     pub fn is_initialized(&self) -> bool {
@@ -99,6 +109,48 @@ impl Cache {
         let json = fs::read_to_string(self.metadata_path()).await?;
         let metadata = serde_json::from_str(&json)?;
         Ok(Some(metadata))
+    }
+
+    pub async fn load_all_formulae(&self) -> Result<Vec<Formula>> {
+        let mut all = self.load_formulae().await?;
+
+        let mut tap_manager = TapManager::new()?;
+        tap_manager.load().await?;
+
+        for tap in tap_manager.list_taps() {
+            let tap_cache_path = self.tap_cache_path(&tap.full_name);
+
+            let tap_formulae = if tap_cache_path.exists() {
+                debug!(
+                    "Loading tap formulae from cache: {}",
+                    tap_cache_path.display()
+                );
+                let json = fs::read_to_string(&tap_cache_path).await?;
+                serde_json::from_str(&json)?
+            } else {
+                debug!("Loading tap formulae from filesystem: {}", tap.full_name);
+                let formulae = tap_manager.load_formulae_from_tap(tap).await?;
+
+                fs::create_dir_all(self.taps_cache_dir()).await?;
+                let json = serde_json::to_string_pretty(&formulae)?;
+                fs::write(&tap_cache_path, json).await?;
+
+                formulae
+            };
+
+            all.extend(tap_formulae);
+        }
+
+        Ok(all)
+    }
+
+    pub async fn invalidate_tap_cache(&self, tap_name: &str) -> Result<()> {
+        let tap_cache_path = self.tap_cache_path(tap_name);
+        if tap_cache_path.exists() {
+            fs::remove_file(&tap_cache_path).await?;
+            info!("Invalidated tap cache: {}", tap_name);
+        }
+        Ok(())
     }
 }
 

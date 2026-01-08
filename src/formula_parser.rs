@@ -200,10 +200,13 @@ impl FormulaParser {
             if trimmed.starts_with('"') && (trimmed.contains("--") || trimmed.contains("=")) {
                 let arg = trimmed
                     .trim_start_matches('"')
-                    .trim_end_matches('"')
                     .trim_end_matches(',')
+                    .trim_end_matches('"')
+                    .trim()
                     .to_string();
-                args.push(arg);
+                if !arg.is_empty() && !arg.contains("#{") {
+                    args.push(arg);
+                }
             }
         }
 
