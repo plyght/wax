@@ -68,10 +68,7 @@ impl BottleDownloader {
 
     async fn get_ghcr_token(&self, url: &str) -> Result<String> {
         let repo_path = self.extract_repo_path(url)?;
-        let token_url = format!(
-            "https://ghcr.io/token?scope=repository:{}:pull",
-            repo_path
-        );
+        let token_url = format!("https://ghcr.io/token?scope=repository:{}:pull", repo_path);
 
         #[derive(serde::Deserialize)]
         struct TokenResponse {

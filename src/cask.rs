@@ -41,9 +41,10 @@ impl CaskState {
     }
 
     pub async fn save(&self, casks: &HashMap<String, InstalledCask>) -> Result<()> {
-        let parent = self.state_path.parent().ok_or_else(|| {
-            WaxError::CacheError("Cannot determine parent directory".into())
-        })?;
+        let parent = self
+            .state_path
+            .parent()
+            .ok_or_else(|| WaxError::CacheError("Cannot determine parent directory".into()))?;
         fs::create_dir_all(parent).await?;
 
         let json = serde_json::to_string_pretty(casks)?;

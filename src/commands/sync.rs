@@ -16,7 +16,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     let start = std::time::Instant::now();
 
     let lockfile_path = Lockfile::default_path();
-    
+
     println!(
         "{} Loading lockfile from {}...",
         style("→").cyan().bold(),
@@ -115,9 +115,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
             .bottle
             .as_ref()
             .and_then(|b| b.stable.as_ref())
-            .ok_or_else(|| {
-                WaxError::BottleNotAvailable(format!("{} (no bottle info)", name))
-            })?;
+            .ok_or_else(|| WaxError::BottleNotAvailable(format!("{} (no bottle info)", name)))?;
 
         let bottle_file = bottle_info
             .files
@@ -152,9 +150,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
                 .path()
                 .join(format!("{}-{}.tar.gz", name_clone, version));
 
-            downloader
-                .download(&url, &tarball_path, Some(&pb))
-                .await?;
+            downloader.download(&url, &tarball_path, Some(&pb)).await?;
             pb.set_prefix(format!("[✓] {}", name_clone));
             pb.finish();
 

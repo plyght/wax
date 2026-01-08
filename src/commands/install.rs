@@ -129,9 +129,7 @@ pub async fn install(cache: &Cache, formula_name: &str, dry_run: bool, cask: boo
 
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
-            downloader
-                .download(&url, &tarball_path, Some(&pb))
-                .await?;
+            downloader.download(&url, &tarball_path, Some(&pb)).await?;
             pb.set_prefix(format!("[✓] {}", name));
             pb.finish();
 
@@ -262,10 +260,9 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     })?;
 
     let temp_dir = TempDir::new()?;
-    let download_path = temp_dir.path().join(format!(
-        "{}.{}",
-        cask_name, artifact_type
-    ));
+    let download_path = temp_dir
+        .path()
+        .join(format!("{}.{}", cask_name, artifact_type));
 
     let pb = ProgressBar::new(0);
     let style = ProgressStyle::default_bar()

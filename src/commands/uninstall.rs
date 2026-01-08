@@ -51,7 +51,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
                 .prompt();
 
             match confirm {
-                Ok(true) => {},
+                Ok(true) => {}
                 Ok(false) => {
                     println!("Uninstall cancelled");
                     return Ok(());

@@ -27,7 +27,7 @@ impl Lockfile {
     #[instrument]
     pub async fn generate() -> Result<Self> {
         debug!("Generating lockfile from installed packages");
-        
+
         let state = InstallState::new()?;
         let installed_packages = state.load().await?;
 
@@ -53,7 +53,7 @@ impl Lockfile {
             .map_err(|e| WaxError::LockfileError(format!("Failed to serialize lockfile: {}", e)))?;
 
         fs::write(path, toml_string).await?;
-        
+
         debug!("Lockfile saved successfully");
         Ok(())
     }

@@ -10,10 +10,8 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
 
     let start = std::time::Instant::now();
 
-    let (formulae_result, casks_result) = tokio::join!(
-        api_client.fetch_formulae(),
-        api_client.fetch_casks()
-    );
+    let (formulae_result, casks_result) =
+        tokio::join!(api_client.fetch_formulae(), api_client.fetch_casks());
 
     let formulae = formulae_result?;
     let casks = casks_result?;

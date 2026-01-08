@@ -28,13 +28,10 @@ impl DependencyGraph {
 
         for (node, deps) in &self.nodes {
             in_degree.entry(node.clone()).or_insert(0);
-            
+
             for dep in deps {
                 in_degree.entry(dep.clone()).or_insert(0);
-                adj_list
-                    .entry(dep.clone())
-                    .or_default()
-                    .push(node.clone());
+                adj_list.entry(dep.clone()).or_default().push(node.clone());
             }
         }
 

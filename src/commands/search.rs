@@ -25,7 +25,9 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         .iter()
         .filter(|c| {
             c.token.to_lowercase().contains(&query_lower)
-                || c.name.iter().any(|n| n.to_lowercase().contains(&query_lower))
+                || c.name
+                    .iter()
+                    .any(|n| n.to_lowercase().contains(&query_lower))
                 || c.desc
                     .as_ref()
                     .map(|d| d.to_lowercase().contains(&query_lower))
