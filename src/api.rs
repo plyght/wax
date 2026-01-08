@@ -55,6 +55,29 @@ pub struct Cask {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaskDetails {
+    pub token: String,
+    pub name: Vec<String>,
+    pub desc: Option<String>,
+    pub homepage: String,
+    pub version: String,
+    pub url: String,
+    pub sha256: String,
+    pub artifacts: Option<Vec<CaskArtifact>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CaskArtifact {
+    App { app: Vec<String> },
+    Pkg { pkg: Vec<String> },
+    Binary { binary: Vec<serde_json::Value> },
+    Uninstall { uninstall: Vec<serde_json::Value> },
+    Preflight { preflight: Option<String> },
+    Other(serde_json::Value),
+}
+
 pub struct ApiClient {
     client: reqwest::Client,
 }
@@ -85,6 +108,16 @@ impl ApiClient {
         let casks: Vec<Cask> = response.json().await?;
         info!("Fetched {} casks", casks.len());
         Ok(casks)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fetch_cask_details(&self, cask_name: &str) -> Result<CaskDetails> {
+        info!("Fetching details for cask: {}", cask_name);
+        let url = format!("https://formulae.brew.sh/api/cask/{}.json", cask_name);
+        let response = self.client.get(&url).send().await?;
+        let cask: CaskDetails = response.json().await?;
+        info!("Fetched details for cask: {}", cask_name);
+        Ok(cask)
     }
 }
 

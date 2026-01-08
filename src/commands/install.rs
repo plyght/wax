@@ -1,5 +1,6 @@
 use crate::bottle::{cellar_path, detect_platform, BottleDownloader};
 use crate::cache::Cache;
+use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask};
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
 use crate::install::{create_symlinks, InstallState, InstalledPackage};
@@ -14,7 +15,11 @@ use tokio::sync::Semaphore;
 use tracing::{debug, instrument};
 
 #[instrument(skip(cache))]
-pub async fn install(cache: &Cache, formula_name: &str, dry_run: bool) -> Result<()> {
+pub async fn install(cache: &Cache, formula_name: &str, dry_run: bool, cask: bool) -> Result<()> {
+    if cask {
+        return install_cask(cache, formula_name, dry_run).await;
+    }
+
     let start = std::time::Instant::now();
 
     let formulae = cache.load_formulae().await?;
@@ -212,4 +217,123 @@ fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[instrument(skip(cache))]
+async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
+    let start = std::time::Instant::now();
+
+    let casks = cache.load_casks().await?;
+    let _cask_summary = casks
+        .iter()
+        .find(|c| c.token == cask_name)
+        .ok_or_else(|| WaxError::CaskNotFound(cask_name.to_string()))?;
+
+    let state = CaskState::new()?;
+    let installed_casks = state.load().await?;
+
+    if installed_casks.contains_key(cask_name) {
+        println!(
+            "{} {} is already installed",
+            style("ℹ").blue().bold(),
+            cask_name
+        );
+        return Ok(());
+    }
+
+    let api_client = crate::api::ApiClient::new();
+    let cask = api_client.fetch_cask_details(cask_name).await?;
+
+    let display_name = cask.name.first().unwrap_or(&cask.token);
+    println!(
+        "{} Installing {} {}",
+        style("→").cyan().bold(),
+        display_name,
+        cask.version
+    );
+
+    if dry_run {
+        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        return Ok(());
+    }
+
+    let artifact_type = detect_artifact_type(&cask.url).ok_or_else(|| {
+        WaxError::InstallError(format!("Unsupported artifact type for URL: {}", cask.url))
+    })?;
+
+    let temp_dir = TempDir::new()?;
+    let download_path = temp_dir.path().join(format!(
+        "{}.{}",
+        cask_name, artifact_type
+    ));
+
+    let pb = ProgressBar::new(0);
+    let style = ProgressStyle::default_bar()
+        .template("{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
+        .unwrap()
+        .progress_chars("█▓▒░ ");
+    pb.set_style(style);
+    pb.set_prefix(format!("[>] {}", display_name));
+
+    let installer = CaskInstaller::new();
+    installer
+        .download_cask(&cask.url, &download_path, Some(&pb))
+        .await?;
+    pb.set_prefix(format!("[✓] {}", display_name));
+    pb.finish();
+
+    CaskInstaller::verify_checksum(&download_path, &cask.sha256)?;
+
+    let app_name = if let Some(artifacts) = &cask.artifacts {
+        extract_app_name(artifacts).unwrap_or_else(|| format!("{}.app", display_name))
+    } else {
+        format!("{}.app", display_name)
+    };
+
+    match artifact_type {
+        "dmg" => installer.install_dmg(&download_path, &app_name).await?,
+        "pkg" => installer.install_pkg(&download_path).await?,
+        "zip" => installer.install_zip(&download_path, &app_name).await?,
+        _ => {
+            return Err(WaxError::InstallError(format!(
+                "Unsupported artifact type: {}",
+                artifact_type
+            )))
+        }
+    }
+
+    let installed_cask = InstalledCask {
+        name: cask_name.to_string(),
+        version: cask.version.clone(),
+        install_date: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    };
+    state.add(installed_cask).await?;
+
+    let elapsed = start.elapsed();
+    print_success(&format!(
+        "Installed {} in {:.1}s",
+        display_name,
+        elapsed.as_secs_f64()
+    ));
+
+    Ok(())
+}
+
+fn extract_app_name(artifacts: &[crate::api::CaskArtifact]) -> Option<String> {
+    use crate::api::CaskArtifact;
+
+    for artifact in artifacts {
+        match artifact {
+            CaskArtifact::App { app } => {
+                if let Some(app_name) = app.first() {
+                    return Some(app_name.clone());
+                }
+            }
+            _ => continue,
+        }
+    }
+    None
 }

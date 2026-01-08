@@ -1,10 +1,12 @@
 mod api;
 mod bottle;
 mod cache;
+mod cask;
 mod commands;
 mod deps;
 mod error;
 mod install;
+mod lockfile;
 mod ui;
 
 use api::ApiClient;
@@ -33,34 +35,54 @@ enum Commands {
     Update,
 
     #[command(about = "Search formulae and casks")]
+    #[command(alias = "find")]
+    #[command(alias = "s")]
     Search { query: String },
 
     #[command(about = "Show formula details")]
+    #[command(alias = "show")]
     Info { formula: String },
 
     #[command(about = "List installed packages")]
+    #[command(alias = "ls")]
     List,
 
-    #[command(about = "Install a formula")]
+    #[command(about = "Install a formula or cask")]
+    #[command(alias = "i")]
+    #[command(alias = "add")]
     Install {
         formula: String,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        cask: bool,
     },
 
-    #[command(about = "Uninstall a formula")]
+    #[command(about = "Uninstall a formula or cask")]
+    #[command(alias = "rm")]
+    #[command(alias = "remove")]
+    #[command(alias = "delete")]
     Uninstall {
         formula: String,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        cask: bool,
     },
 
     #[command(about = "Upgrade a formula to the latest version")]
+    #[command(alias = "up")]
     Upgrade {
         formula: String,
         #[arg(long)]
         dry_run: bool,
     },
+
+    #[command(about = "Generate lockfile from installed packages")]
+    Lock,
+
+    #[command(about = "Install packages from lockfile")]
+    Sync,
 }
 
 fn init_logging(verbose: bool) -> Result<()> {
@@ -110,14 +132,28 @@ async fn main() -> Result<()> {
         Commands::List => {
             commands::list::list().await?;
         }
-        Commands::Install { formula, dry_run } => {
-            commands::install::install(&cache, &formula, dry_run).await?;
+        Commands::Install {
+            formula,
+            dry_run,
+            cask,
+        } => {
+            commands::install::install(&cache, &formula, dry_run, cask).await?;
         }
-        Commands::Uninstall { formula, dry_run } => {
-            commands::uninstall::uninstall(&cache, &formula, dry_run).await?;
+        Commands::Uninstall {
+            formula,
+            dry_run,
+            cask,
+        } => {
+            commands::uninstall::uninstall(&cache, &formula, dry_run, cask).await?;
         }
         Commands::Upgrade { formula, dry_run } => {
             commands::upgrade::upgrade(&cache, &formula, dry_run).await?;
+        }
+        Commands::Lock => {
+            commands::lock::lock().await?;
+        }
+        Commands::Sync => {
+            commands::sync::sync(&cache).await?;
         }
     }
 

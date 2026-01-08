@@ -37,6 +37,9 @@ pub enum WaxError {
 
     #[error("Package not installed: {0}")]
     NotInstalled(String),
+
+    #[error("Lockfile error: {0}")]
+    LockfileError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WaxError>;

@@ -46,9 +46,9 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
         return Ok(());
     }
 
-    uninstall::uninstall(cache, formula_name, false).await?;
+    uninstall::uninstall(cache, formula_name, false, false).await?;
 
-    install::install(cache, formula_name, false).await?;
+    install::install(cache, formula_name, false, false).await?;
 
     println!(
         "{} Upgraded {} to {}",
