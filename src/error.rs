@@ -2,10 +2,10 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum WaxError {
-    #[error("HTTP request failed: {0}")]
+    #[error("HTTP error: {0}")]
     HttpError(#[from] reqwest::Error),
 
-    #[error("JSON parsing failed: {0}")]
+    #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
     #[error("IO error: {0}")]

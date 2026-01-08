@@ -10,6 +10,10 @@ pub struct CacheMetadata {
     pub last_updated: i64,
     pub formula_count: usize,
     pub cask_count: usize,
+    pub formulae_etag: Option<String>,
+    pub formulae_last_modified: Option<String>,
+    pub casks_etag: Option<String>,
+    pub casks_last_modified: Option<String>,
 }
 
 pub struct Cache {
@@ -86,6 +90,15 @@ impl Cache {
         let json = fs::read_to_string(self.casks_path()).await?;
         let casks = serde_json::from_str(&json)?;
         Ok(casks)
+    }
+
+    pub async fn load_metadata(&self) -> Result<Option<CacheMetadata>> {
+        if !self.metadata_path().exists() {
+            return Ok(None);
+        }
+        let json = fs::read_to_string(self.metadata_path()).await?;
+        let metadata = serde_json::from_str(&json)?;
+        Ok(Some(metadata))
     }
 }
 

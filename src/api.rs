@@ -82,6 +82,14 @@ pub struct ApiClient {
     client: reqwest::Client,
 }
 
+#[derive(Debug)]
+pub struct FetchResult<T> {
+    pub data: Option<T>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub not_modified: bool,
+}
+
 impl ApiClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
@@ -93,21 +101,107 @@ impl ApiClient {
     }
 
     #[instrument(skip(self))]
-    pub async fn fetch_formulae(&self) -> Result<Vec<Formula>> {
-        info!("Fetching formulae from API");
-        let response = self.client.get(FORMULA_API_URL).send().await?;
-        let formulae: Vec<Formula> = response.json().await?;
+    pub async fn fetch_formulae_conditional(
+        &self,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<FetchResult<Vec<Formula>>> {
+        info!("Fetching formulae from API with conditional headers");
+        let mut request = self.client.get(FORMULA_API_URL);
+
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        if let Some(last_modified) = last_modified {
+            request = request.header("If-Modified-Since", last_modified);
+        }
+
+        let response = request.send().await?;
+
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            info!("Formulae not modified (304)");
+            return Ok(FetchResult {
+                data: None,
+                etag: None,
+                last_modified: None,
+                not_modified: true,
+            });
+        }
+
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let last_modified = response
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let body = response.bytes().await?;
+        let formulae: Vec<Formula> = serde_json::from_slice(&body)?;
         info!("Fetched {} formulae", formulae.len());
-        Ok(formulae)
+
+        Ok(FetchResult {
+            data: Some(formulae),
+            etag,
+            last_modified,
+            not_modified: false,
+        })
     }
 
     #[instrument(skip(self))]
-    pub async fn fetch_casks(&self) -> Result<Vec<Cask>> {
-        info!("Fetching casks from API");
-        let response = self.client.get(CASK_API_URL).send().await?;
-        let casks: Vec<Cask> = response.json().await?;
+    pub async fn fetch_casks_conditional(
+        &self,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<FetchResult<Vec<Cask>>> {
+        info!("Fetching casks from API with conditional headers");
+        let mut request = self.client.get(CASK_API_URL);
+
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        if let Some(last_modified) = last_modified {
+            request = request.header("If-Modified-Since", last_modified);
+        }
+
+        let response = request.send().await?;
+
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            info!("Casks not modified (304)");
+            return Ok(FetchResult {
+                data: None,
+                etag: None,
+                last_modified: None,
+                not_modified: true,
+            });
+        }
+
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let last_modified = response
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let body = response.bytes().await?;
+        let casks: Vec<Cask> = serde_json::from_slice(&body)?;
         info!("Fetched {} casks", casks.len());
-        Ok(casks)
+
+        Ok(FetchResult {
+            data: Some(casks),
+            etag,
+            last_modified,
+            not_modified: false,
+        })
     }
 
     #[instrument(skip(self))]
