@@ -60,7 +60,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     if let Some(deps) = &formula.dependencies {
         if !deps.is_empty() {
             println!();
-            println!("{}:", style("dependencies").dim());
+            println!("{}", style("dependencies:").dim());
             for dep in deps {
                 println!("  {}", dep);
             }
@@ -70,7 +70,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     if let Some(build_deps) = &formula.build_dependencies {
         if !build_deps.is_empty() {
             println!();
-            println!("{}:", style("build dependencies").dim());
+            println!("{}", style("build dependencies:").dim());
             for dep in build_deps {
                 println!("  {}", dep);
             }
