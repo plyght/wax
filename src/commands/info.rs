@@ -43,11 +43,31 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
         .find(|f| f.name == name || f.full_name == name)
         .unwrap();
 
+    let installed_suffix = if let Some(installed) = &formula.installed {
+        if !installed.is_empty() {
+            let installed_versions: Vec<_> = installed.iter().map(|i| i.version.as_str()).collect();
+            if installed_versions.len() == 1 {
+                if installed_versions[0] == formula.versions.stable {
+                    " · installed".to_string()
+                } else {
+                    format!(" · installed ({})", installed_versions[0])
+                }
+            } else {
+                format!(" · installed ({})", installed_versions.join(", "))
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     println!();
     println!(
-        "{} · {}",
+        "{} · {}{}",
         style(&formula.name).magenta(),
-        style(&formula.versions.stable).dim()
+        style(&formula.versions.stable).dim(),
+        style(&installed_suffix).dim()
     );
 
     if let Some(desc) = &formula.desc {
@@ -85,18 +105,6 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
         );
     }
 
-    if let Some(installed) = &formula.installed {
-        if !installed.is_empty() {
-            println!();
-            let versions: Vec<_> = installed.iter().map(|i| i.version.as_str()).collect();
-            println!(
-                "{} {}",
-                style("✓").green(),
-                style(format!("installed: {}", versions.join(", "))).dim()
-            );
-        }
-    }
-
     Ok(())
 }
 
@@ -118,12 +126,27 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
 
     let display_name = cask.name.first().unwrap_or(&cask.token);
 
+    let state = CaskState::new()?;
+    let installed_casks = state.load().await?;
+    let installed_version = installed_casks.get(name).map(|i| &i.version);
+
+    let installed_suffix = if let Some(installed_ver) = installed_version {
+        if installed_ver == &cask.version {
+            " · installed".to_string()
+        } else {
+            format!(" · installed ({})", installed_ver)
+        }
+    } else {
+        String::new()
+    };
+
     println!();
     println!(
-        "{} · {} {}",
+        "{} · {} {}{}",
         style(display_name).magenta(),
         style(&cask.version).dim(),
-        style("(cask)").yellow()
+        style("(cask)").yellow(),
+        style(installed_suffix).dim()
     );
 
     if let Some(desc) = &cask.desc {
@@ -156,18 +179,6 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
                 println!("  {}", artifact_type);
             }
         }
-    }
-
-    let state = CaskState::new()?;
-    let installed_casks = state.load().await?;
-
-    if let Some(installed) = installed_casks.get(name) {
-        println!();
-        println!(
-            "{} {}",
-            style("✓").green(),
-            style(format!("installed: {}", installed.version)).dim()
-        );
     }
 
     Ok(())
