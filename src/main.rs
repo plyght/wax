@@ -44,7 +44,11 @@ enum Commands {
 
     #[command(about = "Show formula details")]
     #[command(alias = "show")]
-    Info { formula: String },
+    Info {
+        formula: String,
+        #[arg(long)]
+        cask: bool,
+    },
 
     #[command(about = "List installed packages")]
     #[command(alias = "ls")]
@@ -66,6 +70,20 @@ enum Commands {
         global: bool,
         #[arg(long, help = "Build from source even if bottle available")]
         build_from_source: bool,
+    },
+
+    #[command(about = "Install casks (shorthand for install --cask)")]
+    #[command(name = "cask")]
+    #[command(alias = "c")]
+    InstallCask {
+        #[arg(required = true, help = "Cask name(s) to install")]
+        packages: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
+        user: bool,
+        #[arg(long, help = "Install to system directory (may need sudo)")]
+        global: bool,
     },
 
     #[command(about = "Uninstall a formula or cask")]
@@ -167,8 +185,8 @@ async fn main() -> Result<()> {
         Commands::Search { query } => {
             commands::search::search(&api_client, &cache, &query).await?;
         }
-        Commands::Info { formula } => {
-            commands::info::info(&api_client, &cache, &formula).await?;
+        Commands::Info { formula, cask } => {
+            commands::info::info(&api_client, &cache, &formula, cask).await?;
         }
         Commands::List => {
             commands::list::list().await?;
@@ -191,6 +209,15 @@ async fn main() -> Result<()> {
                 build_from_source,
             )
             .await?;
+        }
+        Commands::InstallCask {
+            packages,
+            dry_run,
+            user,
+            global,
+        } => {
+            commands::install::install(&cache, &packages, dry_run, true, user, global, false)
+                .await?;
         }
         Commands::Uninstall {
             formula,

@@ -191,9 +191,23 @@ pub async fn install(
         let formula = match formula {
             Some(f) => f,
             None => {
+                let casks = cache.load_casks().await?;
+                let cask_exists = casks
+                    .iter()
+                    .any(|c| &c.token == package_name || &c.full_token == package_name);
+
+                if cask_exists {
+                    println!(
+                        "{} {} is a cask, installing as cask...",
+                        style("ℹ").blue().bold(),
+                        package_name
+                    );
+                    return install_cask(cache, package_name, dry_run).await;
+                }
+
                 errors.push((
                     package_name.clone(),
-                    "Formula not found. If using a custom tap, install it with: wax tap add user/repo".to_string(),
+                    "Not found as formula or cask. If using a custom tap, install it with: wax tap add user/repo".to_string(),
                 ));
                 continue;
             }
