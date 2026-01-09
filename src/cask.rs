@@ -14,6 +14,10 @@ pub struct InstalledCask {
     pub name: String,
     pub version: String,
     pub install_date: i64,
+    #[serde(default)]
+    pub artifact_type: Option<String>,
+    #[serde(default)]
+    pub binary_paths: Option<Vec<String>>,
 }
 
 pub struct CaskState {
@@ -151,7 +155,7 @@ impl CaskInstaller {
         }
     }
 
-    fn is_in_path(dir: &Path) -> bool {
+    fn _is_in_path(dir: &Path) -> bool {
         if let Ok(path_env) = std::env::var("PATH") {
             path_env.split(':').any(|p| Path::new(p) == dir)
         } else {
@@ -381,7 +385,7 @@ impl CaskInstaller {
     }
 
     #[instrument(skip(self))]
-    pub async fn install_tarball(&self, tarball_path: &Path, binary_name: &str) -> Result<()> {
+    pub async fn install_tarball(&self, tarball_path: &Path, binary_name: &str) -> Result<PathBuf> {
         info!("Installing tarball: {:?}", tarball_path);
 
         let temp_dir = tempfile::tempdir()?;
@@ -457,15 +461,8 @@ impl CaskInstaller {
             binary_name,
             bin_dest.display()
         );
-        println!("  ✓ Binary installed to: {}", binary_dest_path.display());
 
-        if !Self::is_in_path(&bin_dest) {
-            println!("  ⚠ {} is not in your PATH", bin_dest.display());
-            println!("    Add to ~/.zshrc or ~/.bashrc:");
-            println!("      export PATH=\"{}:$PATH\"", bin_dest.display());
-        }
-
-        Ok(())
+        Ok(binary_dest_path)
     }
 }
 

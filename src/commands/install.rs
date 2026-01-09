@@ -197,11 +197,6 @@ pub async fn install(
                     .any(|c| &c.token == package_name || &c.full_token == package_name);
 
                 if cask_exists {
-                    println!(
-                        "{} {} is a cask, installing as cask...",
-                        style("ℹ").blue().bold(),
-                        package_name
-                    );
                     return install_cask(cache, package_name, dry_run).await;
                 }
 
@@ -515,12 +510,6 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     let cask = api_client.fetch_cask_details(cask_name).await?;
 
     let display_name = cask.name.first().unwrap_or(&cask.token);
-    println!(
-        "{} Installing {} {}",
-        style("→").cyan().bold(),
-        display_name,
-        cask.version
-    );
 
     if dry_run {
         println!("\n{} Dry run - no changes made", style("✓").green().bold());
@@ -549,9 +538,12 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
         .download_cask(&cask.url, &download_path, Some(&pb))
         .await?;
     pb.set_prefix(format!("[✓] {}", display_name));
-    pb.finish();
+    pb.finish_and_clear();
 
     CaskInstaller::verify_checksum(&download_path, &cask.sha256)?;
+
+    let mut installed_binaries: Vec<String> = Vec::new();
+    let mut binary_paths: Vec<String> = Vec::new();
 
     match artifact_type {
         "dmg" | "zip" => {
@@ -570,9 +562,11 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
         "pkg" => installer.install_pkg(&download_path).await?,
         "tar.gz" => {
             let binary_name = cask_name;
-            installer
+            let binary_path = installer
                 .install_tarball(&download_path, binary_name)
-                .await?
+                .await?;
+            installed_binaries.push(binary_name.to_string());
+            binary_paths.push(binary_path.display().to_string());
         }
         _ => {
             return Err(WaxError::InstallError(format!(
@@ -589,15 +583,32 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64,
+        artifact_type: Some(artifact_type.to_string()),
+        binary_paths: if binary_paths.is_empty() {
+            None
+        } else {
+            Some(binary_paths)
+        },
     };
     state.add(installed_cask).await?;
 
     let elapsed = start.elapsed();
-    print_success(&format!(
-        "Installed {} in {:.1}s",
-        display_name,
-        elapsed.as_secs_f64()
-    ));
+
+    println!("\nwax add v{}\n", env!("CARGO_PKG_VERSION"));
+
+    if !installed_binaries.is_empty() {
+        println!(
+            "installed {}@{} (cask) with binaries:",
+            cask_name, cask.version
+        );
+        for binary in installed_binaries {
+            println!(" - {}", binary);
+        }
+    } else {
+        println!("installed {}@{} (cask)", cask_name, cask.version);
+    }
+
+    println!("\n1 cask installed [{:.2}s]", elapsed.as_secs_f64());
 
     Ok(())
 }

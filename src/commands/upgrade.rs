@@ -9,6 +9,10 @@ use tracing::instrument;
 
 #[instrument(skip(cache))]
 pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result<()> {
+    let start = std::time::Instant::now();
+
+    println!("wax update v{}\n", env!("CARGO_PKG_VERSION"));
+
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
 
@@ -19,12 +23,7 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
         let installed_casks = cask_state.load().await?;
 
         if installed_casks.contains_key(formula_name) {
-            println!(
-                "{} {} is a cask, upgrading as cask...",
-                style("ℹ").blue().bold(),
-                formula_name
-            );
-            return upgrade_cask(cache, formula_name, dry_run).await;
+            return upgrade_cask(cache, formula_name, dry_run, start).await;
         }
 
         return Err(WaxError::NotInstalled(formula_name.to_string()));
@@ -43,24 +42,22 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
 
     if installed_version == latest_version {
         println!(
-            "{} {} {} is already up to date",
+            "{} {} is already up to date",
             style("✓").green().bold(),
-            formula_name,
-            installed_version
+            formula_name
         );
+        let elapsed = start.elapsed();
+        println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
         return Ok(());
     }
 
-    println!(
-        "{} Upgrading {} from {} to {}",
-        style("→").cyan().bold(),
-        formula_name,
-        installed_version,
-        latest_version
-    );
-
     if dry_run {
-        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        println!(
+            "Would upgrade {} from {} to {}",
+            formula_name, installed_version, latest_version
+        );
+        let elapsed = start.elapsed();
+        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
         return Ok(());
     }
 
@@ -83,17 +80,18 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
     )
     .await?;
 
-    println!(
-        "{} Upgraded {} to {}",
-        style("✓").green().bold(),
-        formula_name,
-        latest_version
-    );
+    let elapsed = start.elapsed();
+    println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
 
     Ok(())
 }
 
-async fn upgrade_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
+async fn upgrade_cask(
+    cache: &Cache,
+    cask_name: &str,
+    dry_run: bool,
+    start: std::time::Instant,
+) -> Result<()> {
     let cask_state = CaskState::new()?;
     let installed_casks = cask_state.load().await?;
 
@@ -115,24 +113,22 @@ async fn upgrade_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     if installed_version == latest_version {
         println!(
-            "{} {} {} is already up to date",
+            "{} {} is already up to date",
             style("✓").green().bold(),
-            cask_name,
-            installed_version
+            cask_name
         );
+        let elapsed = start.elapsed();
+        println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
         return Ok(());
     }
 
-    println!(
-        "{} Upgrading cask {} from {} to {}",
-        style("→").cyan().bold(),
-        cask_name,
-        installed_version,
-        latest_version
-    );
-
     if dry_run {
-        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        println!(
+            "Would upgrade {} from {} to {}",
+            cask_name, installed_version, latest_version
+        );
+        let elapsed = start.elapsed();
+        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
         return Ok(());
     }
 
@@ -149,12 +145,8 @@ async fn upgrade_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     )
     .await?;
 
-    println!(
-        "{} Upgraded cask {} to {}",
-        style("✓").green().bold(),
-        cask_name,
-        latest_version
-    );
+    let elapsed = start.elapsed();
+    println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
 
     Ok(())
 }

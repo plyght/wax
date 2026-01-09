@@ -2,15 +2,18 @@ use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
-use crate::ui::print_success;
 use console::style;
 use inquire::Confirm;
 use tracing::instrument;
 
 #[instrument(skip(cache))]
 pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: bool) -> Result<()> {
+    let start = std::time::Instant::now();
+
+    println!("wax remove v{}\n", env!("CARGO_PKG_VERSION"));
+
     if cask {
-        return uninstall_cask(cache, formula_name, dry_run).await;
+        return uninstall_cask(cache, formula_name, dry_run, start).await;
     }
 
     let state = InstallState::new()?;
@@ -23,12 +26,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
         let installed_casks = cask_state.load().await?;
 
         if installed_casks.contains_key(formula_name) {
-            println!(
-                "{} {} is a cask, uninstalling as cask...",
-                style("ℹ").blue().bold(),
-                formula_name
-            );
-            return uninstall_cask(cache, formula_name, dry_run).await;
+            return uninstall_cask(cache, formula_name, dry_run, start).await;
         }
 
         return Err(WaxError::NotInstalled(formula_name.to_string()));
@@ -77,45 +75,40 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
     }
 
     if dry_run {
-        println!(
-            "{} Would uninstall {} {}",
-            style("→").cyan().bold(),
-            formula_name,
-            package.version
-        );
-        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        println!("- {} (dry run)", formula_name);
+        let elapsed = start.elapsed();
+        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
         return Ok(());
     }
 
     let install_mode = package.install_mode;
     let cellar = install_mode.cellar_path();
-    let removed_links =
-        remove_symlinks(formula_name, &package.version, &cellar, false, install_mode).await?;
-
-    println!(
-        "{} Removed {} symlinks",
-        style("→").cyan().bold(),
-        removed_links.len()
-    );
+    remove_symlinks(formula_name, &package.version, &cellar, false, install_mode).await?;
 
     let formula_dir = cellar.join(formula_name);
     if formula_dir.exists() {
         tokio::fs::remove_dir_all(&formula_dir).await?;
-        println!(
-            "{} Removed {}",
-            style("→").cyan().bold(),
-            formula_dir.display()
-        );
     }
 
     state.remove(formula_name).await?;
 
-    print_success(&format!("Uninstalled {}", formula_name));
+    println!("- {}", formula_name);
+
+    let elapsed = start.elapsed();
+    println!(
+        "\n1 package removed [{:.2}ms]",
+        elapsed.as_secs_f64() * 1000.0
+    );
 
     Ok(())
 }
 
-async fn uninstall_cask(_cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
+async fn uninstall_cask(
+    _cache: &Cache,
+    cask_name: &str,
+    dry_run: bool,
+    start: std::time::Instant,
+) -> Result<()> {
     let state = CaskState::new()?;
     let installed_casks = state.load().await?;
 
@@ -124,43 +117,56 @@ async fn uninstall_cask(_cache: &Cache, cask_name: &str, dry_run: bool) -> Resul
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
     if dry_run {
-        println!(
-            "{} Would uninstall cask {} {}",
-            style("→").cyan().bold(),
-            cask_name,
-            cask.version
-        );
-        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        println!("- {} (cask) (dry run)", cask_name);
+        let elapsed = start.elapsed();
+        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
         return Ok(());
     }
 
-    #[cfg(target_os = "macos")]
-    let app_path = std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name));
+    let artifact_type = cask.artifact_type.as_deref().unwrap_or("dmg");
 
-    #[cfg(not(target_os = "macos"))]
-    return Err(WaxError::PlatformNotSupported(
-        "Cask uninstallation is only supported on macOS".to_string(),
-    ));
+    match artifact_type {
+        "tar.gz" => {
+            if let Some(binary_paths) = &cask.binary_paths {
+                for binary_path in binary_paths {
+                    let path = std::path::PathBuf::from(binary_path);
+                    if path.exists() {
+                        tokio::fs::remove_file(&path).await?;
+                    }
+                }
+            }
+        }
+        "pkg" => {
+            println!(
+                "{} PKG uninstallation not fully supported - you may need to manually remove files",
+                style("⚠").yellow().bold()
+            );
+        }
+        _ => {
+            #[cfg(target_os = "macos")]
+            let app_path =
+                std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name));
 
-    if !app_path.exists() {
-        println!(
-            "{} Application not found at {}",
-            style("⚠").yellow().bold(),
-            app_path.display()
-        );
-        println!("Removing from installed casks list anyway...");
-    } else {
-        tokio::fs::remove_dir_all(&app_path).await?;
-        println!(
-            "{} Removed {}",
-            style("→").cyan().bold(),
-            app_path.display()
-        );
+            #[cfg(not(target_os = "macos"))]
+            return Err(WaxError::PlatformNotSupported(
+                "Cask uninstallation is only supported on macOS".to_string(),
+            ));
+
+            if app_path.exists() {
+                tokio::fs::remove_dir_all(&app_path).await?;
+            }
+        }
     }
 
     state.remove(cask_name).await?;
 
-    print_success(&format!("Uninstalled cask {}", cask_name));
+    println!("- {} (cask)", cask_name);
+
+    let elapsed = start.elapsed();
+    println!(
+        "\n1 package removed [{:.2}ms]",
+        elapsed.as_secs_f64() * 1000.0
+    );
 
     Ok(())
 }
