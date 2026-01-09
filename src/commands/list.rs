@@ -68,17 +68,6 @@ pub async fn list() -> Result<()> {
 }
 
 fn detect_homebrew_prefix() -> Result<PathBuf> {
-    if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
-        if output.status.success() {
-            if let Ok(prefix) = String::from_utf8(output.stdout) {
-                let path = PathBuf::from(prefix.trim());
-                if path.join("Cellar").exists() {
-                    return Ok(path);
-                }
-            }
-        }
-    }
-
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
@@ -94,10 +83,30 @@ fn detect_homebrew_prefix() -> Result<PathBuf> {
         _ => vec![PathBuf::from("/usr/local")],
     };
 
+    if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
+        if output.status.success() {
+            if let Ok(prefix) = String::from_utf8(output.stdout) {
+                let brew_prefix = PathBuf::from(prefix.trim());
+                if brew_prefix.join("Cellar").exists() {
+                    return Ok(brew_prefix);
+                }
+            }
+        }
+    }
+
     for path in candidates {
         if path.join("Cellar").exists() {
             return Ok(path);
         }
+    }
+
+    let home = std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let wax_user_cellar = home.join(".local/wax/Cellar");
+    if wax_user_cellar.exists() {
+        return Ok(home.join(".local/wax"));
     }
 
     Err(WaxError::HomebrewNotFound)

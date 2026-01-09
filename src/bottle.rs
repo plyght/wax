@@ -196,18 +196,10 @@ fn macos_version() -> String {
 }
 
 pub fn homebrew_prefix() -> PathBuf {
-    if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
-        if output.status.success() {
-            if let Ok(prefix) = String::from_utf8(output.stdout) {
-                return PathBuf::from(prefix.trim());
-            }
-        }
-    }
-
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
-    match os {
+    let standard_prefix = match os {
         "macos" => match arch {
             "aarch64" => PathBuf::from("/opt/homebrew"),
             _ => PathBuf::from("/usr/local"),
@@ -221,5 +213,22 @@ pub fn homebrew_prefix() -> PathBuf {
             }
         }
         _ => PathBuf::from("/usr/local"),
+    };
+
+    if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
+        if output.status.success() {
+            if let Ok(prefix) = String::from_utf8(output.stdout) {
+                let brew_prefix = PathBuf::from(prefix.trim());
+                if brew_prefix != standard_prefix {
+                    debug!(
+                        "Using custom Homebrew prefix from brew --prefix: {:?}",
+                        brew_prefix
+                    );
+                }
+                return brew_prefix;
+            }
+        }
     }
+
+    standard_prefix
 }
