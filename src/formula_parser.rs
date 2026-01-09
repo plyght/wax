@@ -90,7 +90,7 @@ impl FormulaParser {
     }
 
     fn extract_version_from_url(url: &str) -> String {
-        if let Some(filename) = url.split('/').last() {
+        if let Some(filename) = url.split('/').next_back() {
             if let Some(version_part) = filename
                 .trim_end_matches(".tar.gz")
                 .trim_end_matches(".tar.bz2")
@@ -99,11 +99,7 @@ impl FormulaParser {
                 .rsplit('-')
                 .next()
             {
-                if version_part
-                    .chars()
-                    .next()
-                    .map_or(false, |c| c.is_numeric())
-                {
+                if version_part.chars().next().is_some_and(|c| c.is_numeric()) {
                     return version_part.to_string();
                 }
             }

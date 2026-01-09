@@ -34,7 +34,7 @@ async fn install_from_source_task(
             .template("{spinner:.cyan} {prefix:.bold} {msg}")
             .unwrap(),
     );
-    spinner.set_prefix(format!("[>]"));
+    spinner.set_prefix("[>]".to_string());
     spinner.set_message(format!("Fetching formula for {}...", formula.name));
     spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
@@ -43,9 +43,7 @@ async fn install_from_source_task(
     spinner.set_message("Parsing formula...");
     let parsed_formula = FormulaParser::parse_ruby_formula(&formula.name, &ruby_content)?;
 
-    spinner.set_message(format!(
-        "Building from source (this may take several minutes)..."
-    ));
+    spinner.set_message("Building from source (this may take several minutes)...".to_string());
 
     let temp_dir = TempDir::new()?;
     let source_tarball = temp_dir.path().join(format!(

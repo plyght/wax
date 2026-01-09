@@ -143,15 +143,6 @@ impl Cache {
 
         Ok(all)
     }
-
-    pub async fn invalidate_tap_cache(&self, tap_name: &str) -> Result<()> {
-        let tap_cache_path = self.tap_cache_path(tap_name);
-        if tap_cache_path.exists() {
-            fs::remove_file(&tap_cache_path).await?;
-            info!("Invalidated tap cache: {}", tap_name);
-        }
-        Ok(())
-    }
 }
 
 impl Default for Cache {

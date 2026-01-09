@@ -249,35 +249,6 @@ impl TapManager {
 
         Ok(formulae)
     }
-
-    pub async fn load_all_tap_formulae(&self) -> Result<Vec<Formula>> {
-        let mut all_formulae = Vec::new();
-
-        for tap in self.taps.values() {
-            let formulae = self.load_formulae_from_tap(tap).await?;
-            all_formulae.extend(formulae);
-        }
-
-        Ok(all_formulae)
-    }
-
-    pub fn resolve_formula_name(&self, formula_name: &str) -> Option<(&Tap, String)> {
-        if formula_name.contains('/') {
-            let parts: Vec<&str> = formula_name.splitn(3, '/').collect();
-            if parts.len() >= 3 {
-                let user = parts[0];
-                let repo = parts[1];
-                let name = parts[2];
-                let full_tap_name = format!("{}/{}", user, repo);
-
-                if let Some(tap) = self.taps.get(&full_tap_name) {
-                    return Some((tap, name.to_string()));
-                }
-            }
-        }
-
-        None
-    }
 }
 
 impl Default for TapManager {

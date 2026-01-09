@@ -139,16 +139,11 @@ impl Builder {
         if !configure_script.exists() {
             let bootstrap = source_dir.join("bootstrap");
             if bootstrap.exists() {
-                self.run_command(source_dir, "./bootstrap", &vec![], "Bootstrapping")?;
+                self.run_command(source_dir, "./bootstrap", &[], "Bootstrapping")?;
             } else {
                 let autogen = source_dir.join("autogen.sh");
                 if autogen.exists() {
-                    self.run_command(
-                        source_dir,
-                        "./autogen.sh",
-                        &vec![],
-                        "Generating build files",
-                    )?;
+                    self.run_command(source_dir, "./autogen.sh", &[], "Generating build files")?;
                 }
             }
         }
@@ -161,12 +156,7 @@ impl Builder {
         let make_args = vec![format!("-j{}", self.num_cores)];
         self.run_command(source_dir, "make", &make_args, "Compiling")?;
 
-        self.run_command(
-            source_dir,
-            "make",
-            &vec!["install".to_string()],
-            "Installing",
-        )?;
+        self.run_command(source_dir, "make", &["install".to_string()], "Installing")?;
 
         Ok(())
     }
