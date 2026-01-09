@@ -1,5 +1,6 @@
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
+use crate::install::InstallState;
 use console::style;
 use std::path::PathBuf;
 use tracing::instrument;
@@ -11,6 +12,9 @@ pub async fn list() -> Result<()> {
 
     let cask_state = CaskState::new()?;
     let installed_casks = cask_state.load().await?;
+
+    let install_state = InstallState::new()?;
+    let installed_packages = install_state.load().await?;
 
     let mut packages = Vec::new();
 
@@ -29,7 +33,12 @@ pub async fn list() -> Result<()> {
                     }
                 }
 
-                packages.push((package_name, versions));
+                let from_source = installed_packages
+                    .get(&package_name)
+                    .map(|p| p.from_source)
+                    .unwrap_or(false);
+
+                packages.push((package_name, versions, from_source));
             }
         }
     }
@@ -44,9 +53,18 @@ pub async fn list() -> Result<()> {
     if !packages.is_empty() {
         packages.sort_by(|a, b| a.0.cmp(&b.0));
 
-        for (package, versions) in &packages {
+        for (package, versions, from_source) in &packages {
             let version_str = versions.join(", ");
-            println!("{} {}", style(&package).dim(), style(&version_str).dim());
+            if *from_source {
+                println!(
+                    "{} {} {}",
+                    style(&package).white(),
+                    style(&version_str).dim(),
+                    style("(source)").dim()
+                );
+            } else {
+                println!("{} {}", style(&package).white(), style(&version_str).dim());
+            }
         }
     }
 
@@ -57,7 +75,7 @@ pub async fn list() -> Result<()> {
         for (cask_name, cask) in cask_list {
             println!(
                 "{} {} {}",
-                style(cask_name).dim(),
+                style(cask_name).white(),
                 style(&cask.version).dim(),
                 style("(cask)").dim()
             );

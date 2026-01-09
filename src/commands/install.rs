@@ -105,12 +105,18 @@ async fn install_from_source_task(
             .unwrap()
             .as_secs() as i64,
         install_mode,
+        from_source: true,
     };
     state.add(package).await?;
 
     spinner.finish_with_message(format!("Built and installed {}", formula.name));
     println!();
-    println!("+ {}", style(&formula.name).dim());
+    println!(
+        "+ {}@{} {}",
+        style(&formula.name).white(),
+        style(version).dim(),
+        style("(source)").dim()
+    );
 
     Ok(())
 }
@@ -419,10 +425,11 @@ pub async fn install(
                 .unwrap()
                 .as_secs() as i64,
             install_mode,
+            from_source: false,
         };
         state.add(package).await?;
 
-        println!("+ {}", style(&name).dim());
+        println!("+ {}@{}", style(&name).white(), style(&version).dim());
     }
 
     let elapsed = start.elapsed();
@@ -500,11 +507,11 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
         .join(format!("{}.{}", cask_name, artifact_type));
 
     let pb = ProgressBar::new(0);
-    let style = ProgressStyle::default_bar()
+    let pb_style = ProgressStyle::default_bar()
         .template("{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
         .unwrap()
         .progress_chars("█▓▒░ ");
-    pb.set_style(style);
+    pb.set_style(pb_style);
     pb.set_prefix(format!("[>] {}", display_name));
 
     let installer = CaskInstaller::new();
@@ -570,12 +577,23 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     println!();
     if !installed_binaries.is_empty() {
-        println!("+ {} (cask) with binaries:", cask_name);
+        println!(
+            "+ {}@{} {}",
+            console::style(cask_name).white(),
+            console::style(&cask.version).dim(),
+            console::style("(cask)").dim()
+        );
+        println!("  with binaries:");
         for binary in installed_binaries {
             println!("  - {}", binary);
         }
     } else {
-        println!("+ {} (cask)", cask_name);
+        println!(
+            "+ {}@{} {}",
+            console::style(cask_name).white(),
+            console::style(&cask.version).dim(),
+            console::style("(cask)").dim()
+        );
     }
 
     println!();

@@ -54,7 +54,11 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
             } else {
                 println!();
                 for tap in taps {
-                    println!("{} {}", style(&tap.full_name).dim(), style(&tap.url).dim());
+                    println!(
+                        "{} {}",
+                        style(&tap.full_name).white(),
+                        style(&tap.url).dim()
+                    );
                 }
             }
         }

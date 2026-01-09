@@ -92,7 +92,11 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
 
     state.remove(formula_name).await?;
 
-    println!("- {}", formula_name);
+    println!(
+        "- {}@{}",
+        style(formula_name).white(),
+        style(&package.version).dim()
+    );
 
     let elapsed = start.elapsed();
     println!(
@@ -160,7 +164,12 @@ async fn uninstall_cask(
 
     state.remove(cask_name).await?;
 
-    println!("- {} (cask)", cask_name);
+    println!(
+        "- {}@{} {}",
+        style(cask_name).white(),
+        style(&cask.version).dim(),
+        style("(cask)").dim()
+    );
 
     let elapsed = start.elapsed();
     println!(

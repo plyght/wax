@@ -46,8 +46,8 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     println!();
     println!(
         "{} · {}",
-        style(&formula.name).dim(),
-        formula.versions.stable
+        style(&formula.name).white(),
+        style(&formula.versions.stable).dim()
     );
 
     if let Some(desc) = &formula.desc {
@@ -121,8 +121,8 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
     println!();
     println!(
         "{} · {} {}",
-        style(display_name).dim(),
-        cask.version,
+        style(display_name).white(),
+        style(&cask.version).dim(),
         style("(cask)").dim()
     );
 

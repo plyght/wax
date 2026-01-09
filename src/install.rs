@@ -95,6 +95,8 @@ pub struct InstalledPackage {
     pub install_date: i64,
     #[serde(default = "default_install_mode")]
     pub install_mode: InstallMode,
+    #[serde(default)]
+    pub from_source: bool,
 }
 
 fn default_install_mode() -> InstallMode {

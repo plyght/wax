@@ -42,9 +42,10 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
 
     if installed_version == latest_version {
         println!(
-            "{} {} is already up to date",
+            "{} {}@{} is already up to date",
             style("✓").green().bold(),
-            formula_name
+            formula_name,
+            installed_version
         );
         let elapsed = start.elapsed();
         println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
@@ -53,8 +54,10 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
 
     if dry_run {
         println!(
-            "Would upgrade {} from {} to {}",
-            formula_name, installed_version, latest_version
+            "{}: {} → {}",
+            style(formula_name).white(),
+            style(installed_version).dim(),
+            style(latest_version).green()
         );
         let elapsed = start.elapsed();
         println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
@@ -113,9 +116,10 @@ async fn upgrade_cask(
 
     if installed_version == latest_version {
         println!(
-            "{} {} is already up to date",
+            "{} {}@{} is already up to date",
             style("✓").green().bold(),
-            cask_name
+            cask_name,
+            installed_version
         );
         let elapsed = start.elapsed();
         println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
@@ -124,8 +128,11 @@ async fn upgrade_cask(
 
     if dry_run {
         println!(
-            "Would upgrade {} from {} to {}",
-            cask_name, installed_version, latest_version
+            "{} {}: {} → {}",
+            style("(cask)").dim(),
+            style(cask_name).white(),
+            style(installed_version).dim(),
+            style(latest_version).green()
         );
         let elapsed = start.elapsed();
         println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
