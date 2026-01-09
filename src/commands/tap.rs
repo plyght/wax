@@ -56,8 +56,8 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
                 for tap in taps {
                     println!(
                         "{} {}",
-                        style(&tap.full_name).white(),
-                        style(&tap.url).dim()
+                        style(&tap.full_name).magenta(),
+                        style(&tap.url).cyan()
                     );
                 }
             }

@@ -58,12 +58,12 @@ pub async fn list() -> Result<()> {
             if *from_source {
                 println!(
                     "{} {} {}",
-                    style(&package).white(),
+                    style(package).magenta(),
                     style(&version_str).dim(),
-                    style("(source)").dim()
+                    style("(source)").yellow()
                 );
             } else {
-                println!("{} {}", style(&package).white(), style(&version_str).dim());
+                println!("{} {}", style(package).magenta(), style(&version_str).dim());
             }
         }
     }
@@ -75,9 +75,9 @@ pub async fn list() -> Result<()> {
         for (cask_name, cask) in cask_list {
             println!(
                 "{} {} {}",
-                style(cask_name).white(),
+                style(cask_name).magenta(),
                 style(&cask.version).dim(),
-                style("(cask)").dim()
+                style("(cask)").yellow()
             );
         }
     }

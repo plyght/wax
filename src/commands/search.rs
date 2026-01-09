@@ -127,13 +127,13 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
         if desc.is_empty() {
             println!(
                 "{} · {}",
-                style(&formula.name).white(),
+                style(&formula.name).magenta(),
                 style(&formula.versions.stable).dim()
             );
         } else {
             println!(
                 "{} · {}",
-                style(&formula.name).white(),
+                style(&formula.name).magenta(),
                 style(&formula.versions.stable).dim()
             );
             println!("  {}", desc);
@@ -145,13 +145,13 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
         if desc.is_empty() {
             println!(
                 "{} · {}",
-                style(&formula.full_name).white(),
+                style(&formula.full_name).magenta(),
                 style(&formula.versions.stable).dim()
             );
         } else {
             println!(
                 "{} · {}",
-                style(&formula.full_name).white(),
+                style(&formula.full_name).magenta(),
                 style(&formula.versions.stable).dim()
             );
             println!("  {}", desc);
@@ -160,17 +160,18 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
 
     for cask in &cask_matches {
         let desc = cask.desc.as_deref().unwrap_or("");
-        let cask_label = format!("{} (cask)", cask.token);
         if desc.is_empty() {
             println!(
-                "{} · {}",
-                style(&cask_label).white(),
+                "{} {} · {}",
+                style(&cask.token).magenta(),
+                style("(cask)").yellow(),
                 style(&cask.version).dim()
             );
         } else {
             println!(
-                "{} · {}",
-                style(&cask_label).white(),
+                "{} {} · {}",
+                style(&cask.token).magenta(),
+                style("(cask)").yellow(),
                 style(&cask.version).dim()
             );
             println!("  {}", desc);

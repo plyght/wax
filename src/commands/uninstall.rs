@@ -51,7 +51,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
     if !dependents.is_empty() {
         println!(
             "{} {} is a dependency of:",
-            style("⚠").yellow().bold(),
+            style("⚠").yellow().magenta(),
             formula_name
         );
         for dep in &dependents {
@@ -94,7 +94,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
 
     println!(
         "- {}@{}",
-        style(formula_name).white(),
+        style(formula_name).magenta(),
         style(&package.version).dim()
     );
 
@@ -143,7 +143,7 @@ async fn uninstall_cask(
         "pkg" => {
             println!(
                 "{} PKG uninstallation not fully supported - you may need to manually remove files",
-                style("⚠").yellow().bold()
+                style("⚠").yellow().magenta()
             );
         }
         _ => {
@@ -166,9 +166,9 @@ async fn uninstall_cask(
 
     println!(
         "- {}@{} {}",
-        style(cask_name).white(),
+        style(cask_name).magenta(),
         style(&cask.version).dim(),
-        style("(cask)").dim()
+        style("(cask)").yellow()
     );
 
     let elapsed = start.elapsed();

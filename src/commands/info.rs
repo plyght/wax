@@ -46,7 +46,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     println!();
     println!(
         "{} · {}",
-        style(&formula.name).white(),
+        style(&formula.name).magenta(),
         style(&formula.versions.stable).dim()
     );
 
@@ -55,7 +55,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     }
 
     println!();
-    println!("{}", formula.homepage);
+    println!("{}", style(&formula.homepage).cyan());
 
     if let Some(deps) = &formula.dependencies {
         if !deps.is_empty() {
@@ -121,9 +121,9 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
     println!();
     println!(
         "{} · {} {}",
-        style(display_name).white(),
+        style(display_name).magenta(),
         style(&cask.version).dim(),
-        style("(cask)").dim()
+        style("(cask)").yellow()
     );
 
     if let Some(desc) = &cask.desc {
@@ -131,10 +131,10 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
     }
 
     println!();
-    println!("{}", cask.homepage);
+    println!("{}", style(&cask.homepage).cyan());
 
     println!();
-    println!("{}", style(&cask.url).dim());
+    println!("{}", style(&cask.url).cyan());
 
     if let Some(artifacts) = &cask.artifacts {
         let artifact_types: Vec<String> = artifacts

@@ -43,7 +43,7 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
     if installed_version == latest_version {
         println!(
             "{} {}@{} is already up to date",
-            style("✓").green().bold(),
+            style("✓").green().magenta(),
             formula_name,
             installed_version
         );
@@ -55,7 +55,7 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
     if dry_run {
         println!(
             "{}: {} → {}",
-            style(formula_name).white(),
+            style(formula_name).magenta(),
             style(installed_version).dim(),
             style(latest_version).green()
         );
@@ -117,7 +117,7 @@ async fn upgrade_cask(
     if installed_version == latest_version {
         println!(
             "{} {}@{} is already up to date",
-            style("✓").green().bold(),
+            style("✓").green().magenta(),
             cask_name,
             installed_version
         );
@@ -129,8 +129,8 @@ async fn upgrade_cask(
     if dry_run {
         println!(
             "{} {}: {} → {}",
-            style("(cask)").dim(),
-            style(cask_name).white(),
+            style("(cask)").yellow(),
+            style(cask_name).magenta(),
             style(installed_version).dim(),
             style(latest_version).green()
         );

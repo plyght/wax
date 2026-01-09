@@ -113,9 +113,9 @@ async fn install_from_source_task(
     println!();
     println!(
         "+ {}@{} {}",
-        style(&formula.name).white(),
+        style(&formula.name).magenta(),
         style(version).dim(),
-        style("(source)").dim()
+        style("(source)").yellow()
     );
 
     Ok(())
@@ -146,7 +146,7 @@ pub async fn install(
             if detected == InstallMode::User {
                 println!(
                     "{} No write access to system directory, defaulting to per-user installation",
-                    style("ℹ").blue().bold()
+                    style("ℹ").blue().magenta()
                 );
                 println!(
                     "  Install location: {}",
@@ -429,7 +429,7 @@ pub async fn install(
         };
         state.add(package).await?;
 
-        println!("+ {}@{}", style(&name).white(), style(&version).dim());
+        println!("+ {}@{}", style(&name).magenta(), style(&version).dim());
     }
 
     let elapsed = start.elapsed();
@@ -579,9 +579,9 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     if !installed_binaries.is_empty() {
         println!(
             "+ {}@{} {}",
-            console::style(cask_name).white(),
+            console::style(cask_name).magenta(),
             console::style(&cask.version).dim(),
-            console::style("(cask)").dim()
+            console::style("(cask)").yellow()
         );
         println!("  with binaries:");
         for binary in installed_binaries {
@@ -590,9 +590,9 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     } else {
         println!(
             "+ {}@{} {}",
-            console::style(cask_name).white(),
+            console::style(cask_name).magenta(),
             console::style(&cask.version).dim(),
-            console::style("(cask)").dim()
+            console::style("(cask)").yellow()
         );
     }
 
@@ -649,20 +649,20 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     if !already_installed.is_empty() {
         println!(
             "{} Already installed: {}",
-            style("ℹ").blue().bold(),
+            style("ℹ").blue().magenta(),
             already_installed.join(", ")
         );
     }
 
     if !errors.is_empty() {
         for (cask, err) in &errors {
-            eprintln!("{} {}: {}", style("✗").red().bold(), cask, err);
+            eprintln!("{} {}: {}", style("✗").red().magenta(), cask, err);
         }
     }
 
     if to_install.is_empty() {
         if errors.is_empty() {
-            println!("{} Nothing to install", style("✓").green().bold());
+            println!("{} Nothing to install", style("✓").green().magenta());
         }
         return if errors.is_empty() {
             Ok(())
@@ -675,7 +675,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
 
     println!(
         "{} Installing {} {}",
-        style("→").cyan().bold(),
+        style("→").cyan().magenta(),
         to_install.len(),
         if to_install.len() == 1 {
             "cask"
@@ -686,7 +686,10 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     println!("  Casks: {}", to_install.join(", "));
 
     if dry_run {
-        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        println!(
+            "\n{} Dry run - no changes made",
+            style("✓").green().magenta()
+        );
         return Ok(());
     }
 
@@ -699,7 +702,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
             Err(e) => {
                 eprintln!(
                     "{} Failed to install {}: {}",
-                    style("✗").red().bold(),
+                    style("✗").red().magenta(),
                     cask_name,
                     e
                 );
@@ -725,7 +728,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     } else {
         println!(
             "{} Installed {}/{} casks in {:.1}s ({} failed)",
-            style("⚠").yellow().bold(),
+            style("⚠").yellow().magenta(),
             installed_count,
             to_install.len(),
             elapsed.as_secs_f64(),
