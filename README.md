@@ -9,7 +9,9 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 ## Features
 
 - **Lightning-Fast Queries**: Search and info commands execute in <100ms (16-20x faster than Homebrew)
+- **Intelligent Auto-Detection**: Automatically detects formulae vs casks - no need to specify `--cask` flags
 - **Parallel Operations**: Concurrent downloads with individual progress tracking for each package
+- **Full Cask Support**: Install, uninstall, upgrade, and manage GUI applications seamlessly
 - **Source Building**: Automatic fallback to source compilation when bottles unavailable, with support for Autotools, CMake, Meson, and Make
 - **Custom Tap Support**: Add, manage, and update third-party Homebrew taps for extended package availability
 - **Lockfile Support**: Reproducible environments via `wax.lock` with pinned versions
@@ -22,14 +24,14 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 ## Installation
 
 ```bash
+# Using Cargo (recommended)
+cargo install waxpkg
+
 # From source
-git clone https://github.com/yourusername/wax.git
+git clone https://github.com/plyght/wax.git
 cd wax
 cargo build --release
 sudo cp target/release/wax /usr/local/bin/
-
-# Using Cargo
-cargo install wax-pm
 ```
 
 ## Usage
@@ -42,23 +44,26 @@ wax update
 wax search nginx
 wax s nginx          # shorthand
 
-# Show package details
+# Show package details (auto-detects formulae or casks)
 wax info nginx
+wax info iterm2
 wax show nginx       # alias
 
 # List installed packages
 wax list
 wax ls               # shorthand
 
-# Install formulae
+# Install packages (auto-detects formulae or casks)
 wax install tree
+wax install iterm2
 wax i tree           # shorthand
 wax install tree --user    # to ~/.local/wax
 wax install tree --global  # to system directory
 wax install tree --build-from-source  # force source build
 
-# Install casks (GUI applications)
-wax install --cask iterm2
+# Install casks with shorthand
+wax cask iterm2
+wax c firefox
 
 # Manage custom taps
 wax tap add user/repo
@@ -66,12 +71,14 @@ wax tap list
 wax tap update user/repo
 wax tap remove user/repo
 
-# Uninstall packages
+# Uninstall packages (auto-detects formulae or casks)
 wax uninstall tree
+wax uninstall iterm2
 wax rm tree          # shorthand
 
-# Upgrade to latest version
+# Upgrade packages (auto-detects formulae or casks)
 wax upgrade nginx
+wax upgrade iterm2
 wax up nginx         # shorthand
 
 # Generate lockfile
