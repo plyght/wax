@@ -20,19 +20,19 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive", "cargo"] }
 
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream", "gzip", "brotli"] }
+reqwest = { version = "0.13", features = ["json", "stream", "gzip", "brotli"] }
 futures = "0.3"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "0.9"
 
-indicatif = "0.17"
-console = "0.15"
-inquire = "0.7"
+indicatif = "0.18"
+console = "0.16"
+inquire = "0.9"
 
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -43,6 +43,6 @@ flate2 = "1"
 sha2 = "0.10"
 tempfile = "3"
 
-directories = "5"
+directories = "6"
 dunce = "1"
 num_cpus = "1"
