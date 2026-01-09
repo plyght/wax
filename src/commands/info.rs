@@ -43,43 +43,56 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
         .find(|f| f.name == name || f.full_name == name)
         .unwrap();
 
+    println!();
     println!(
-        "{}: {}",
-        style(&formula.name).bold().green(),
+        "{} · {}",
+        style(&formula.name).dim(),
         formula.versions.stable
     );
-    println!("{}", formula.desc.as_deref().unwrap_or("No description"));
-    println!("{} {}", style("Homepage:").bold(), formula.homepage);
+
+    if let Some(desc) = &formula.desc {
+        println!("{}", desc);
+    }
+
+    println!();
+    println!("{}", formula.homepage);
 
     if let Some(deps) = &formula.dependencies {
         if !deps.is_empty() {
-            println!("{} {}", style("Dependencies:").bold(), deps.join(", "));
+            println!();
+            println!("{}", style("dependencies").dim());
+            for dep in deps {
+                println!("  {}", dep);
+            }
         }
     }
 
     if let Some(build_deps) = &formula.build_dependencies {
         if !build_deps.is_empty() {
-            println!(
-                "{} {}",
-                style("Build dependencies:").bold(),
-                build_deps.join(", ")
-            );
+            println!();
+            println!("{}", style("build dependencies").dim());
+            for dep in build_deps {
+                println!("  {}", dep);
+            }
         }
     }
 
-    println!(
-        "{} {}",
-        style("Bottle:").bold(),
-        if formula.versions.bottle { "Yes" } else { "No" }
-    );
+    if !formula.versions.bottle {
+        println!();
+        println!(
+            "{}",
+            style("⚠ No precompiled bottle available (will build from source)").yellow()
+        );
+    }
 
     if let Some(installed) = &formula.installed {
         if !installed.is_empty() {
+            println!();
             let versions: Vec<_> = installed.iter().map(|i| i.version.as_str()).collect();
             println!(
                 "{} {}",
-                style("Installed:").bold().cyan(),
-                versions.join(", ")
+                style("✓").green(),
+                style(format!("installed: {}", versions.join(", "))).dim()
             );
         }
     }
@@ -105,15 +118,23 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
 
     let display_name = cask.name.first().unwrap_or(&cask.token);
 
+    println!();
     println!(
-        "{}: {} {}",
-        style(display_name).bold().green(),
+        "{} · {} {}",
+        style(display_name).dim(),
         cask.version,
         style("(cask)").dim()
     );
-    println!("{}", cask.desc.as_deref().unwrap_or("No description"));
-    println!("{} {}", style("Homepage:").bold(), cask.homepage);
-    println!("{} {}", style("URL:").bold(), cask.url);
+
+    if let Some(desc) = &cask.desc {
+        println!("{}", desc);
+    }
+
+    println!();
+    println!("{}", cask.homepage);
+
+    println!();
+    println!("{}", style(&cask.url).dim());
 
     if let Some(artifacts) = &cask.artifacts {
         let artifact_types: Vec<String> = artifacts
@@ -129,11 +150,11 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
             .collect();
 
         if !artifact_types.is_empty() {
-            println!(
-                "{} {}",
-                style("Artifacts:").bold(),
-                artifact_types.join(", ")
-            );
+            println!();
+            println!("{}", style("artifacts").dim());
+            for artifact_type in artifact_types {
+                println!("  {}", artifact_type);
+            }
         }
     }
 
@@ -141,10 +162,11 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
     let installed_casks = state.load().await?;
 
     if let Some(installed) = installed_casks.get(name) {
+        println!();
         println!(
             "{} {}",
-            style("Installed:").bold().cyan(),
-            installed.version
+            style("✓").green(),
+            style(format!("installed: {}", installed.version)).dim()
         );
     }
 

@@ -1,6 +1,5 @@
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
-use crate::ui::print_info;
 use console::style;
 use std::path::PathBuf;
 use tracing::instrument;
@@ -36,45 +35,33 @@ pub async fn list() -> Result<()> {
     }
 
     if packages.is_empty() && installed_casks.is_empty() {
-        print_info("No packages installed");
+        println!("No packages installed");
         return Ok(());
     }
+
+    println!();
 
     if !packages.is_empty() {
         packages.sort_by(|a, b| a.0.cmp(&b.0));
 
-        println!("\n{}", style("Installed Formulae").bold().green());
-        println!("{}", "─".repeat(80));
-
         for (package, versions) in &packages {
             let version_str = versions.join(", ");
-            println!("{:<30} {}", style(package).cyan(), version_str);
+            println!("{} {}", style(&package).dim(), style(&version_str).dim());
         }
-
-        println!("\n{} formulae installed", packages.len());
     }
 
     if !installed_casks.is_empty() {
         let mut cask_list: Vec<_> = installed_casks.iter().collect();
         cask_list.sort_by_key(|(name, _)| *name);
 
-        println!("\n{}", style("Installed Casks").bold().green());
-        println!("{}", "─".repeat(80));
-
         for (cask_name, cask) in cask_list {
             println!(
-                "{:<30} {}",
-                style(format!("{} {}", cask_name, style("(cask)").dim())).cyan(),
-                cask.version
+                "{} {} {}",
+                style(cask_name).dim(),
+                style(&cask.version).dim(),
+                style("(cask)").dim()
             );
         }
-
-        println!("\n{} casks installed", installed_casks.len());
-    }
-
-    let total = packages.len() + installed_casks.len();
-    if total > 0 && !packages.is_empty() && !installed_casks.is_empty() {
-        println!("\n{} total packages installed", total);
     }
 
     Ok(())

@@ -3,7 +3,6 @@ use crate::cache::Cache;
 use crate::error::{Result, WaxError};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::lockfile::Lockfile;
-use crate::ui::print_success;
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::Arc;
@@ -17,33 +16,13 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     let lockfile_path = Lockfile::default_path();
 
-    println!(
-        "{} Loading lockfile from {}...",
-        style("→").cyan().bold(),
-        lockfile_path.display()
-    );
-
     let lockfile = Lockfile::load(&lockfile_path).await?;
     let package_count = lockfile.packages.len();
 
     if package_count == 0 {
-        println!(
-            "{} Lockfile is empty. Nothing to sync.",
-            style("ℹ").blue().bold()
-        );
+        println!("Lockfile is empty");
         return Ok(());
     }
-
-    println!(
-        "{} Syncing {} {} from lockfile...",
-        style("→").cyan().bold(),
-        package_count,
-        if package_count == 1 {
-            "package"
-        } else {
-            "packages"
-        }
-    );
 
     let formulae = cache.load_formulae().await?;
     let state = InstallState::new()?;
@@ -63,24 +42,15 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         if needs_install {
             packages_to_install.push((name.clone(), lock_pkg.clone()));
         } else {
-            println!("  {} {} already synced", style("✓").green(), name);
+            println!("✓ {} already synced", name);
         }
     }
 
     if packages_to_install.is_empty() {
-        print_success("All packages already synced");
         return Ok(());
     }
 
-    println!(
-        "  Installing {} {}",
-        packages_to_install.len(),
-        if packages_to_install.len() == 1 {
-            "package"
-        } else {
-            "packages"
-        }
-    );
+    let package_count = packages_to_install.len();
 
     let multi = MultiProgress::new();
     let downloader = Arc::new(BottleDownloader::new());
@@ -103,11 +73,8 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
         if lock_pkg.bottle != current_platform {
             println!(
-                "  {} Platform mismatch for {}: lockfile specifies {} but current is {}",
-                style("⚠").yellow(),
-                name,
-                lock_pkg.bottle,
-                current_platform
+                "⚠ platform mismatch for {}: {} → {}",
+                name, lock_pkg.bottle, current_platform
             );
         }
 
@@ -136,11 +103,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
         let pb = multi.add(ProgressBar::new(0));
         let style = ProgressStyle::default_bar()
-            .template("{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
+            .template("{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
             .unwrap()
             .progress_chars("█▓▒░ ");
         pb.set_style(style);
-        pb.set_prefix(format!("[>] {}", name));
+        pb.set_message(name.clone());
 
         let name_clone = name.clone();
         let task = tokio::spawn(async move {
@@ -151,8 +118,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
                 .join(format!("{}-{}.tar.gz", name_clone, version));
 
             downloader.download(&url, &tarball_path, Some(&pb)).await?;
-            pb.set_prefix(format!("[✓] {}", name_clone));
-            pb.finish();
+            pb.finish_and_clear();
 
             BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
 
@@ -182,20 +148,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     }
 
     let install_mode = InstallMode::detect();
-    if install_mode == InstallMode::User {
-        println!(
-            "{} Using per-user installation mode (no sudo required)",
-            style("ℹ").blue().bold()
-        );
-        println!(
-            "  Install location: {}",
-            style(install_mode.prefix().display()).cyan()
-        );
-    }
     install_mode.validate()?;
 
     let cellar = install_mode.cellar_path();
 
+    println!();
     for (name, version, platform, extract_dir) in extracted_packages {
         let formula_cellar = cellar.join(&name).join(&version);
         tokio::fs::create_dir_all(&formula_cellar).await?;
@@ -221,20 +178,22 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         };
         state.add(package).await?;
 
-        println!("{} Synced {}", style("✓").green().bold(), name);
+        println!("+ {}", style(&name).dim());
     }
 
     let elapsed = start.elapsed();
-    print_success(&format!(
-        "Synced {} {} in {:.1}s",
+
+    println!();
+    println!(
+        "{} {} synced [{:.2}ms]",
         package_count,
         if package_count == 1 {
             "package"
         } else {
             "packages"
         },
-        elapsed.as_secs_f64()
-    ));
+        elapsed.as_millis()
+    );
 
     Ok(())
 }

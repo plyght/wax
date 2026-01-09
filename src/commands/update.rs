@@ -1,7 +1,7 @@
 use crate::api::ApiClient;
 use crate::cache::{Cache, CacheMetadata};
 use crate::error::Result;
-use crate::ui::{create_spinner, print_success};
+use crate::ui::create_spinner;
 use tracing::instrument;
 
 #[instrument(skip(api_client, cache))]
@@ -90,22 +90,23 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
 
     let elapsed = start.elapsed();
     let status = if formulae_fetch.not_modified && casks_fetch.not_modified {
-        "Already up-to-date"
+        "up to date"
     } else if formulae_fetch.not_modified {
-        "Updated casks only"
+        "updated casks"
     } else if casks_fetch.not_modified {
-        "Updated formulae only"
+        "updated formulae"
     } else {
-        "Updated"
+        "updated"
     };
 
-    print_success(&format!(
-        "{} - {} formulae and {} casks in {:.2}s",
+    println!();
+    println!(
+        "{} · {} formulae, {} casks [{:.2}ms]",
         status,
         formula_count,
         cask_count,
-        elapsed.as_secs_f64()
-    ));
+        elapsed.as_millis()
+    );
 
     Ok(())
 }

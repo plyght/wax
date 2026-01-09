@@ -1,4 +1,4 @@
-use console::{style, Term};
+use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
@@ -16,11 +16,5 @@ pub fn create_spinner(message: &str) -> ProgressBar {
 }
 
 pub fn print_success(message: &str) {
-    let term = Term::stdout();
-    let _ = term.write_line(&format!("{} {}", style("✓").green().bold(), message));
-}
-
-pub fn print_info(message: &str) {
-    let term = Term::stdout();
-    let _ = term.write_line(&format!("{} {}", style("ℹ").blue().bold(), message));
+    println!("{} {}", style("✓").green().bold(), message);
 }

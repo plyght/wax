@@ -1,6 +1,5 @@
 use crate::error::Result;
 use crate::tap::TapManager;
-use crate::ui::print_success;
 use console::style;
 
 pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
@@ -11,60 +10,51 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
         Some(crate::TapAction::Add { tap }) => {
             let parts: Vec<&str> = tap.split('/').collect();
             if parts.len() != 2 {
-                eprintln!(
-                    "{} Invalid tap format. Use: user/repo",
-                    style("✗").red().bold()
-                );
+                eprintln!("✗ Invalid tap format. Use: user/repo");
                 return Ok(());
             }
 
             let (user, repo) = (parts[0], parts[1]);
 
-            println!("{} Adding tap: {}", style("→").cyan().bold(), tap);
             manager.add_tap(user, repo).await?;
-            print_success(&format!("Added tap {}", tap));
+            println!();
+            println!("+ tap {}", tap);
         }
         Some(crate::TapAction::Remove { tap }) => {
             let parts: Vec<&str> = tap.split('/').collect();
             if parts.len() != 2 {
-                eprintln!(
-                    "{} Invalid tap format. Use: user/repo",
-                    style("✗").red().bold()
-                );
+                eprintln!("✗ Invalid tap format. Use: user/repo");
                 return Ok(());
             }
 
             let (user, repo) = (parts[0], parts[1]);
 
-            println!("{} Removing tap: {}", style("→").cyan().bold(), tap);
             manager.remove_tap(user, repo).await?;
-            print_success(&format!("Removed tap {}", tap));
+            println!();
+            println!("- tap {}", tap);
         }
         Some(crate::TapAction::Update { tap }) => {
             let parts: Vec<&str> = tap.split('/').collect();
             if parts.len() != 2 {
-                eprintln!(
-                    "{} Invalid tap format. Use: user/repo",
-                    style("✗").red().bold()
-                );
+                eprintln!("✗ Invalid tap format. Use: user/repo");
                 return Ok(());
             }
 
             let (user, repo) = (parts[0], parts[1]);
 
-            println!("{} Updating tap: {}", style("→").cyan().bold(), tap);
             manager.update_tap(user, repo).await?;
-            print_success(&format!("Updated tap {}", tap));
+            println!();
+            println!("✓ updated tap {}", tap);
         }
         Some(crate::TapAction::List) | None => {
             let taps = manager.list_taps();
 
             if taps.is_empty() {
-                println!("{} No custom taps installed", style("ℹ").blue().bold());
+                println!("No custom taps");
             } else {
-                println!("{} Installed taps:", style("📦").cyan().bold());
+                println!();
                 for tap in taps {
-                    println!("  {} ({})", style(&tap.full_name).green(), tap.url);
+                    println!("{} {}", style(&tap.full_name).dim(), style(&tap.url).dim());
                 }
             }
         }

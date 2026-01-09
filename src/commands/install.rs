@@ -109,7 +109,8 @@ async fn install_from_source_task(
     state.add(package).await?;
 
     spinner.finish_with_message(format!("Built and installed {}", formula.name));
-    println!("{} Installed {}", style("✓").green().bold(), formula.name);
+    println!();
+    println!("+ {}", style(&formula.name).dim());
 
     Ok(())
 }
@@ -224,16 +225,16 @@ pub async fn install(
     }
 
     if !already_installed.is_empty() {
-        println!(
-            "{} Already installed: {}",
-            style("ℹ").blue().bold(),
-            already_installed.join(", ")
-        );
+        println!();
+        for pkg in &already_installed {
+            println!("✓ {} is already installed", pkg);
+        }
     }
 
     if !errors.is_empty() {
+        println!();
         for (pkg, err) in &errors {
-            eprintln!("{} {}: {}", style("✗").red().bold(), pkg, err);
+            eprintln!("✗ {}: {}", pkg, err);
         }
         if all_to_install.is_empty() {
             return Err(WaxError::InstallError(
@@ -243,7 +244,6 @@ pub async fn install(
     }
 
     if all_to_install.is_empty() {
-        println!("{} Nothing to install", style("✓").green().bold());
         return Ok(());
     }
 
@@ -255,34 +255,22 @@ pub async fn install(
         .join(", ");
 
     if all_to_install.len() > package_names.len() {
+        println!();
         println!(
-            "{} Installing {} with {} total {} (including dependencies)",
-            style("→").cyan().bold(),
+            "installing {} + {} {}",
             package_list,
-            all_to_install.len(),
-            if all_to_install.len() == 1 {
-                "package"
+            all_to_install.len() - package_names.len(),
+            if all_to_install.len() - package_names.len() == 1 {
+                "dependency"
             } else {
-                "packages"
+                "dependencies"
             }
         );
-        println!("  All packages: {}", all_to_install.join(", "));
-    } else {
-        println!(
-            "{} Installing {} {}",
-            style("→").cyan().bold(),
-            all_to_install.len(),
-            if all_to_install.len() == 1 {
-                "package"
-            } else {
-                "packages"
-            }
-        );
-        println!("  Packages: {}", all_to_install.join(", "));
     }
 
     if dry_run {
-        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        println!();
+        println!("dry run - no changes made");
         return Ok(());
     }
 
@@ -319,11 +307,8 @@ pub async fn install(
 
         if !has_bottle || build_from_source {
             if build_from_source && has_bottle {
-                println!(
-                    "{} Building {} from source (--build-from-source specified)",
-                    style("→").cyan().bold(),
-                    pkg.name
-                );
+                println!();
+                println!("building {} from source", pkg.name);
             }
 
             install_from_source_task(pkg.clone(), &cellar, install_mode, &state, &platform).await?;
@@ -357,11 +342,11 @@ pub async fn install(
 
         let pb = multi.add(ProgressBar::new(0));
         let style = ProgressStyle::default_bar()
-            .template("{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
+            .template("{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
             .unwrap()
             .progress_chars("█▓▒░ ");
         pb.set_style(style);
-        pb.set_prefix(format!("[>] {}", name));
+        pb.set_message(name.clone());
 
         let task = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
@@ -369,8 +354,7 @@ pub async fn install(
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
             downloader.download(&url, &tarball_path, Some(&pb)).await?;
-            pb.set_prefix(format!("[✓] {}", name));
-            pb.finish();
+            pb.finish_and_clear();
 
             BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
 
@@ -401,27 +385,18 @@ pub async fn install(
     }
 
     if !failed_packages.is_empty() {
+        println!();
         for err in &failed_packages {
-            eprintln!("{} {}", style("✗").red().bold(), err);
+            eprintln!("✗ {}", err);
         }
         if extracted_packages.is_empty() {
             return Err(WaxError::InstallError(
                 "All package downloads failed".to_string(),
             ));
         }
-        println!(
-            "{} Continuing with {} successful {} ({}  failed)",
-            style("⚠").yellow().bold(),
-            extracted_packages.len(),
-            if extracted_packages.len() == 1 {
-                "package"
-            } else {
-                "packages"
-            },
-            failed_packages.len()
-        );
     }
 
+    println!();
     for (name, version, extract_dir) in extracted_packages {
         let formula_cellar = cellar.join(&name).join(&version);
         tokio::fs::create_dir_all(&formula_cellar).await?;
@@ -447,21 +422,22 @@ pub async fn install(
         };
         state.add(package).await?;
 
-        println!("{} Installed {}", style("✓").green().bold(), name);
+        println!("+ {}", style(&name).dim());
     }
 
     let elapsed = start.elapsed();
-    let package_summary = if package_names.len() == 1 {
-        package_names[0].clone()
-    } else {
-        format!("{} packages", package_names.len())
-    };
 
-    print_success(&format!(
-        "Installed {} in {:.1}s",
-        package_summary,
-        elapsed.as_secs_f64()
-    ));
+    println!();
+    println!(
+        "{} {} installed [{:.2}ms]",
+        package_names.len(),
+        if package_names.len() == 1 {
+            "package"
+        } else {
+            "packages"
+        },
+        elapsed.as_millis()
+    );
 
     Ok(())
 }
@@ -498,11 +474,8 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     let installed_casks = state.load().await?;
 
     if installed_casks.contains_key(cask_name) {
-        println!(
-            "{} {} is already installed",
-            style("ℹ").blue().bold(),
-            cask_name
-        );
+        println!();
+        println!("✓ {} is already installed", cask_name);
         return Ok(());
     }
 
@@ -512,7 +485,8 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     let display_name = cask.name.first().unwrap_or(&cask.token);
 
     if dry_run {
-        println!("\n{} Dry run - no changes made", style("✓").green().bold());
+        println!();
+        println!("dry run - no changes made");
         return Ok(());
     }
 
@@ -594,21 +568,18 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     let elapsed = start.elapsed();
 
-    println!("\nwax add v{}\n", env!("CARGO_PKG_VERSION"));
-
+    println!();
     if !installed_binaries.is_empty() {
-        println!(
-            "installed {}@{} (cask) with binaries:",
-            cask_name, cask.version
-        );
+        println!("+ {} (cask) with binaries:", cask_name);
         for binary in installed_binaries {
-            println!(" - {}", binary);
+            println!("  - {}", binary);
         }
     } else {
-        println!("installed {}@{} (cask)", cask_name, cask.version);
+        println!("+ {} (cask)", cask_name);
     }
 
-    println!("\n1 cask installed [{:.2}s]", elapsed.as_secs_f64());
+    println!();
+    println!("1 cask installed [{:.2}ms]", elapsed.as_millis());
 
     Ok(())
 }

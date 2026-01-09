@@ -2,7 +2,6 @@ use crate::api::ApiClient;
 use crate::cache::Cache;
 use crate::commands::update;
 use crate::error::Result;
-use crate::ui::print_info;
 use console::style;
 use tracing::instrument;
 
@@ -115,33 +114,43 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
     let tap_matches: Vec<_> = tap_matches.iter().take(10).map(|(f, _)| f).collect();
     let cask_matches: Vec<_> = cask_matches.iter().take(20).map(|(c, _)| c).collect();
 
-    if !formula_matches.is_empty() {
-        println!("\n==> Formulae");
-        for formula in &formula_matches {
-            let desc = formula.desc.as_deref().unwrap_or("No description");
-            println!("{:<30} {}", formula.name, desc);
+    let total = formula_matches.len() + tap_matches.len() + cask_matches.len();
+
+    if total == 0 {
+        println!("No results for '{}'", query);
+        return Ok(());
+    }
+
+    println!();
+    for formula in &formula_matches {
+        let desc = formula.desc.as_deref().unwrap_or("");
+        if desc.is_empty() {
+            println!("{}", style(&formula.name).dim());
+        } else {
+            println!("{} {}", style(&formula.name).dim(), style("·").dim());
+            println!("  {}", desc);
         }
     }
 
-    if !tap_matches.is_empty() {
-        println!("\n==> From Custom Taps");
-        for formula in &tap_matches {
-            let desc = formula.desc.as_deref().unwrap_or("No description");
-            println!("{:<30} {}", formula.full_name, desc);
+    for formula in &tap_matches {
+        let desc = formula.desc.as_deref().unwrap_or("");
+        if desc.is_empty() {
+            println!("{}", style(&formula.full_name).dim());
+        } else {
+            println!("{} {}", style(&formula.full_name).dim(), style("·").dim());
+            println!("  {}", desc);
         }
     }
 
-    if !cask_matches.is_empty() {
-        println!("\n==> Casks");
-        for cask in &cask_matches {
-            let desc = cask.desc.as_deref().unwrap_or("No description");
-            let cask_label = format!("{} {}", cask.token, style("(cask)").dim());
-            println!("{:<30} {}", cask_label, desc);
+    for cask in &cask_matches {
+        let desc = cask.desc.as_deref().unwrap_or("");
+        let cask_label = format!("{} {}", cask.token, style("(cask)").dim());
+        if desc.is_empty() {
+            println!("{}", style(&cask_label).dim());
+        } else {
+            println!("{} {}", style(&cask_label).dim(), style("·").dim());
+            println!("  {}", desc);
         }
-    }
-
-    if formula_matches.is_empty() && tap_matches.is_empty() && cask_matches.is_empty() {
-        print_info(&format!("No formulae or casks matching '{}'", query));
     }
 
     Ok(())
