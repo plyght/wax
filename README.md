@@ -16,6 +16,7 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 - **Custom Tap Support**: Add, manage, and update third-party Homebrew taps for extended package availability
 - **Lockfile Support**: Reproducible environments via `wax.lock` with pinned versions
 - **Native Homebrew Compatibility**: Uses official formulae, bottles, and casks from Homebrew's JSON API
+- **Homebrew Interoperability**: Works standalone or alongside Homebrew without conflicts - installation order independent
 - **Modern Terminal UI**: Real-time progress bars, clean output, and responsive feedback
 - **Minimal Resource Usage**: Single compiled binary with async I/O, no Ruby runtime overhead
 - **Smart Caching**: Local formula index for offline search and instant lookups
@@ -141,7 +142,7 @@ tree = { version = "2.1.1", bottle = "arm64_ventura" }
 
 **Async-First**: Uses tokio runtime for all I/O operations. Parallel downloads with configurable concurrency limits (default 8 simultaneous).
 
-**Homebrew Coexistence**: Installs to same Cellar structure and reads existing Homebrew-installed packages. Can be used alongside `brew` without conflicts.
+**Homebrew Interoperability**: Designed to coexist peacefully with Homebrew. Installs to the same Cellar structure using architecture-appropriate standard paths (`/opt/homebrew` on Apple Silicon, `/usr/local` on Intel). Detects and respects existing Homebrew installations, allowing both package managers to operate independently or simultaneously without conflicts. Installation order does not matter - wax functions identically whether installed before or after Homebrew.
 
 ## Development
 
