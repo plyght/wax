@@ -338,6 +338,96 @@ impl CaskInstaller {
         info!("Successfully installed {}", app_name);
         Ok(())
     }
+
+    #[instrument(skip(self))]
+    pub async fn install_tarball(&self, tarball_path: &Path, binary_name: &str) -> Result<()> {
+        info!("Installing tarball: {:?}", tarball_path);
+
+        let temp_dir = tempfile::tempdir()?;
+
+        let tar_output = tokio::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(tarball_path)
+            .arg("-C")
+            .arg(temp_dir.path())
+            .output()
+            .await?;
+
+        if !tar_output.status.success() {
+            return Err(WaxError::InstallError(format!(
+                "Failed to extract tarball: {}",
+                String::from_utf8_lossy(&tar_output.stderr)
+            )));
+        }
+
+        let bin_dest = if std::path::Path::new("/usr/local/bin").exists() {
+            std::path::Path::new("/usr/local/bin")
+        } else {
+            let home = dirs::home_dir()
+                .ok_or_else(|| WaxError::InstallError("Cannot determine home directory".into()))?;
+            let local_bin = home.join(".local").join("bin");
+            tokio::fs::create_dir_all(&local_bin).await?;
+            Box::leak(Box::new(local_bin))
+        };
+
+        let mut found_binary = None;
+        let mut entries = tokio::fs::read_dir(temp_dir.path()).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let metadata = tokio::fs::metadata(&path).await?;
+
+            if metadata.is_file() && path.file_name().and_then(|s| s.to_str()) == Some(binary_name)
+            {
+                found_binary = Some(path);
+                break;
+            }
+
+            if metadata.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = metadata.permissions();
+                    if perms.mode() & 0o111 != 0 {
+                        found_binary = Some(path);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let binary_source = found_binary.ok_or_else(|| {
+            WaxError::InstallError("Could not find executable binary in tarball".to_string())
+        })?;
+
+        let binary_dest_path = bin_dest.join(binary_name);
+
+        if binary_dest_path.exists() {
+            return Err(WaxError::InstallError(format!(
+                "{} already exists in {}",
+                binary_name,
+                bin_dest.display()
+            )));
+        }
+
+        tokio::fs::copy(&binary_source, &binary_dest_path).await?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = tokio::fs::metadata(&binary_dest_path).await?.permissions();
+            perms.set_mode(0o755);
+            tokio::fs::set_permissions(&binary_dest_path, perms).await?;
+        }
+
+        info!(
+            "Successfully installed {} to {}",
+            binary_name,
+            bin_dest.display()
+        );
+        println!("  Binary installed to: {}", binary_dest_path.display());
+
+        Ok(())
+    }
 }
 
 impl Default for CaskInstaller {
@@ -353,6 +443,8 @@ pub fn detect_artifact_type(url: &str) -> Option<&str> {
         Some("pkg")
     } else if url.ends_with(".zip") {
         Some("zip")
+    } else if url.ends_with(".tar.gz") {
+        Some("tar.gz")
     } else {
         None
     }

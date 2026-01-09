@@ -539,16 +539,27 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     CaskInstaller::verify_checksum(&download_path, &cask.sha256)?;
 
-    let app_name = if let Some(artifacts) = &cask.artifacts {
-        extract_app_name(artifacts).unwrap_or_else(|| format!("{}.app", display_name))
-    } else {
-        format!("{}.app", display_name)
-    };
-
     match artifact_type {
-        "dmg" => installer.install_dmg(&download_path, &app_name).await?,
+        "dmg" | "zip" => {
+            let app_name = if let Some(artifacts) = &cask.artifacts {
+                extract_app_name(artifacts).unwrap_or_else(|| format!("{}.app", display_name))
+            } else {
+                format!("{}.app", display_name)
+            };
+
+            if artifact_type == "dmg" {
+                installer.install_dmg(&download_path, &app_name).await?
+            } else {
+                installer.install_zip(&download_path, &app_name).await?
+            }
+        }
         "pkg" => installer.install_pkg(&download_path).await?,
-        "zip" => installer.install_zip(&download_path, &app_name).await?,
+        "tar.gz" => {
+            let binary_name = cask_name;
+            installer
+                .install_tarball(&download_path, binary_name)
+                .await?
+        }
         _ => {
             return Err(WaxError::InstallError(format!(
                 "Unsupported artifact type: {}",
