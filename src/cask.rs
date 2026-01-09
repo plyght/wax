@@ -118,6 +118,47 @@ impl CaskInstaller {
         }
     }
 
+    async fn detect_writable_bin_dir() -> Result<PathBuf> {
+        let candidates = vec![
+            crate::bottle::homebrew_prefix().join("bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+        ];
+
+        for candidate in candidates {
+            if candidate.exists() && Self::is_dir_writable(&candidate).await {
+                debug!("Using writable bin directory: {:?}", candidate);
+                return Ok(candidate);
+            }
+        }
+
+        let home = dirs::home_dir()
+            .ok_or_else(|| WaxError::InstallError("Cannot determine home directory".into()))?;
+        let local_bin = home.join(".local").join("bin");
+        tokio::fs::create_dir_all(&local_bin).await?;
+        debug!("Using fallback bin directory: {:?}", local_bin);
+        Ok(local_bin)
+    }
+
+    async fn is_dir_writable(path: &Path) -> bool {
+        let test_file = path.join(".wax_write_test");
+        match tokio::fs::File::create(&test_file).await {
+            Ok(_) => {
+                let _ = tokio::fs::remove_file(&test_file).await;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn is_in_path(dir: &Path) -> bool {
+        if let Ok(path_env) = std::env::var("PATH") {
+            path_env.split(':').any(|p| Path::new(p) == dir)
+        } else {
+            false
+        }
+    }
+
     #[instrument(skip(self, progress))]
     pub async fn download_cask(
         &self,
@@ -360,15 +401,7 @@ impl CaskInstaller {
             )));
         }
 
-        let bin_dest = if std::path::Path::new("/usr/local/bin").exists() {
-            std::path::Path::new("/usr/local/bin")
-        } else {
-            let home = dirs::home_dir()
-                .ok_or_else(|| WaxError::InstallError("Cannot determine home directory".into()))?;
-            let local_bin = home.join(".local").join("bin");
-            tokio::fs::create_dir_all(&local_bin).await?;
-            Box::leak(Box::new(local_bin))
-        };
+        let bin_dest = Self::detect_writable_bin_dir().await?;
 
         let mut found_binary = None;
         let mut entries = tokio::fs::read_dir(temp_dir.path()).await?;
@@ -424,7 +457,13 @@ impl CaskInstaller {
             binary_name,
             bin_dest.display()
         );
-        println!("  Binary installed to: {}", binary_dest_path.display());
+        println!("  ✓ Binary installed to: {}", binary_dest_path.display());
+
+        if !Self::is_in_path(&bin_dest) {
+            println!("  ⚠ {} is not in your PATH", bin_dest.display());
+            println!("    Add to ~/.zshrc or ~/.bashrc:");
+            println!("      export PATH=\"{}:$PATH\"", bin_dest.display());
+        }
 
         Ok(())
     }
