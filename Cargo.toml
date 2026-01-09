@@ -1,10 +1,20 @@
 [package]
-name = "wax"
-version = "0.1.0"
+name = "waxpkg"
+version = "0.1.1"
 edition = "2021"
 authors = ["Wax Contributors"]
 description = "Fast Homebrew-compatible package manager"
 license = "MIT"
+repository = "https://github.com/plyght/wax"
+homepage = "https://github.com/plyght/wax"
+documentation = "https://docs.rs/waxpkg"
+readme = "README.md"
+keywords = ["package-manager", "homebrew", "macos", "cli", "installer"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "wax"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "cargo"] }

@@ -264,7 +264,7 @@ mod tests {
     fn test_extract_version_from_url() {
         let url = "https://github.com/example/tree/archive/refs/tags/2.2.1.tar.gz";
         let version = FormulaParser::extract_version_from_url(url);
-        assert_eq!(version, "1");
+        assert_eq!(version, "2.2.1");
     }
 
     #[test]
