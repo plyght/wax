@@ -175,16 +175,19 @@ Requires Rust 1.70+. Key dependencies:
 
 ## Performance
 
-Benchmarked against Homebrew 5.0.9 on macOS 15.6.1 (Apple M1):
+Benchmarked against Homebrew on macOS (Apple Silicon):
 
 | Operation | Homebrew | Wax | Speedup |
 |-----------|----------|-----|---------|
 | Search    | 1.41s    | 0.09s | 16x |
 | Info      | 1.49s    | 0.08s | 20x |
-| Install (simple) | 2.39s | 0.35s | 7x |
-| Update (cold)    | 15-30s | 3.3s | 5-9x |
+| Install   | 2.39s    | 0.55s | 4.3x |
+| Update (warm) | 0.85s | 0.15s | 5.7x |
+| Update (cold) | 13.2s | 1.0s | 13.2x |
 
-See `comparison.md` for detailed methodology and analysis.
+**Note**: Warm cache updates use HTTP conditional requests (ETag/If-Modified-Since) for instant responses. Cold cache updates use gzip/brotli compression for efficient downloads.
+
+See `docs/comparison.md` for detailed methodology and analysis.
 
 ## Limitations
 

@@ -94,6 +94,8 @@ impl ApiClient {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            .gzip(true)
+            .brotli(true)
             .build()
             .expect("Failed to create HTTP client");
 
