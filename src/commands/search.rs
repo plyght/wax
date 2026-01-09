@@ -125,9 +125,17 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
     for formula in &formula_matches {
         let desc = formula.desc.as_deref().unwrap_or("");
         if desc.is_empty() {
-            println!("{}", style(&formula.name).dim());
+            println!(
+                "{} · {}",
+                style(&formula.name).dim(),
+                style(&formula.versions.stable).dim()
+            );
         } else {
-            println!("{} {}", style(&formula.name).dim(), style("·").dim());
+            println!(
+                "{} · {}",
+                style(&formula.name).dim(),
+                style(&formula.versions.stable).dim()
+            );
             println!("  {}", desc);
         }
     }
@@ -135,20 +143,36 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
     for formula in &tap_matches {
         let desc = formula.desc.as_deref().unwrap_or("");
         if desc.is_empty() {
-            println!("{}", style(&formula.full_name).dim());
+            println!(
+                "{} · {}",
+                style(&formula.full_name).dim(),
+                style(&formula.versions.stable).dim()
+            );
         } else {
-            println!("{} {}", style(&formula.full_name).dim(), style("·").dim());
+            println!(
+                "{} · {}",
+                style(&formula.full_name).dim(),
+                style(&formula.versions.stable).dim()
+            );
             println!("  {}", desc);
         }
     }
 
     for cask in &cask_matches {
         let desc = cask.desc.as_deref().unwrap_or("");
-        let cask_label = format!("{} {}", cask.token, style("(cask)").dim());
+        let cask_label = format!("{} (cask)", cask.token);
         if desc.is_empty() {
-            println!("{}", style(&cask_label).dim());
+            println!(
+                "{} · {}",
+                style(&cask_label).dim(),
+                style(&cask.version).dim()
+            );
         } else {
-            println!("{} {}", style(&cask_label).dim(), style("·").dim());
+            println!(
+                "{} · {}",
+                style(&cask_label).dim(),
+                style(&cask.version).dim()
+            );
             println!("  {}", desc);
         }
     }
