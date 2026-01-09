@@ -3,6 +3,7 @@ use crate::cache::Cache;
 use crate::commands::update;
 use crate::error::Result;
 use crate::ui::print_info;
+use console::style;
 use tracing::instrument;
 
 fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<i32> {
@@ -134,7 +135,8 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
         println!("\n==> Casks");
         for cask in &cask_matches {
             let desc = cask.desc.as_deref().unwrap_or("No description");
-            println!("{:<30} {}", cask.token, desc);
+            let cask_label = format!("{} {}", cask.token, style("(cask)").dim());
+            println!("{:<30} {}", cask_label, desc);
         }
     }
 

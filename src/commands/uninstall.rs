@@ -16,9 +16,25 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
 
-    let package = installed_packages
-        .get(formula_name)
-        .ok_or_else(|| WaxError::NotInstalled(formula_name.to_string()))?;
+    let package_opt = installed_packages.get(formula_name);
+
+    if package_opt.is_none() {
+        let cask_state = CaskState::new()?;
+        let installed_casks = cask_state.load().await?;
+
+        if installed_casks.contains_key(formula_name) {
+            println!(
+                "{} {} is a cask, uninstalling as cask...",
+                style("ℹ").blue().bold(),
+                formula_name
+            );
+            return uninstall_cask(cache, formula_name, dry_run).await;
+        }
+
+        return Err(WaxError::NotInstalled(formula_name.to_string()));
+    }
+
+    let package = package_opt.unwrap();
 
     let formulae = cache.load_formulae().await?;
     let dependents: Vec<String> = formulae
