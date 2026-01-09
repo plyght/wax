@@ -14,7 +14,9 @@ Wax replaces Homebrew's git-based tap system with direct JSON API access and par
 
 **JSON API over Git**: Fetches all ~15,600 formulae/casks via single HTTP request rather than cloning entire tap repository. Enables instant search without filesystem traversal.
 
-**Bottles Only**: Does not build from source. Fails fast when bottles unavailable rather than triggering slow compilation. Ensures predictable performance.
+**Bottles First, Source When Needed**: Prioritizes precompiled bottles for maximum speed. Automatically falls back to source compilation when bottles are unavailable. Detects build system (Autotools, CMake, Meson, Make) and executes appropriate build workflow.
+
+**Custom Tap Support**: Extends beyond core taps by cloning third-party taps as Git repositories. Parses Ruby formula files to extract metadata and build instructions. Integrates tap formulae with core formulae for unified package discovery.
 
 **Async-First**: Uses tokio runtime for all I/O operations. Parallel downloads with configurable concurrency limits (default 8 simultaneous).
 
@@ -50,12 +52,33 @@ Wax replaces Homebrew's git-based tap system with direct JSON API access and par
 - Homebrew prefix detection
 - GHCR authentication
 
+**builder.rs**: Source compilation orchestration
+- Build system detection (Autotools, CMake, Meson, Make)
+- Parallel compilation with CPU core detection
+- ccache integration when available
+- Source download and SHA256 verification
+- Build failure reporting with error context
+
 **cask.rs**: macOS GUI application management
 - DMG mounting and extraction
 - PKG installation
 - App bundle copying
 - Platform-specific operations (macOS only)
 - Cask state tracking
+
+**formula_parser.rs**: Ruby formula parsing
+- Extract metadata from formula files
+- Parse install blocks for build instructions
+- Detect build system heuristically
+- Extract configure arguments and dependencies
+- Version extraction from source URLs
+
+**tap.rs**: Custom tap management
+- Tap registration and Git cloning
+- Formula directory discovery
+- Tap update via git pull
+- Formula loading from Ruby files
+- Tap state persistence
 
 **install.rs**: Installation state and symlink management
 - Installation mode detection (user vs global)
@@ -141,25 +164,41 @@ Wax replaces Homebrew's git-based tap system with direct JSON API access and par
 - Install exact versions
 - Reproducible environment setup
 
+**commands/tap.rs**: Tap management
+- Add taps (clone from GitHub)
+- Remove taps (delete local clone)
+- List installed taps
+- Update taps (git pull)
+
 ## Data Flow
 
 ### Installation Flow
 
 1. User executes `wax install <formula>`
-2. Load cached formula index
-3. Find formula by name
+2. Load cached formula index from JSON API and custom taps
+3. Find formula by name (supports tap/formula syntax)
 4. Resolve dependencies with topological sort
 5. Filter already-installed packages
 6. Detect install mode (user vs global)
-7. Download bottles in parallel (max 8 concurrent)
-   - Authenticate with GHCR
-   - Stream download with progress bar
-   - Verify SHA256 checksum
-8. Extract bottles to temporary directory
-9. Copy to Cellar directory structure
-10. Create symlinks to bin/lib/include directories
-11. Update installation state
-12. Report success
+7. For each package:
+   - If bottle available and not --build-from-source:
+     - Download bottle in parallel (max 8 concurrent)
+     - Authenticate with GHCR
+     - Stream download with progress bar
+     - Verify SHA256 checksum
+     - Extract to temporary directory
+   - If bottle unavailable or --build-from-source:
+     - Fetch Ruby formula file
+     - Parse build metadata
+     - Download source tarball
+     - Verify source SHA256
+     - Extract to build directory
+     - Detect build system
+     - Execute build (configure → compile → install)
+8. Copy to Cellar directory structure
+9. Create symlinks to bin/lib/include directories
+10. Update installation state
+11. Report success
 
 ### Update Flow
 
@@ -172,10 +211,12 @@ Wax replaces Homebrew's git-based tap system with direct JSON API access and par
 ### Search Flow
 
 1. User executes `wax search <query>`
-2. Load cached formulae
-3. Load cached casks
-4. Filter by name/description (case-insensitive)
-5. Display results
+2. Load cached formulae from JSON API
+3. Load formulae from installed custom taps
+4. Load cached casks
+5. Merge and deduplicate results
+6. Filter by name/description (case-insensitive)
+7. Display results
 
 ## Platform Support
 
@@ -239,6 +280,19 @@ Linux ARM: aarch64_linux
   metadata.json                  (cache timestamps)
   logs/
     wax.log                      (structured logs)
+```
+
+### Tap Directory
+
+```
+~/.local/share/wax/taps/         (Linux)
+~/Library/Application Support/wax/taps/ (macOS)
+  user/
+    homebrew-repo/               (Git clone of tap)
+      Formula/
+        package1.rb
+        package2.rb
+  taps.json                      (tap registry)
 ```
 
 ### Data Directory
@@ -306,6 +360,14 @@ Linux ARM: aarch64_linux
 - Minimal filesystem operations
 - No post-install scripts (trade-off for speed)
 
+### Source Building
+
+- CPU core detection for parallel compilation
+- ccache integration when available
+- Build system auto-detection
+- Incremental build support (Ninja for CMake/Meson)
+- Isolated build directories (tempdir)
+
 ## Security
 
 ### Checksum Verification
@@ -333,12 +395,12 @@ Linux ARM: aarch64_linux
 
 ### Current Limitations
 
-1. No source building (bottles only)
+1. Build system detection is heuristic-based and may fail for complex configurations
 2. No binary relocation (@@HOMEBREW_CELLAR@@ placeholders)
 3. No post-install script execution
 4. No caveats display
-5. Core taps only (homebrew/core, homebrew/cask)
-6. No custom tap support
+5. Ruby formula parser supports common patterns but not advanced DSL features
+6. No patch application during source builds
 
 ### Design Trade-offs
 
@@ -354,11 +416,13 @@ Linux ARM: aarch64_linux
 
 1. Binary relocation support (install_name_tool on macOS)
 2. Post-install script execution (sandboxed)
-3. Custom tap support (additional JSON API endpoints)
-4. HTTP caching (ETag, If-Modified-Since)
-5. Partial index updates (delta fetching)
-6. Distributed caching (CDN for index)
-7. Plugin system for custom operations
+3. Patch application during source builds
+4. Advanced Ruby DSL parsing (conditions, variables)
+5. HTTP caching (ETag, If-Modified-Since)
+6. Partial index updates (delta fetching)
+7. Distributed caching (CDN for index)
+8. Build caching and reuse across installations
+9. Tap formula caching (avoid re-parsing Ruby files)
 
 ## Development Guidelines
 

@@ -10,6 +10,8 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 
 - **Lightning-Fast Queries**: Search and info commands execute in <100ms (16-20x faster than Homebrew)
 - **Parallel Operations**: Concurrent downloads with individual progress tracking for each package
+- **Source Building**: Automatic fallback to source compilation when bottles unavailable, with support for Autotools, CMake, Meson, and Make
+- **Custom Tap Support**: Add, manage, and update third-party Homebrew taps for extended package availability
 - **Lockfile Support**: Reproducible environments via `wax.lock` with pinned versions
 - **Native Homebrew Compatibility**: Uses official formulae, bottles, and casks from Homebrew's JSON API
 - **Modern Terminal UI**: Real-time progress bars, clean output, and responsive feedback
@@ -53,9 +55,16 @@ wax install tree
 wax i tree           # shorthand
 wax install tree --user    # to ~/.local/wax
 wax install tree --global  # to system directory
+wax install tree --build-from-source  # force source build
 
 # Install casks (GUI applications)
 wax install --cask iterm2
+
+# Manage custom taps
+wax tap add user/repo
+wax tap list
+wax tap update user/repo
+wax tap remove user/repo
 
 # Uninstall packages
 wax uninstall tree
@@ -103,11 +112,14 @@ tree = { version = "2.1.1", bottle = "arm64_ventura" }
 - `api.rs`: Homebrew JSON API client with async HTTP requests
 - `cache.rs`: Local formula/cask index management and invalidation
 - `bottle.rs`: Bottle download, extraction, and verification (SHA256 checksums)
+- `builder.rs`: Source compilation with multi-build-system support (Autotools, CMake, Meson, Make)
 - `cask.rs`: Cask handling for GUI applications (DMG mounting, app bundle copying)
 - `deps.rs`: Dependency resolution with topological sorting
+- `formula_parser.rs`: Ruby formula parsing and build metadata extraction
 - `install.rs`: Installation orchestration (download → extract → symlink → hooks)
 - `lockfile.rs`: Lockfile generation and synchronization
-- `commands/`: CLI command implementations (search, install, upgrade, etc.)
+- `tap.rs`: Custom tap management (add, remove, update, formula loading)
+- `commands/`: CLI command implementations (search, install, upgrade, tap, etc.)
 - `ui.rs`: Terminal UI components using indicatif for progress tracking
 - `error.rs`: Typed error handling with anyhow context
 - `main.rs`: CLI parsing with clap and logging initialization
@@ -116,7 +128,9 @@ tree = { version = "2.1.1", bottle = "arm64_ventura" }
 
 **JSON API over Git**: Fetches all ~15,600 formulae/casks via single HTTP request rather than cloning entire tap repository. Enables instant search without filesystem traversal.
 
-**Bottles Only**: Does not build from source. Fails fast when bottles unavailable rather than triggering slow compilation. Ensures predictable performance.
+**Bottles First, Source When Needed**: Prioritizes precompiled bottles for speed but automatically falls back to source compilation when bottles are unavailable. Supports multiple build systems for broad compatibility.
+
+**Custom Tap Support**: Clones third-party taps as Git repositories, parses Ruby formula files, and integrates them with core formulae for unified package management.
 
 **Async-First**: Uses tokio runtime for all I/O operations. Parallel downloads with configurable concurrency limits (default 8 simultaneous).
 
@@ -150,6 +164,7 @@ Requires Rust 1.70+. Key dependencies:
 - **Compression**: tar, flate2 (gzip), sha2 (checksums)
 - **Error Handling**: anyhow, thiserror
 - **Logging**: tracing, tracing-subscriber
+- **Build Support**: num_cpus (parallel builds), tempfile (build directories)
 
 ## Performance
 
@@ -166,10 +181,10 @@ See `comparison.md` for detailed methodology and analysis.
 
 ## Limitations
 
-- **Bottles Only**: Cannot build from source. Packages without bottles will fail to install.
-- **Core Taps Only**: Currently supports homebrew/core and homebrew/cask. Custom taps not yet implemented.
-- **macOS Primary**: Developed for macOS. Linux support planned but not yet complete.
-- **No Formula DSL**: Uses pre-parsed JSON metadata. Complex formula logic (patches, conditional deps) may not be fully represented.
+- **Build System Detection**: Source builds use heuristic detection of build systems. Complex or non-standard build configurations may fail.
+- **Formula DSL Subset**: Parses essential Ruby formula syntax. Advanced features (conditional deps, patches, custom install blocks) may not be fully supported.
+- **macOS Primary**: Developed for macOS. Linux support is functional but less tested.
+- **No Post-Install Scripts**: Skips formula post-install hooks for security and performance. Some packages may require manual configuration.
 
 ## License
 

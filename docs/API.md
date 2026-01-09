@@ -427,6 +427,9 @@ pub enum WaxError {
     NotInstalled(String),
     LockfileError(String),
     PlatformNotSupported(String),
+    BuildError(String),
+    ParseError(String),
+    TapError(String),
 }
 ```
 
@@ -475,6 +478,214 @@ pub fn info_message(message: &str)
 ```
 
 Prints an info message with blue arrow.
+
+## Module: builder
+
+Source compilation orchestration.
+
+### Builder
+
+Handles compilation from source with multi-build-system support.
+
+```rust
+pub struct Builder
+```
+
+#### Methods
+
+```rust
+pub fn new() -> Self
+```
+
+Creates a new builder instance. Detects CPU cores and ccache availability.
+
+```rust
+pub async fn build_from_source(
+    &self,
+    formula: &ParsedFormula,
+    source_tarball: &Path,
+    build_dir: &Path,
+    install_prefix: &Path,
+    progress: Option<&ProgressBar>
+) -> Result<()>
+```
+
+Builds a formula from source. Automatically detects build system and executes appropriate workflow.
+
+**Supported Build Systems:**
+- Autotools (./configure && make && make install)
+- CMake (cmake -B build && cmake --build build)
+- Meson (meson setup build && ninja -C build)
+- Make (make && make install)
+
+**Features:**
+- Parallel compilation using detected CPU cores
+- ccache integration when available
+- Ninja preference for CMake/Meson when available
+- Build failure diagnostics
+
+## Module: formula_parser
+
+Ruby formula parsing and metadata extraction.
+
+### FormulaParser
+
+Parses Homebrew Ruby formula files to extract build metadata.
+
+```rust
+pub struct FormulaParser
+```
+
+#### Methods
+
+```rust
+pub fn parse_ruby_formula(name: &str, ruby_content: &str) -> Result<ParsedFormula>
+```
+
+Parses a Ruby formula file and extracts metadata.
+
+**Extracted Information:**
+- Source URL and SHA256
+- Description, homepage, license
+- Runtime and build dependencies
+- Build system detection
+- Configure arguments
+- Install commands
+
+```rust
+pub async fn fetch_formula_rb(formula_name: &str) -> Result<String>
+```
+
+Fetches a Ruby formula file from Homebrew's GitHub repository.
+
+### ParsedFormula
+
+Represents parsed formula metadata.
+
+```rust
+pub struct ParsedFormula {
+    pub name: String,
+    pub desc: Option<String>,
+    pub homepage: Option<String>,
+    pub license: Option<String>,
+    pub source: FormulaSource,
+    pub runtime_dependencies: Vec<String>,
+    pub build_dependencies: Vec<String>,
+    pub build_system: BuildSystem,
+    pub install_commands: Vec<String>,
+    pub configure_args: Vec<String>,
+}
+```
+
+### BuildSystem
+
+Enumeration of supported build systems.
+
+```rust
+pub enum BuildSystem {
+    Autotools,
+    CMake,
+    Meson,
+    Make,
+    Unknown,
+}
+```
+
+## Module: tap
+
+Custom tap management for third-party formula sources.
+
+### Tap
+
+Represents a Homebrew tap.
+
+```rust
+pub struct Tap {
+    pub user: String,
+    pub repo: String,
+    pub full_name: String,
+    pub url: String,
+    pub path: PathBuf,
+}
+```
+
+#### Methods
+
+```rust
+pub fn new(user: &str, repo: &str) -> Self
+```
+
+Creates a tap reference for user/repo.
+
+```rust
+pub fn is_installed(&self) -> bool
+```
+
+Checks if tap is cloned locally.
+
+```rust
+pub fn formula_dir(&self) -> PathBuf
+```
+
+Returns path to tap's Formula directory.
+
+### TapManager
+
+Manages tap registration and formula loading.
+
+```rust
+pub struct TapManager
+```
+
+#### Methods
+
+```rust
+pub fn new() -> Result<Self>
+```
+
+Creates a tap manager and loads tap registry.
+
+```rust
+pub async fn add_tap(&mut self, user: &str, repo: &str) -> Result<()>
+```
+
+Clones a tap from GitHub and registers it.
+
+```rust
+pub async fn remove_tap(&mut self, user: &str, repo: &str) -> Result<()>
+```
+
+Unregisters and removes a tap.
+
+```rust
+pub async fn update_tap(&mut self, user: &str, repo: &str) -> Result<()>
+```
+
+Updates a tap via git pull.
+
+```rust
+pub fn list_taps(&self) -> Vec<&Tap>
+```
+
+Returns all registered taps.
+
+```rust
+pub async fn load_formulae_from_tap(&self, tap: &Tap) -> Result<Vec<Formula>>
+```
+
+Loads and parses all formulae from a tap.
+
+```rust
+pub async fn load_all_tap_formulae(&self) -> Result<Vec<Formula>>
+```
+
+Loads formulae from all registered taps.
+
+```rust
+pub fn resolve_formula_name(&self, formula_name: &str) -> Option<(&Tap, String)>
+```
+
+Resolves a tap-qualified formula name (user/repo/formula) to a tap and formula name.
 
 ## Module: cask
 
@@ -551,15 +762,16 @@ Displays detailed information about a formula or cask.
 ```rust
 pub async fn install(
     cache: &Cache,
-    formula: &str,
+    packages: &[String],
     dry_run: bool,
     cask: bool,
     user: bool,
-    global: bool
+    global: bool,
+    build_from_source: bool
 ) -> Result<()>
 ```
 
-Installs a formula or cask with dependencies.
+Installs one or more formulae or casks with dependencies. Supports tap-qualified names.
 
 ### commands::uninstall
 
@@ -620,3 +832,11 @@ pub async fn sync(cache: &Cache) -> Result<()>
 ```
 
 Installs packages from lockfile.
+
+### commands::tap
+
+```rust
+pub async fn tap(action: Option<TapAction>) -> Result<()>
+```
+
+Manages custom taps. Supports add, remove, list, and update operations.

@@ -152,7 +152,7 @@ wax add <name> [OPTIONS]      # Alias
 ```
 
 **Arguments:**
-- `<name>`: Formula or cask name to install
+- `<name>`: Formula or cask name to install. Supports tap-qualified names (user/repo/formula)
 
 **Options:**
 
@@ -168,22 +168,29 @@ Install to user-local directory (~/.local/wax). No sudo required.
 `--global`
 Install to system directory. May require sudo.
 
+`--build-from-source`
+Force compilation from source even if bottle is available. Useful for custom builds or when bottles are outdated.
+
 **Examples:**
 ```bash
 wax install tree
 wax install jq --dry-run
 wax install --cask iterm2
 wax install nginx --user
+wax install nginx --build-from-source
+wax install user/tap/custom-package
 wax i -v ripgrep
 ```
 
 **Behavior:**
-1. Loads formula from cache
+1. Loads formula from cache and custom taps
 2. Resolves all dependencies with topological sort
 3. Filters already-installed packages
 4. Detects install mode (user vs global)
-5. Downloads bottles in parallel (max 8 concurrent)
-6. Verifies SHA256 checksums
+5. For each package:
+   - If bottle available and not --build-from-source: downloads bottles in parallel (max 8 concurrent)
+   - If bottle unavailable or --build-from-source: builds from source with detected build system
+6. Verifies SHA256 checksums (bottle or source)
 7. Extracts to Cellar directory
 8. Creates symlinks to bin/lib/include
 9. Updates installation state
@@ -364,6 +371,76 @@ Installing tree 2.1.1
 ✓ Synced 3 packages in 2.1s
 ```
 
+### tap
+
+Manage custom Homebrew taps for extended package availability.
+
+```bash
+wax tap [ACTION]
+```
+
+**Subcommands:**
+
+`add <user/repo>`
+Clone and register a custom tap from GitHub.
+
+`remove <user/repo>`
+Unregister and delete a custom tap.
+
+`list`
+Display all installed custom taps.
+
+`update <user/repo>`
+Update a tap to latest version (git pull).
+
+**Arguments:**
+- `<user/repo>`: Tap identifier in GitHub format (e.g., homebrew/cask-versions)
+
+**Examples:**
+```bash
+wax tap add homebrew/cask-versions
+wax tap list
+wax tap update homebrew/cask-versions
+wax tap remove homebrew/cask-versions
+```
+
+**Behavior:**
+
+For `add`:
+1. Validates tap format
+2. Clones repository from https://github.com/user/homebrew-repo
+3. Registers tap in local state
+4. Makes formulae available for search and install
+
+For `remove`:
+1. Checks if tap is installed
+2. Removes local Git clone
+3. Unregisters tap from state
+
+For `list`:
+1. Displays all registered taps
+2. Shows GitHub URL for each tap
+
+For `update`:
+1. Runs git pull in tap directory
+2. Refreshes formula metadata
+
+**Tap Formula Usage:**
+```bash
+wax tap add user/custom
+wax search user/custom/package
+wax install user/custom/package
+```
+
+**Output:**
+```
+→ Adding tap: user/custom
+✓ Added tap user/custom
+
+Installed taps:
+  user/custom (https://github.com/user/homebrew-custom.git)
+```
+
 ## Exit Codes
 
 - `0`: Success
@@ -440,8 +517,12 @@ wax uninstall redis
 | Package info | `brew info <formula>` | `wax info <formula>` |
 | List installed | `brew list` | `wax list` |
 | Install | `brew install <formula>` | `wax install <formula>` |
+| Install from source | `brew install --build-from-source <formula>` | `wax install --build-from-source <formula>` |
 | Uninstall | `brew uninstall <formula>` | `wax uninstall <formula>` |
 | Upgrade | `brew upgrade <formula>` | `wax upgrade <formula>` |
+| Add tap | `brew tap <user/repo>` | `wax tap add <user/repo>` |
+| Remove tap | `brew untap <user/repo>` | `wax tap remove <user/repo>` |
+| List taps | `brew tap` | `wax tap list` |
 | Lockfile | N/A | `wax lock` / `wax sync` |
 
 ## Shell Completion
