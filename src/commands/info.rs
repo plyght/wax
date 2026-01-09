@@ -9,7 +9,7 @@ use tracing::instrument;
 #[instrument(skip(api_client, cache))]
 pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool) -> Result<()> {
     if !cache.is_initialized() {
-        println!("Initializing package index (first time only)...");
+        println!("initializing package index (first time only)...");
         update::update(api_client, cache).await?;
     }
 
@@ -75,7 +75,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     }
 
     println!();
-    println!("{}", style(&formula.homepage).cyan());
+    println!("{}", &formula.homepage);
 
     if let Some(deps) = &formula.dependencies {
         if !deps.is_empty() {
@@ -99,10 +99,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
 
     if !formula.versions.bottle {
         println!();
-        println!(
-            "{}",
-            style("⚠ No precompiled bottle available (will build from source)").yellow()
-        );
+        println!("no precompiled bottle available (will build from source)");
     }
 
     Ok(())
@@ -111,7 +108,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
 #[instrument(skip(api_client, cache))]
 async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<()> {
     if !cache.is_initialized() {
-        println!("Initializing package index (first time only)...");
+        println!("initializing package index (first time only)...");
         update::update(api_client, cache).await?;
     }
 
@@ -154,10 +151,10 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
     }
 
     println!();
-    println!("{}", style(&cask.homepage).cyan());
+    println!("{}", &cask.homepage);
 
     println!();
-    println!("{}", style(&cask.url).cyan());
+    println!("{}", &cask.url);
 
     if let Some(artifacts) = &cask.artifacts {
         let artifact_types: Vec<String> = artifacts

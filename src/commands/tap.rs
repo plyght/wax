@@ -10,7 +10,7 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
         Some(crate::TapAction::Add { tap }) => {
             let parts: Vec<&str> = tap.split('/').collect();
             if parts.len() != 2 {
-                eprintln!("✗ Invalid tap format. Use: user/repo");
+                eprintln!("invalid tap format. use: user/repo");
                 return Ok(());
             }
 
@@ -23,7 +23,7 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
         Some(crate::TapAction::Remove { tap }) => {
             let parts: Vec<&str> = tap.split('/').collect();
             if parts.len() != 2 {
-                eprintln!("✗ Invalid tap format. Use: user/repo");
+                eprintln!("invalid tap format. use: user/repo");
                 return Ok(());
             }
 
@@ -36,7 +36,7 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
         Some(crate::TapAction::Update { tap }) => {
             let parts: Vec<&str> = tap.split('/').collect();
             if parts.len() != 2 {
-                eprintln!("✗ Invalid tap format. Use: user/repo");
+                eprintln!("invalid tap format. use: user/repo");
                 return Ok(());
             }
 
@@ -44,21 +44,17 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
 
             manager.update_tap(user, repo).await?;
             println!();
-            println!("✓ updated tap {}", tap);
+            println!("updated tap {}", tap);
         }
         Some(crate::TapAction::List) | None => {
             let taps = manager.list_taps();
 
             if taps.is_empty() {
-                println!("No custom taps");
+                println!("no custom taps");
             } else {
                 println!();
                 for tap in taps {
-                    println!(
-                        "{} {}",
-                        style(&tap.full_name).magenta(),
-                        style(&tap.url).cyan()
-                    );
+                    println!("{} {}", style(&tap.full_name).magenta(), &tap.url);
                 }
             }
         }

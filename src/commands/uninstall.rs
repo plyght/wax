@@ -49,11 +49,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
         .collect();
 
     if !dependents.is_empty() {
-        println!(
-            "{} {} is a dependency of:",
-            style("⚠").yellow().magenta(),
-            formula_name
-        );
+        println!("{} is a dependency of:", style(formula_name).magenta());
         for dep in &dependents {
             println!("  - {}", dep);
         }
@@ -66,7 +62,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
             match confirm {
                 Ok(true) => {}
                 Ok(false) => {
-                    println!("Uninstall cancelled");
+                    println!("uninstall cancelled");
                     return Ok(());
                 }
                 Err(_) => return Ok(()),
@@ -142,8 +138,7 @@ async fn uninstall_cask(
         }
         "pkg" => {
             println!(
-                "{} PKG uninstallation not fully supported - you may need to manually remove files",
-                style("⚠").yellow().magenta()
+                "PKG uninstallation not fully supported - you may need to manually remove files"
             );
         }
         _ => {

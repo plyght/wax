@@ -20,7 +20,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     let package_count = lockfile.packages.len();
 
     if package_count == 0 {
-        println!("Lockfile is empty");
+        println!("lockfile is empty");
         return Ok(());
     }
 
@@ -42,7 +42,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         if needs_install {
             packages_to_install.push((name.clone(), lock_pkg.clone()));
         } else {
-            println!("✓ {} already synced", name);
+            println!("{} already synced", name);
         }
     }
 
@@ -73,7 +73,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
         if lock_pkg.bottle != current_platform {
             println!(
-                "⚠ platform mismatch for {}: {} → {}",
+                "platform mismatch for {}: {} → {}",
                 name, lock_pkg.bottle, current_platform
             );
         }
@@ -179,7 +179,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         };
         state.add(package).await?;
 
-        println!("+ {}", style(&name).dim());
+        println!("+ {}", style(&name).magenta());
     }
 
     let elapsed = start.elapsed();

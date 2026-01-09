@@ -178,19 +178,13 @@ async fn main() -> Result<()> {
     let api_client = ApiClient::new();
     let cache = Cache::new()?;
 
-    match cli.command {
-        Commands::Update => {
-            commands::update::update(&api_client, &cache).await?;
-        }
-        Commands::Search { query } => {
-            commands::search::search(&api_client, &cache, &query).await?;
-        }
+    let result = match cli.command {
+        Commands::Update => commands::update::update(&api_client, &cache).await,
+        Commands::Search { query } => commands::search::search(&api_client, &cache, &query).await,
         Commands::Info { formula, cask } => {
-            commands::info::info(&api_client, &cache, &formula, cask).await?;
+            commands::info::info(&api_client, &cache, &formula, cask).await
         }
-        Commands::List => {
-            commands::list::list().await?;
-        }
+        Commands::List => commands::list::list().await,
         Commands::Install {
             packages,
             dry_run,
@@ -208,7 +202,7 @@ async fn main() -> Result<()> {
                 global,
                 build_from_source,
             )
-            .await?;
+            .await
         }
         Commands::InstallCask {
             packages,
@@ -216,28 +210,40 @@ async fn main() -> Result<()> {
             user,
             global,
         } => {
-            commands::install::install(&cache, &packages, dry_run, true, user, global, false)
-                .await?;
+            commands::install::install(&cache, &packages, dry_run, true, user, global, false).await
         }
         Commands::Uninstall {
             formula,
             dry_run,
             cask,
-        } => {
-            commands::uninstall::uninstall(&cache, &formula, dry_run, cask).await?;
-        }
+        } => commands::uninstall::uninstall(&cache, &formula, dry_run, cask).await,
         Commands::Upgrade { formula, dry_run } => {
-            commands::upgrade::upgrade(&cache, &formula, dry_run).await?;
+            commands::upgrade::upgrade(&cache, &formula, dry_run).await
         }
-        Commands::Lock => {
-            commands::lock::lock().await?;
+        Commands::Lock => commands::lock::lock().await,
+        Commands::Sync => commands::sync::sync(&cache).await,
+        Commands::Tap { action } => commands::tap::tap(action).await,
+    };
+
+    if let Err(e) = result {
+        use console::style;
+        use error::WaxError;
+
+        match e {
+            WaxError::NotInstalled(pkg) => {
+                eprintln!("\n{} is not installed", style(&pkg).magenta());
+            }
+            WaxError::FormulaNotFound(pkg) => {
+                eprintln!("\nformula not found: {}", style(&pkg).magenta());
+            }
+            WaxError::CaskNotFound(pkg) => {
+                eprintln!("\ncask not found: {}", style(&pkg).magenta());
+            }
+            _ => {
+                eprintln!("\n{}", e);
+            }
         }
-        Commands::Sync => {
-            commands::sync::sync(&cache).await?;
-        }
-        Commands::Tap { action } => {
-            commands::tap::tap(action).await?;
-        }
+        std::process::exit(1);
     }
 
     Ok(())

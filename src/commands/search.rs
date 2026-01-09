@@ -57,7 +57,7 @@ fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<
 #[instrument(skip(api_client, cache))]
 pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Result<()> {
     if !cache.is_initialized() {
-        println!("Initializing package index (first time only)...");
+        println!("initializing package index (first time only)...");
         update::update(api_client, cache).await?;
     }
 
@@ -117,7 +117,7 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
     let total = formula_matches.len() + tap_matches.len() + cask_matches.len();
 
     if total == 0 {
-        println!("No results for '{}'", query);
+        println!("no results for '{}'", query);
         return Ok(());
     }
 

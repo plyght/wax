@@ -44,7 +44,7 @@ pub async fn list() -> Result<()> {
     }
 
     if packages.is_empty() && installed_casks.is_empty() {
-        println!("No packages installed");
+        println!("no packages installed");
         return Ok(());
     }
 

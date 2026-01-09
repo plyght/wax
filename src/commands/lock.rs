@@ -8,7 +8,7 @@ pub async fn lock() -> Result<()> {
     let package_count = lockfile.packages.len();
 
     if package_count == 0 {
-        println!("No packages installed");
+        println!("no packages installed");
         return Ok(());
     }
 

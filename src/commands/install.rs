@@ -145,19 +145,12 @@ pub async fn install(
             let detected = InstallMode::detect();
             if detected == InstallMode::User {
                 println!(
-                    "{} No write access to system directory, defaulting to per-user installation",
-                    style("ℹ").blue().magenta()
+                    "no write access to system directory, defaulting to per-user installation"
                 );
+                println!("  install location: {}", detected.prefix().display());
+                println!("  binaries will be in: {}", detected.bin_path().display());
                 println!(
-                    "  Install location: {}",
-                    style(detected.prefix().display()).cyan()
-                );
-                println!(
-                    "  Binaries will be in: {}",
-                    style(detected.bin_path().display()).cyan()
-                );
-                println!(
-                    "  Add to PATH: export PATH=\"{}:$PATH\"\n",
+                    "  add to PATH: export PATH=\"{}:$PATH\"\n",
                     detected.bin_path().display()
                 );
             }
@@ -233,14 +226,14 @@ pub async fn install(
     if !already_installed.is_empty() {
         println!();
         for pkg in &already_installed {
-            println!("✓ {} is already installed", pkg);
+            println!("{} is already installed", pkg);
         }
     }
 
     if !errors.is_empty() {
         println!();
         for (pkg, err) in &errors {
-            eprintln!("✗ {}: {}", pkg, err);
+            eprintln!("{}: {}", pkg, err);
         }
         if all_to_install.is_empty() {
             return Err(WaxError::InstallError(
@@ -393,7 +386,7 @@ pub async fn install(
     if !failed_packages.is_empty() {
         println!();
         for err in &failed_packages {
-            eprintln!("✗ {}", err);
+            eprintln!("{}", err);
         }
         if extracted_packages.is_empty() {
             return Err(WaxError::InstallError(
@@ -482,7 +475,7 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     if installed_casks.contains_key(cask_name) {
         println!();
-        println!("✓ {} is already installed", cask_name);
+        println!("{} is already installed", cask_name);
         return Ok(());
     }
 
@@ -579,9 +572,9 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     if !installed_binaries.is_empty() {
         println!(
             "+ {}@{} {}",
-            console::style(cask_name).magenta(),
-            console::style(&cask.version).dim(),
-            console::style("(cask)").yellow()
+            style(cask_name).magenta(),
+            style(&cask.version).dim(),
+            style("(cask)").yellow()
         );
         println!("  with binaries:");
         for binary in installed_binaries {
@@ -590,9 +583,9 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     } else {
         println!(
             "+ {}@{} {}",
-            console::style(cask_name).magenta(),
-            console::style(&cask.version).dim(),
-            console::style("(cask)").yellow()
+            style(cask_name).magenta(),
+            style(&cask.version).dim(),
+            style("(cask)").yellow()
         );
     }
 
@@ -647,22 +640,18 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     }
 
     if !already_installed.is_empty() {
-        println!(
-            "{} Already installed: {}",
-            style("ℹ").blue().magenta(),
-            already_installed.join(", ")
-        );
+        println!("already installed: {}", already_installed.join(", "));
     }
 
     if !errors.is_empty() {
         for (cask, err) in &errors {
-            eprintln!("{} {}: {}", style("✗").red().magenta(), cask, err);
+            eprintln!("{}: {}", style(cask).magenta(), err);
         }
     }
 
     if to_install.is_empty() {
         if errors.is_empty() {
-            println!("{} Nothing to install", style("✓").green().magenta());
+            println!("nothing to install");
         }
         return if errors.is_empty() {
             Ok(())
@@ -674,8 +663,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     }
 
     println!(
-        "{} Installing {} {}",
-        style("→").cyan().magenta(),
+        "installing {} {}",
         to_install.len(),
         if to_install.len() == 1 {
             "cask"
@@ -683,13 +671,10 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
             "casks"
         }
     );
-    println!("  Casks: {}", to_install.join(", "));
+    println!("  casks: {}", to_install.join(", "));
 
     if dry_run {
-        println!(
-            "\n{} Dry run - no changes made",
-            style("✓").green().magenta()
-        );
+        println!("\ndry run - no changes made");
         return Ok(());
     }
 
@@ -700,12 +685,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
         match install_cask(cache, cask_name, false).await {
             Ok(_) => installed_count += 1,
             Err(e) => {
-                eprintln!(
-                    "{} Failed to install {}: {}",
-                    style("✗").red().magenta(),
-                    cask_name,
-                    e
-                );
+                eprintln!("failed to install {}: {}", style(cask_name).magenta(), e);
                 failed.push(cask_name.clone());
             }
         }
@@ -727,8 +707,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
         Ok(())
     } else {
         println!(
-            "{} Installed {}/{} casks in {:.1}s ({} failed)",
-            style("⚠").yellow().magenta(),
+            "installed {}/{} casks in {:.1}s ({} failed)",
             installed_count,
             to_install.len(),
             elapsed.as_secs_f64(),
