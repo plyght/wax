@@ -148,16 +148,20 @@ async fn uninstall_cask(
         }
         _ => {
             #[cfg(target_os = "macos")]
-            let app_path =
-                std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name));
+            {
+                let app_path =
+                    std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name));
+
+                if app_path.exists() {
+                    tokio::fs::remove_dir_all(&app_path).await?;
+                }
+            }
 
             #[cfg(not(target_os = "macos"))]
-            return Err(WaxError::PlatformNotSupported(
-                "Cask uninstallation is only supported on macOS".to_string(),
-            ));
-
-            if app_path.exists() {
-                tokio::fs::remove_dir_all(&app_path).await?;
+            {
+                return Err(WaxError::PlatformNotSupported(
+                    "Cask uninstallation is only supported on macOS".to_string(),
+                ));
             }
         }
     }
