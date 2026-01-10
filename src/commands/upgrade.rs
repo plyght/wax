@@ -11,14 +11,12 @@ use tracing::instrument;
 pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result<()> {
     let start = std::time::Instant::now();
 
-    println!("wax update v{}\n", env!("CARGO_PKG_VERSION"));
-
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
 
-    let installed_opt = installed_packages.get(formula_name);
-
-    if installed_opt.is_none() {
+    let installed = if let Some(pkg) = installed_packages.get(formula_name) {
+        pkg.clone()
+    } else {
         let cask_state = CaskState::new()?;
         let installed_casks = cask_state.load().await?;
 
@@ -26,10 +24,14 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
             return upgrade_cask(cache, formula_name, dry_run, start).await;
         }
 
-        return Err(WaxError::NotInstalled(formula_name.to_string()));
-    }
+        state.sync_from_cellar().await?;
+        let updated_packages = state.load().await?;
 
-    let installed = installed_opt.unwrap();
+        updated_packages
+            .get(formula_name)
+            .cloned()
+            .ok_or_else(|| WaxError::NotInstalled(formula_name.to_string()))?
+    };
 
     let formulae = cache.load_formulae().await?;
     let formula = formulae
@@ -47,7 +49,7 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
             style(installed_version).dim()
         );
         let elapsed = start.elapsed();
-        println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
+        println!("\n[{}ms] done", elapsed.as_millis());
         return Ok(());
     }
 
@@ -59,13 +61,19 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
             style(latest_version).magenta()
         );
         let elapsed = start.elapsed();
-        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
+        println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
         return Ok(());
     }
 
     let install_mode = installed.install_mode;
 
-    uninstall::uninstall(cache, formula_name, false, false).await?;
+    uninstall::uninstall(
+        cache,
+        formula_name,
+        false, /* dry_run */
+        false, /* cask */
+    )
+    .await?;
 
     let (user_flag, global_flag) = match install_mode {
         InstallMode::User => (true, false),
@@ -74,16 +82,16 @@ pub async fn upgrade(cache: &Cache, formula_name: &str, dry_run: bool) -> Result
     install::install(
         cache,
         &[formula_name.to_string()],
-        false,
-        false,
+        false, /* dry_run */
+        false, /* cask */
         user_flag,
         global_flag,
-        false,
+        false, /* build_from_source */
     )
     .await?;
 
     let elapsed = start.elapsed();
-    println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
+    println!("\n[{}ms] done", elapsed.as_millis());
 
     Ok(())
 }
@@ -121,7 +129,7 @@ async fn upgrade_cask(
             style("(cask)").yellow()
         );
         let elapsed = start.elapsed();
-        println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
+        println!("\n[{}ms] done", elapsed.as_millis());
         return Ok(());
     }
 
@@ -134,25 +142,29 @@ async fn upgrade_cask(
             style(latest_version).magenta()
         );
         let elapsed = start.elapsed();
-        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
+        println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
         return Ok(());
     }
 
-    uninstall::uninstall(cache, cask_name, false, true).await?;
+    uninstall::uninstall(
+        cache, cask_name, false, /* dry_run */
+        true,  /* cask */
+    )
+    .await?;
 
     install::install(
         cache,
         &[cask_name.to_string()],
-        false,
-        true,
-        false,
-        false,
-        false,
+        false, /* dry_run */
+        true,  /* cask */
+        false, /* user */
+        false, /* global */
+        false, /* build_from_source */
     )
     .await?;
 
     let elapsed = start.elapsed();
-    println!("\n[{:.2}ms] done", elapsed.as_secs_f64() * 1000.0);
+    println!("\n[{}ms] done", elapsed.as_millis());
 
     Ok(())
 }

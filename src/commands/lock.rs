@@ -1,9 +1,13 @@
 use crate::error::Result;
+use crate::install::InstallState;
 use crate::lockfile::Lockfile;
 use tracing::instrument;
 
 #[instrument]
 pub async fn lock() -> Result<()> {
+    let state = InstallState::new()?;
+    state.sync_from_cellar().await?;
+
     let lockfile = Lockfile::generate().await?;
     let package_count = lockfile.packages.len();
 

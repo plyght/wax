@@ -8,12 +8,15 @@ use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::tap::TapManager;
-use crate::ui::print_success;
+use crate::ui::{
+    copy_dir_all, print_success, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE,
+    PROGRESS_BAR_TEMPLATE,
+};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sha2::Digest;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
@@ -94,7 +97,14 @@ async fn install_from_source_task(
 
     copy_dir_all(&install_prefix, &formula_cellar)?;
 
-    create_symlinks(&formula.name, version, cellar, false, install_mode).await?;
+    create_symlinks(
+        &formula.name,
+        version,
+        cellar,
+        false, /* dry_run */
+        install_mode,
+    )
+    .await?;
 
     let package = InstalledPackage {
         name: formula.name.clone(),
@@ -140,20 +150,28 @@ pub async fn install(
     }
 
     let install_mode = match InstallMode::from_flags(user, global)? {
-        Some(mode) => mode,
+        Some(mode) => {
+            println!("install location: {}", mode.prefix().display());
+            println!("binaries will be in: {}", mode.bin_path().display());
+            println!();
+            mode
+        }
         None => {
             let detected = InstallMode::detect();
             if detected == InstallMode::User {
                 println!(
                     "no write access to system directory, defaulting to per-user installation"
                 );
-                println!("  install location: {}", detected.prefix().display());
-                println!("  binaries will be in: {}", detected.bin_path().display());
+            }
+            println!("install location: {}", detected.prefix().display());
+            println!("binaries will be in: {}", detected.bin_path().display());
+            if detected == InstallMode::User {
                 println!(
-                    "  add to PATH: export PATH=\"{}:$PATH\"\n",
+                    "add to PATH: export PATH=\"{}:$PATH\"",
                     detected.bin_path().display()
                 );
             }
+            println!();
             detected
         }
     };
@@ -167,6 +185,7 @@ pub async fn install(
 
     let formulae = cache.load_all_formulae().await?;
     let state = InstallState::new()?;
+    state.sync_from_cellar().await.ok();
     let installed_packages = state.load().await?;
     let installed: HashSet<String> = installed_packages.keys().cloned().collect();
 
@@ -224,10 +243,10 @@ pub async fn install(
     }
 
     if !already_installed.is_empty() {
-        println!();
         for pkg in &already_installed {
             println!("{} is already installed", pkg);
         }
+        println!();
     }
 
     if !errors.is_empty() {
@@ -269,7 +288,10 @@ pub async fn install(
 
     if dry_run {
         println!();
-        println!("dry run - no changes made");
+        for name in &all_to_install {
+            println!("+ {}", name);
+        }
+        println!("\ndry run - no changes made");
         return Ok(());
     }
 
@@ -341,9 +363,9 @@ pub async fn install(
 
         let pb = multi.add(ProgressBar::new(0));
         let style = ProgressStyle::default_bar()
-            .template("{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
+            .template(PROGRESS_BAR_TEMPLATE)
             .unwrap()
-            .progress_chars("█▓▒░ ");
+            .progress_chars(PROGRESS_BAR_CHARS);
         pb.set_style(style);
         pb.set_message(name.clone());
 
@@ -407,7 +429,14 @@ pub async fn install(
             copy_dir_all(&extract_dir, &formula_cellar)?;
         }
 
-        create_symlinks(&name, &version, &cellar, false, install_mode).await?;
+        create_symlinks(
+            &name,
+            &version,
+            &cellar,
+            false, /* dry_run */
+            install_mode,
+        )
+        .await?;
 
         let package = InstalledPackage {
             name: name.clone(),
@@ -442,24 +471,6 @@ pub async fn install(
     Ok(())
 }
 
-fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(())
-}
-
 #[instrument(skip(cache))]
 async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
     let start = std::time::Instant::now();
@@ -474,8 +485,8 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     let installed_casks = state.load().await?;
 
     if installed_casks.contains_key(cask_name) {
-        println!();
         println!("{} is already installed", cask_name);
+        println!();
         return Ok(());
     }
 
@@ -486,7 +497,8 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     if dry_run {
         println!();
-        println!("dry run - no changes made");
+        println!("+ {} (cask)", cask_name);
+        println!("\ndry run - no changes made");
         return Ok(());
     }
 
@@ -501,11 +513,11 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     let pb = ProgressBar::new(0);
     let pb_style = ProgressStyle::default_bar()
-        .template("{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
+        .template(PROGRESS_BAR_PREFIX_TEMPLATE)
         .unwrap()
-        .progress_chars("█▓▒░ ");
+        .progress_chars(PROGRESS_BAR_CHARS);
     pb.set_style(pb_style);
-    pb.set_prefix(format!("[>] {}", display_name));
+    pb.set_prefix(display_name.to_string());
 
     let installer = CaskInstaller::new();
     installer
@@ -651,7 +663,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
 
     if to_install.is_empty() {
         if errors.is_empty() {
-            println!("nothing to install");
+            println!("no packages to install");
         }
         return if errors.is_empty() {
             Ok(())

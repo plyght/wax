@@ -159,6 +159,115 @@ impl InstallState {
         self.save(&packages).await?;
         Ok(())
     }
+
+    fn detect_install_mode(&self, cellar: &Path) -> InstallMode {
+        if cellar.starts_with("/opt/homebrew") || cellar.starts_with("/usr/local") {
+            InstallMode::Global
+        } else {
+            InstallMode::User
+        }
+    }
+
+    pub async fn sync_from_cellar(&self) -> Result<()> {
+        let mut packages = self.load().await?;
+
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+
+        let candidates = match os {
+            "macos" => match arch {
+                "aarch64" => vec![PathBuf::from("/opt/homebrew"), PathBuf::from("/usr/local")],
+                _ => vec![PathBuf::from("/usr/local"), PathBuf::from("/opt/homebrew")],
+            },
+            "linux" => vec![
+                PathBuf::from("/home/linuxbrew/.linuxbrew"),
+                PathBuf::from("/usr/local"),
+            ],
+            _ => vec![PathBuf::from("/usr/local")],
+        };
+
+        if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
+            if output.status.success() {
+                if let Ok(prefix) = String::from_utf8(output.stdout) {
+                    let brew_prefix = PathBuf::from(prefix.trim());
+                    let cellar = brew_prefix.join("Cellar");
+                    if cellar.exists() {
+                        self.scan_cellar_and_update(&cellar, &mut packages).await?;
+                    }
+                }
+            }
+        }
+
+        for path in candidates {
+            let cellar = path.join("Cellar");
+            if cellar.exists() {
+                self.scan_cellar_and_update(&cellar, &mut packages).await?;
+                break;
+            }
+        }
+
+        let home = std::env::var("HOME")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let wax_user_cellar = home.join(".local/wax/Cellar");
+        if wax_user_cellar.exists() {
+            self.scan_cellar_and_update(&wax_user_cellar, &mut packages)
+                .await?;
+        }
+
+        self.save(&packages).await?;
+        Ok(())
+    }
+
+    async fn scan_cellar_and_update(
+        &self,
+        cellar: &Path,
+        packages: &mut HashMap<String, InstalledPackage>,
+    ) -> Result<()> {
+        let mut entries = tokio::fs::read_dir(cellar).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                let package_name = entry.file_name().to_string_lossy().to_string();
+
+                if packages.contains_key(&package_name) {
+                    continue;
+                }
+
+                let mut versions = Vec::new();
+                let mut version_entries = tokio::fs::read_dir(entry.path()).await?;
+                while let Some(version_entry) = version_entries.next_entry().await? {
+                    if version_entry.file_type().await?.is_dir() {
+                        versions.push(version_entry.file_name().to_string_lossy().to_string());
+                    }
+                }
+
+                if !versions.is_empty() {
+                    versions.sort();
+                    let version = versions.last().unwrap().clone();
+
+                    packages.insert(
+                        package_name.clone(),
+                        InstalledPackage {
+                            name: package_name,
+                            version,
+                            platform: format!(
+                                "{}-{}",
+                                std::env::consts::OS,
+                                std::env::consts::ARCH
+                            ),
+                            install_date: 0,
+                            install_mode: self.detect_install_mode(cellar),
+                            from_source: false,
+                        },
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for InstallState {

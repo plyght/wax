@@ -3,6 +3,7 @@ use crate::cache::Cache;
 use crate::error::{Result, WaxError};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::lockfile::Lockfile;
+use crate::ui::{copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::Arc;
@@ -20,7 +21,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     let package_count = lockfile.packages.len();
 
     if package_count == 0 {
-        println!("lockfile is empty");
+        println!("no packages in lockfile");
         return Ok(());
     }
 
@@ -42,7 +43,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         if needs_install {
             packages_to_install.push((name.clone(), lock_pkg.clone()));
         } else {
-            println!("{} already synced", name);
+            println!("{} is already installed", name);
         }
     }
 
@@ -103,9 +104,9 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
         let pb = multi.add(ProgressBar::new(0));
         let style = ProgressStyle::default_bar()
-            .template("{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}")
+            .template(PROGRESS_BAR_TEMPLATE)
             .unwrap()
-            .progress_chars("█▓▒░ ");
+            .progress_chars(PROGRESS_BAR_CHARS);
         pb.set_style(style);
         pb.set_message(name.clone());
 
@@ -164,7 +165,14 @@ pub async fn sync(cache: &Cache) -> Result<()> {
             copy_dir_all(&extract_dir, &formula_cellar)?;
         }
 
-        create_symlinks(&name, &version, &cellar, false, install_mode).await?;
+        create_symlinks(
+            &name,
+            &version,
+            &cellar,
+            false, /* dry_run */
+            install_mode,
+        )
+        .await?;
 
         let package = InstalledPackage {
             name: name.clone(),
@@ -196,23 +204,5 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         elapsed.as_millis()
     );
 
-    Ok(())
-}
-
-fn copy_dir_all(src: &std::path::PathBuf, dst: &std::path::PathBuf) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
     Ok(())
 }

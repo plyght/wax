@@ -10,8 +10,6 @@ use tracing::instrument;
 pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: bool) -> Result<()> {
     let start = std::time::Instant::now();
 
-    println!("wax remove v{}\n", env!("CARGO_PKG_VERSION"));
-
     if cask {
         return uninstall_cask(cache, formula_name, dry_run, start).await;
     }
@@ -19,9 +17,9 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
 
-    let package_opt = installed_packages.get(formula_name);
-
-    if package_opt.is_none() {
+    let package = if let Some(pkg) = installed_packages.get(formula_name) {
+        pkg.clone()
+    } else {
         let cask_state = CaskState::new()?;
         let installed_casks = cask_state.load().await?;
 
@@ -29,10 +27,14 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
             return uninstall_cask(cache, formula_name, dry_run, start).await;
         }
 
-        return Err(WaxError::NotInstalled(formula_name.to_string()));
-    }
+        state.sync_from_cellar().await?;
+        let updated_packages = state.load().await?;
 
-    let package = package_opt.unwrap();
+        updated_packages
+            .get(formula_name)
+            .cloned()
+            .ok_or_else(|| WaxError::NotInstalled(formula_name.to_string()))?
+    };
 
     let formulae = cache.load_formulae().await?;
     let dependents: Vec<String> = formulae
@@ -70,16 +72,34 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
         }
     }
 
+    uninstall_package_direct(formula_name, &package, state, dry_run, start).await
+}
+
+async fn uninstall_package_direct(
+    formula_name: &str,
+    package: &crate::install::InstalledPackage,
+    state: InstallState,
+    dry_run: bool,
+    start: std::time::Instant,
+) -> Result<()> {
     if dry_run {
-        println!("- {} (dry run)", formula_name);
+        println!("- {}", formula_name);
         let elapsed = start.elapsed();
-        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
+        println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
         return Ok(());
     }
 
     let install_mode = package.install_mode;
     let cellar = install_mode.cellar_path();
-    remove_symlinks(formula_name, &package.version, &cellar, false, install_mode).await?;
+
+    remove_symlinks(
+        formula_name,
+        &package.version,
+        &cellar,
+        false, /* dry_run */
+        install_mode,
+    )
+    .await?;
 
     let formula_dir = cellar.join(formula_name);
     if formula_dir.exists() {
@@ -95,10 +115,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
     );
 
     let elapsed = start.elapsed();
-    println!(
-        "\n1 package removed [{:.2}ms]",
-        elapsed.as_secs_f64() * 1000.0
-    );
+    println!("\n1 package removed [{}ms]", elapsed.as_millis());
 
     Ok(())
 }
@@ -117,9 +134,9 @@ async fn uninstall_cask(
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
     if dry_run {
-        println!("- {} (cask) (dry run)", cask_name);
+        println!("- {} (cask)", cask_name);
         let elapsed = start.elapsed();
-        println!("\n[{:.2}ms] (dry run)", elapsed.as_secs_f64() * 1000.0);
+        println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
         return Ok(());
     }
 
@@ -171,10 +188,7 @@ async fn uninstall_cask(
     );
 
     let elapsed = start.elapsed();
-    println!(
-        "\n1 package removed [{:.2}ms]",
-        elapsed.as_secs_f64() * 1000.0
-    );
+    println!("\n1 package removed [{}ms]", elapsed.as_millis());
 
     Ok(())
 }

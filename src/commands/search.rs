@@ -1,7 +1,9 @@
 use crate::api::ApiClient;
 use crate::cache::Cache;
+use crate::cask::CaskState;
 use crate::commands::update;
 use crate::error::Result;
+use crate::install::InstallState;
 use console::style;
 use tracing::instrument;
 
@@ -64,6 +66,11 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
     let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_casks().await?;
 
+    let state = InstallState::new()?;
+    let installed_packages = state.load().await?;
+    let cask_state = CaskState::new()?;
+    let installed_casks = cask_state.load().await?;
+
     let core_formulae: Vec<_> = formulae
         .iter()
         .filter(|f| !f.full_name.contains('/') || f.full_name.starts_with("homebrew/"))
@@ -124,17 +131,24 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
     println!();
     for formula in &formula_matches {
         let desc = formula.desc.as_deref().unwrap_or("");
+        let installed_suffix = if installed_packages.contains_key(&formula.name) {
+            " · installed"
+        } else {
+            ""
+        };
         if desc.is_empty() {
             println!(
-                "{} · {}",
+                "{} · {}{}",
                 style(&formula.name).magenta(),
-                style(&formula.versions.stable).dim()
+                style(&formula.versions.stable).dim(),
+                style(installed_suffix).dim()
             );
         } else {
             println!(
-                "{} · {}",
+                "{} · {}{}",
                 style(&formula.name).magenta(),
-                style(&formula.versions.stable).dim()
+                style(&formula.versions.stable).dim(),
+                style(installed_suffix).dim()
             );
             println!("  {}", desc);
         }
@@ -142,17 +156,24 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
 
     for formula in &tap_matches {
         let desc = formula.desc.as_deref().unwrap_or("");
+        let installed_suffix = if installed_packages.contains_key(&formula.name) {
+            " · installed"
+        } else {
+            ""
+        };
         if desc.is_empty() {
             println!(
-                "{} · {}",
+                "{} · {}{}",
                 style(&formula.full_name).magenta(),
-                style(&formula.versions.stable).dim()
+                style(&formula.versions.stable).dim(),
+                style(installed_suffix).dim()
             );
         } else {
             println!(
-                "{} · {}",
+                "{} · {}{}",
                 style(&formula.full_name).magenta(),
-                style(&formula.versions.stable).dim()
+                style(&formula.versions.stable).dim(),
+                style(installed_suffix).dim()
             );
             println!("  {}", desc);
         }
@@ -160,19 +181,26 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
 
     for cask in &cask_matches {
         let desc = cask.desc.as_deref().unwrap_or("");
+        let installed_suffix = if installed_casks.contains_key(&cask.token) {
+            " · installed"
+        } else {
+            ""
+        };
         if desc.is_empty() {
             println!(
-                "{} {} · {}",
+                "{} {} · {}{}",
                 style(&cask.token).magenta(),
                 style("(cask)").yellow(),
-                style(&cask.version).dim()
+                style(&cask.version).dim(),
+                style(installed_suffix).dim()
             );
         } else {
             println!(
-                "{} {} · {}",
+                "{} {} · {}{}",
                 style(&cask.token).magenta(),
                 style("(cask)").yellow(),
-                style(&cask.version).dim()
+                style(&cask.version).dim(),
+                style(installed_suffix).dim()
             );
             println!("  {}", desc);
         }
