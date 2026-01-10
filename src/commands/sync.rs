@@ -151,7 +151,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     let install_mode = InstallMode::detect();
     install_mode.validate()?;
 
-    let cellar = install_mode.cellar_path();
+    let cellar = install_mode.cellar_path()?;
 
     println!();
     for (name, version, platform, extract_dir) in extracted_packages {

@@ -16,7 +16,6 @@ use api::ApiClient;
 use cache::Cache;
 use clap::{Parser, Subcommand};
 use error::Result;
-use std::path::PathBuf;
 use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
@@ -144,11 +143,7 @@ fn init_logging(verbose: bool) -> Result<()> {
     let log_dir = if let Some(base_dirs) = directories::BaseDirs::new() {
         base_dirs.cache_dir().join("wax").join("logs")
     } else {
-        std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(".wax")
-            .join("logs")
+        ui::dirs::home_dir()?.join(".wax").join("logs")
     };
 
     std::fs::create_dir_all(&log_dir)?;

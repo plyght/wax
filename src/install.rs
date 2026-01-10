@@ -1,5 +1,6 @@
-use crate::bottle::homebrew_prefix;
+use crate::bottle::{homebrew_prefix, run_command_with_timeout};
 use crate::error::{Result, WaxError};
+use crate::ui::dirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,10 +18,9 @@ impl InstallMode {
     pub fn detect() -> Self {
         let prefix = homebrew_prefix();
 
-        if let Ok(_metadata) = std::fs::metadata(&prefix) {
-            if is_writable(&prefix) {
-                return InstallMode::Global;
-            }
+        let cellar = prefix.join("Cellar");
+        if (cellar.exists() || prefix.exists()) && is_writable(&prefix) {
+            return InstallMode::Global;
         }
 
         InstallMode::User
@@ -42,7 +42,10 @@ impl InstallMode {
             let prefix = homebrew_prefix();
             if !is_writable(&prefix) {
                 return Err(WaxError::InstallError(format!(
-                    "Cannot write to {}. Use --user for per-user installation or run with sudo for global installation.",
+                    "Cannot write to {}. This usually means:\n  \
+                     - You don't have permission (try: sudo wax install or wax install --user)\n  \
+                     - The directory doesn't exist (Homebrew may not be installed)\n\n  \
+                     For per-user installation: wax install --user",
                     prefix.display()
                 )));
             }
@@ -50,22 +53,15 @@ impl InstallMode {
         Ok(())
     }
 
-    pub fn prefix(&self) -> PathBuf {
+    pub fn prefix(&self) -> Result<PathBuf> {
         match self {
-            InstallMode::User => {
-                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                home.join(".local").join("wax")
-            }
-            InstallMode::Global => homebrew_prefix(),
+            InstallMode::User => Ok(dirs::home_dir()?.join(".local").join("wax")),
+            InstallMode::Global => Ok(homebrew_prefix()),
         }
     }
 
-    pub fn cellar_path(&self) -> PathBuf {
-        self.prefix().join("Cellar")
-    }
-
-    pub fn bin_path(&self) -> PathBuf {
-        self.prefix().join("bin")
+    pub fn cellar_path(&self) -> Result<PathBuf> {
+        Ok(self.prefix()?.join("Cellar"))
     }
 }
 
@@ -115,10 +111,7 @@ impl InstallState {
                 .join("wax")
                 .join("installed.json")
         } else {
-            dirs::home_dir()
-                .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
-                .join(".wax")
-                .join("installed.json")
+            dirs::home_dir()?.join(".wax").join("installed.json")
         };
 
         Ok(Self { state_path })
@@ -186,15 +179,11 @@ impl InstallState {
             _ => vec![PathBuf::from("/usr/local")],
         };
 
-        if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
-            if output.status.success() {
-                if let Ok(prefix) = String::from_utf8(output.stdout) {
-                    let brew_prefix = PathBuf::from(prefix.trim());
-                    let cellar = brew_prefix.join("Cellar");
-                    if cellar.exists() {
-                        self.scan_cellar_and_update(&cellar, &mut packages).await?;
-                    }
-                }
+        if let Some(prefix_str) = run_command_with_timeout("brew", &["--prefix"], 2) {
+            let brew_prefix = PathBuf::from(prefix_str);
+            let cellar = brew_prefix.join("Cellar");
+            if cellar.exists() {
+                self.scan_cellar_and_update(&cellar, &mut packages).await?;
             }
         }
 
@@ -206,14 +195,12 @@ impl InstallState {
             }
         }
 
-        let home = std::env::var("HOME")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let wax_user_cellar = home.join(".local/wax/Cellar");
-        if wax_user_cellar.exists() {
-            self.scan_cellar_and_update(&wax_user_cellar, &mut packages)
-                .await?;
+        if let Ok(home) = dirs::home_dir() {
+            let wax_user_cellar = home.join(".local/wax/Cellar");
+            if wax_user_cellar.exists() {
+                self.scan_cellar_and_update(&wax_user_cellar, &mut packages)
+                    .await?;
+            }
         }
 
         self.save(&packages).await?;
@@ -290,7 +277,7 @@ pub async fn create_symlinks(
     );
 
     let formula_path = cellar_path.join(formula_name).join(version);
-    let prefix = install_mode.prefix();
+    let prefix = install_mode.prefix()?;
 
     let mut created_links = Vec::new();
 
@@ -361,7 +348,7 @@ pub async fn remove_symlinks(
     );
 
     let formula_path = cellar_path.join(formula_name).join(version);
-    let prefix = install_mode.prefix();
+    let prefix = install_mode.prefix()?;
 
     let mut removed_links = Vec::new();
 
@@ -410,12 +397,4 @@ pub async fn remove_symlinks(
 
     debug!("Removed {} symlinks", removed_links.len());
     Ok(removed_links)
-}
-
-mod dirs {
-    use std::path::PathBuf;
-
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
 }

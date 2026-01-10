@@ -150,30 +150,8 @@ pub async fn install(
     }
 
     let install_mode = match InstallMode::from_flags(user, global)? {
-        Some(mode) => {
-            println!("install location: {}", mode.prefix().display());
-            println!("binaries will be in: {}", mode.bin_path().display());
-            println!();
-            mode
-        }
-        None => {
-            let detected = InstallMode::detect();
-            if detected == InstallMode::User {
-                println!(
-                    "no write access to system directory, defaulting to per-user installation"
-                );
-            }
-            println!("install location: {}", detected.prefix().display());
-            println!("binaries will be in: {}", detected.bin_path().display());
-            if detected == InstallMode::User {
-                println!(
-                    "add to PATH: export PATH=\"{}:$PATH\"",
-                    detected.bin_path().display()
-                );
-            }
-            println!();
-            detected
-        }
+        Some(mode) => mode,
+        None => InstallMode::detect(),
     };
 
     install_mode.validate()?;
@@ -298,7 +276,7 @@ pub async fn install(
     let platform = detect_platform();
     debug!("Detected platform: {}", platform);
 
-    let cellar = install_mode.cellar_path();
+    let cellar = install_mode.cellar_path()?;
 
     let multi = MultiProgress::new();
     let downloader = Arc::new(BottleDownloader::new());

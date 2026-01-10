@@ -43,3 +43,17 @@ pub fn create_spinner(message: &str) -> ProgressBar {
 pub fn print_success(message: &str) {
     println!("{}", message);
 }
+
+pub mod dirs {
+    use crate::error::{Result, WaxError};
+    use std::path::PathBuf;
+
+    pub fn home_dir() -> Result<PathBuf> {
+        std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            WaxError::InstallError(
+                "$HOME environment variable is not set. Cannot determine home directory."
+                    .to_string(),
+            )
+        })
+    }
+}

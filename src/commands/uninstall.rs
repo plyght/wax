@@ -90,7 +90,7 @@ async fn uninstall_package_direct(
     }
 
     let install_mode = package.install_mode;
-    let cellar = install_mode.cellar_path();
+    let cellar = install_mode.cellar_path()?;
 
     remove_symlinks(
         formula_name,

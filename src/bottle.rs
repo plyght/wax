@@ -4,6 +4,10 @@ use indicatif::ProgressBar;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 use tar::Archive;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, instrument};
@@ -143,6 +147,24 @@ impl Default for BottleDownloader {
     }
 }
 
+pub fn run_command_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Option<String> {
+    let (tx, rx) = mpsc::channel();
+    let cmd_str = cmd.to_string();
+    let args_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+
+    thread::spawn(move || {
+        let output = Command::new(&cmd_str).args(&args_vec).output();
+        let _ = tx.send(output);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(Ok(output)) if output.status.success() => String::from_utf8(output.stdout)
+            .ok()
+            .map(|s| s.trim().to_string()),
+        _ => None,
+    }
+}
+
 pub fn detect_platform() -> String {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
@@ -177,14 +199,9 @@ pub fn detect_platform() -> String {
 fn macos_version() -> String {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("sw_vers")
-            .arg("-productVersion")
-            .output()
-        {
-            if let Ok(version) = String::from_utf8(output.stdout) {
-                if let Some(major) = version.trim().split('.').next() {
-                    return major.to_string();
-                }
+        if let Some(version) = run_command_with_timeout("sw_vers", &["-productVersion"], 1) {
+            if let Some(major) = version.split('.').next() {
+                return major.to_string();
             }
         }
         "14".to_string()
@@ -206,7 +223,7 @@ pub fn homebrew_prefix() -> PathBuf {
         },
         "linux" => {
             let linuxbrew = PathBuf::from("/home/linuxbrew/.linuxbrew");
-            if linuxbrew.exists() {
+            if linuxbrew.join("Cellar").exists() {
                 linuxbrew
             } else {
                 PathBuf::from("/usr/local")
@@ -215,18 +232,16 @@ pub fn homebrew_prefix() -> PathBuf {
         _ => PathBuf::from("/usr/local"),
     };
 
-    if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
-        if output.status.success() {
-            if let Ok(prefix) = String::from_utf8(output.stdout) {
-                let brew_prefix = PathBuf::from(prefix.trim());
-                if brew_prefix != standard_prefix {
-                    debug!(
-                        "Using custom Homebrew prefix from brew --prefix: {:?}",
-                        brew_prefix
-                    );
-                }
-                return brew_prefix;
+    if let Some(prefix_str) = run_command_with_timeout("brew", &["--prefix"], 2) {
+        let brew_prefix = PathBuf::from(&prefix_str);
+        if brew_prefix.join("Cellar").exists() {
+            if brew_prefix != standard_prefix {
+                debug!(
+                    "Using custom Homebrew prefix from brew --prefix: {:?}",
+                    brew_prefix
+                );
             }
+            return brew_prefix;
         }
     }
 

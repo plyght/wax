@@ -1,5 +1,6 @@
 use crate::bottle::BottleDownloader;
 use crate::error::{Result, WaxError};
+use crate::ui::dirs;
 use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -32,10 +33,7 @@ impl CaskState {
                 .join("wax")
                 .join("installed_casks.json")
         } else {
-            dirs::home_dir()
-                .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
-                .join(".wax")
-                .join("installed_casks.json")
+            dirs::home_dir()?.join(".wax").join("installed_casks.json")
         };
 
         Ok(Self { state_path })
@@ -136,9 +134,7 @@ impl CaskInstaller {
             }
         }
 
-        let home = dirs::home_dir()
-            .ok_or_else(|| WaxError::InstallError("Cannot determine home directory".into()))?;
-        let local_bin = home.join(".local").join("bin");
+        let local_bin = dirs::home_dir()?.join(".local").join("bin");
         tokio::fs::create_dir_all(&local_bin).await?;
         debug!("Using fallback bin directory: {:?}", local_bin);
         Ok(local_bin)
@@ -483,14 +479,6 @@ pub fn detect_artifact_type(url: &str) -> Option<&str> {
         Some("tar.gz")
     } else {
         None
-    }
-}
-
-mod dirs {
-    use std::path::PathBuf;
-
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
     }
 }
 

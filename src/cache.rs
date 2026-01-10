@@ -1,6 +1,7 @@
 use crate::api::{Cask, Formula};
-use crate::error::{Result, WaxError};
+use crate::error::Result;
 use crate::tap::TapManager;
+use crate::ui::dirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
@@ -26,10 +27,7 @@ impl Cache {
         let cache_dir = if let Some(base_dirs) = directories::BaseDirs::new() {
             base_dirs.cache_dir().join("wax")
         } else {
-            dirs::home_dir()
-                .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
-                .join(".wax")
-                .join("cache")
+            dirs::home_dir()?.join(".wax").join("cache")
         };
 
         Ok(Self { cache_dir })
@@ -148,13 +146,5 @@ impl Cache {
 impl Default for Cache {
     fn default() -> Self {
         Self::new().expect("Failed to initialize cache")
-    }
-}
-
-mod dirs {
-    use std::path::PathBuf;
-
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
     }
 }

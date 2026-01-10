@@ -1,6 +1,7 @@
 use crate::api::Formula;
 use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
+use crate::ui::dirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,30 +18,27 @@ pub struct Tap {
 }
 
 impl Tap {
-    pub fn new(user: &str, repo: &str) -> Self {
+    pub fn new(user: &str, repo: &str) -> Result<Self> {
         let full_name = format!("{}/{}", user, repo);
         let url = format!("https://github.com/{}/homebrew-{}.git", user, repo);
-        let path = Self::tap_directory()
+        let path = Self::tap_directory()?
             .join(user)
             .join(format!("homebrew-{}", repo));
 
-        Self {
+        Ok(Self {
             user: user.to_string(),
             repo: repo.to_string(),
             full_name,
             url,
             path,
-        }
+        })
     }
 
-    fn tap_directory() -> PathBuf {
+    fn tap_directory() -> Result<PathBuf> {
         if let Some(base_dirs) = directories::BaseDirs::new() {
-            base_dirs.data_local_dir().join("wax").join("taps")
+            Ok(base_dirs.data_local_dir().join("wax").join("taps"))
         } else {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".wax")
-                .join("taps")
+            Ok(dirs::home_dir()?.join(".wax").join("taps"))
         }
     }
 
@@ -68,10 +66,7 @@ impl TapManager {
         let state_path = if let Some(base_dirs) = directories::BaseDirs::new() {
             base_dirs.data_local_dir().join("wax").join("taps.json")
         } else {
-            dirs::home_dir()
-                .ok_or_else(|| WaxError::CacheError("Cannot determine home directory".into()))?
-                .join(".wax")
-                .join("taps.json")
+            dirs::home_dir()?.join(".wax").join("taps.json")
         };
 
         Ok(Self {
@@ -106,7 +101,7 @@ impl TapManager {
     pub async fn add_tap(&mut self, user: &str, repo: &str) -> Result<()> {
         info!("Adding tap: {}/{}", user, repo);
 
-        let tap = Tap::new(user, repo);
+        let tap = Tap::new(user, repo)?;
 
         if tap.is_installed() {
             return Err(WaxError::TapError(format!(
@@ -254,13 +249,5 @@ impl TapManager {
 impl Default for TapManager {
     fn default() -> Self {
         Self::new().expect("Failed to initialize TapManager")
-    }
-}
-
-mod dirs {
-    use std::path::PathBuf;
-
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
     }
 }

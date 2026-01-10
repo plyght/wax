@@ -1,14 +1,24 @@
+use crate::bottle::homebrew_prefix;
 use crate::cask::CaskState;
-use crate::error::{Result, WaxError};
+use crate::error::Result;
 use crate::install::InstallState;
 use console::style;
-use std::path::PathBuf;
 use tracing::instrument;
 
 #[instrument]
 pub async fn list() -> Result<()> {
-    let homebrew_prefix = detect_homebrew_prefix()?;
-    let cellar_path = homebrew_prefix.join("Cellar");
+    let candidates = [
+        homebrew_prefix().join("Cellar"),
+        crate::ui::dirs::home_dir()
+            .unwrap_or_else(|_| homebrew_prefix())
+            .join(".local/wax/Cellar"),
+    ];
+
+    let cellar_path = candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .unwrap_or_else(homebrew_prefix);
 
     let cask_state = CaskState::new()?;
     let installed_casks = cask_state.load().await?;
@@ -83,49 +93,4 @@ pub async fn list() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn detect_homebrew_prefix() -> Result<PathBuf> {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-
-    let candidates = match os {
-        "macos" => match arch {
-            "aarch64" => vec![PathBuf::from("/opt/homebrew"), PathBuf::from("/usr/local")],
-            _ => vec![PathBuf::from("/usr/local"), PathBuf::from("/opt/homebrew")],
-        },
-        "linux" => vec![
-            PathBuf::from("/home/linuxbrew/.linuxbrew"),
-            PathBuf::from("/usr/local"),
-        ],
-        _ => vec![PathBuf::from("/usr/local")],
-    };
-
-    if let Ok(output) = std::process::Command::new("brew").arg("--prefix").output() {
-        if output.status.success() {
-            if let Ok(prefix) = String::from_utf8(output.stdout) {
-                let brew_prefix = PathBuf::from(prefix.trim());
-                if brew_prefix.join("Cellar").exists() {
-                    return Ok(brew_prefix);
-                }
-            }
-        }
-    }
-
-    for path in candidates {
-        if path.join("Cellar").exists() {
-            return Ok(path);
-        }
-    }
-
-    let home = std::env::var("HOME")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let wax_user_cellar = home.join(".local/wax/Cellar");
-    if wax_user_cellar.exists() {
-        return Ok(home.join(".local/wax"));
-    }
-
-    Err(WaxError::HomebrewNotFound)
 }

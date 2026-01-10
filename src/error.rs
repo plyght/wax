@@ -20,9 +20,6 @@ pub enum WaxError {
     #[error("Cache error: {0}")]
     CacheError(String),
 
-    #[error("Homebrew directory not found")]
-    HomebrewNotFound,
-
     #[error("Checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
 
