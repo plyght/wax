@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="/Users/nicojaffer/Downloads/Halftone Dots2x.png" alt="Wax Logo" />
+  <img src="/assets/images/Halftone Dots2x.png" alt="Wax Logo" />
 </div>
 
 # Wax
