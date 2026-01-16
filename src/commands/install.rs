@@ -181,6 +181,15 @@ pub async fn install(
             formulae
                 .iter()
                 .find(|f| &f.full_name == package_name || &f.name == package_name)
+                .or_else(|| {
+                    let parts: Vec<&str> = package_name.split('/').collect();
+                    if parts.len() >= 3 {
+                        let formula_name = parts[parts.len() - 1];
+                        formulae.iter().find(|f| &f.name == formula_name)
+                    } else {
+                        None
+                    }
+                })
         } else {
             formulae.iter().find(|f| &f.name == package_name)
         };
@@ -197,10 +206,36 @@ pub async fn install(
                     return install_cask(cache, package_name, dry_run).await;
                 }
 
-                errors.push((
-                    package_name.clone(),
-                    "Not found as formula or cask. If using a custom tap, install it with: wax tap add user/repo".to_string(),
-                ));
+                let error_msg = if package_name.contains('/') {
+                    let parts: Vec<&str> = package_name.split('/').collect();
+                    if parts.len() >= 2 {
+                        let tap_name = if parts.len() >= 3 {
+                            format!("{}/{}", parts[0], parts[1])
+                        } else {
+                            parts[0].to_string()
+                        };
+                        let formula_name = parts[parts.len() - 1];
+                        
+                        let tap_exists = tap_manager.has_tap(&tap_name).await;
+                        if tap_exists {
+                            format!(
+                                "Formula '{}' not found in tap '{}'. The formula might not exist in this tap. Try: wax install {}",
+                                formula_name, tap_name, formula_name
+                            )
+                        } else {
+                            format!(
+                                "Tap '{}' not installed. Add it with: wax tap add {}",
+                                tap_name, tap_name
+                            )
+                        }
+                    } else {
+                        "Not found as formula or cask".to_string()
+                    }
+                } else {
+                    "Not found as formula or cask".to_string()
+                };
+
+                errors.push((package_name.clone(), error_msg));
                 continue;
             }
         };

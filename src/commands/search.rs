@@ -19,6 +19,10 @@ fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<
         return Some(900);
     }
 
+    if name_lower.contains(&query_lower) {
+        return Some(850);
+    }
+
     let name_words: Vec<&str> = name_lower.split(|c: char| !c.is_alphanumeric()).collect();
     for word in &name_words {
         if *word == query_lower {
@@ -50,6 +54,13 @@ fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<
 
         if desc_lower.contains(&query_lower) {
             return Some(300);
+        }
+
+        if query_lower.contains('-') {
+            let query_with_spaces = query_lower.replace('-', " ");
+            if desc_lower.contains(&query_with_spaces) {
+                return Some(250);
+            }
         }
     }
 

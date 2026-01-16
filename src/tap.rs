@@ -167,6 +167,10 @@ impl TapManager {
         self.taps.values().collect()
     }
 
+    pub async fn has_tap(&self, tap_name: &str) -> bool {
+        self.taps.contains_key(tap_name)
+    }
+
     #[instrument(skip(self))]
     pub async fn update_tap(&mut self, user: &str, repo: &str) -> Result<()> {
         info!("Updating tap: {}/{}", user, repo);
