@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="/Users/nicojaffer/Downloads/Halftone Dots2x.png" alt="Wax Logo" />
+</div>
+
 # Wax
 
 A fast, modern package manager that leverages Homebrew's ecosystem without the overhead. Built in Rust for speed and reliability, wax provides 16-20x faster search operations and parallel installation workflows while maintaining full compatibility with Homebrew formulae and bottles.
