@@ -4,6 +4,7 @@ use crate::cask::CaskState;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
+use crate::version::is_same_or_newer;
 use console::style;
 use tracing::instrument;
 
@@ -155,7 +156,7 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
     let latest_version = &formula.versions.stable;
     let installed_version = &installed.version;
 
-    if installed_version == latest_version {
+    if is_same_or_newer(installed_version, latest_version) {
         println!(
             "{}@{} is already up to date",
             style(formula_name).magenta(),
@@ -198,7 +199,7 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
     let latest_version = &cask_details.version;
     let installed_version = &installed.version;
 
-    if installed_version == latest_version {
+    if is_same_or_newer(installed_version, latest_version) {
         println!(
             "{}@{} {} is already up to date",
             style(cask_name).magenta(),
@@ -229,7 +230,7 @@ async fn upgrade_formula_internal(
     install_mode: Option<InstallMode>,
     _dry_run: bool,
 ) -> Result<()> {
-    uninstall::uninstall(cache, formula_name, false, false).await?;
+    uninstall::uninstall(cache, formula_name, false, false, true).await?;
 
     let (user_flag, global_flag) = match install_mode {
         Some(InstallMode::User) => (true, false),
@@ -252,7 +253,7 @@ async fn upgrade_formula_internal(
 }
 
 async fn upgrade_cask_internal(cache: &Cache, cask_name: &str, _dry_run: bool) -> Result<()> {
-    uninstall::uninstall(cache, cask_name, false, true).await?;
+    uninstall::uninstall(cache, cask_name, false, true, true).await?;
 
     install::install(
         cache,
@@ -284,7 +285,7 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
     for (name, installed) in &installed_packages {
         if let Some(formula) = formulae.iter().find(|f| &f.name == name) {
             let latest = &formula.versions.stable;
-            if &installed.version != latest {
+            if !is_same_or_newer(&installed.version, latest) {
                 outdated.push(OutdatedPackage {
                     name: name.clone(),
                     installed_version: installed.version.clone(),
@@ -303,7 +304,7 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
             .find(|c| &c.token == name || &c.full_token == name)
         {
             if let Ok(details) = api_client.fetch_cask_details(&cask.token).await {
-                if installed.version != details.version {
+                if !is_same_or_newer(&installed.version, &details.version) {
                     outdated.push(OutdatedPackage {
                         name: name.clone(),
                         installed_version: installed.version.clone(),

@@ -11,6 +11,7 @@ mod install;
 mod lockfile;
 mod tap;
 mod ui;
+mod version;
 
 use api::ApiClient;
 use cache::Cache;
@@ -29,6 +30,9 @@ struct Cli {
 
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    #[arg(short, long, global = true, help = "Assume yes for all prompts")]
+    yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -245,7 +249,7 @@ async fn main() -> Result<()> {
             formula,
             dry_run,
             cask,
-        } => commands::uninstall::uninstall(&cache, &formula, dry_run, cask).await,
+        } => commands::uninstall::uninstall(&cache, &formula, dry_run, cask, cli.yes).await,
         Commands::Upgrade { packages, dry_run } => {
             commands::upgrade::upgrade(&cache, &packages, dry_run).await
         }

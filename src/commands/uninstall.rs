@@ -7,7 +7,13 @@ use inquire::Confirm;
 use tracing::instrument;
 
 #[instrument(skip(cache))]
-pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: bool) -> Result<()> {
+pub async fn uninstall(
+    cache: &Cache,
+    formula_name: &str,
+    dry_run: bool,
+    cask: bool,
+    yes: bool,
+) -> Result<()> {
     let start = std::time::Instant::now();
 
     if cask {
@@ -56,7 +62,7 @@ pub async fn uninstall(cache: &Cache, formula_name: &str, dry_run: bool, cask: b
             println!("  - {}", dep);
         }
 
-        if !dry_run {
+        if !dry_run && !yes {
             let confirm = Confirm::new("Continue with uninstall?")
                 .with_default(false)
                 .prompt();

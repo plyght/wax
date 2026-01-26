@@ -1,8 +1,9 @@
-use crate::api::Formula;
+use crate::api::{ApiClient, Formula};
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::builder::Builder;
 use crate::cache::Cache;
 use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask};
+use crate::commands::update;
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
@@ -143,6 +144,12 @@ pub async fn install(
 ) -> Result<()> {
     if package_names.is_empty() {
         return Err(WaxError::InvalidInput("No packages specified".to_string()));
+    }
+
+    if !cache.is_initialized() {
+        println!("initializing package index (first time only)...");
+        let api_client = ApiClient::new();
+        update::update(&api_client, cache).await?;
     }
 
     if cask {

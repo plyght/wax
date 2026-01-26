@@ -1,6 +1,7 @@
 use crate::bottle::{homebrew_prefix, run_command_with_timeout};
 use crate::error::{Result, WaxError};
 use crate::ui::dirs;
+use crate::version::sort_versions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -231,7 +232,7 @@ impl InstallState {
                 }
 
                 if !versions.is_empty() {
-                    versions.sort();
+                    sort_versions(&mut versions);
                     let version = versions.last().unwrap().clone();
 
                     packages.insert(
