@@ -185,13 +185,13 @@ pub async fn install(
                     let parts: Vec<&str> = package_name.split('/').collect();
                     if parts.len() >= 3 {
                         let formula_name = parts[parts.len() - 1];
-                        formulae.iter().find(|f| &f.name == formula_name)
+                        formulae.iter().find(|f| f.name == formula_name)
                     } else {
                         None
                     }
                 })
         } else {
-            formulae.iter().find(|f| &f.name == package_name)
+            formulae.iter().find(|f| f.name == *package_name)
         };
 
         let formula = match formula {
@@ -215,7 +215,7 @@ pub async fn install(
                             parts[0].to_string()
                         };
                         let formula_name = parts[parts.len() - 1];
-                        
+
                         let tap_exists = tap_manager.has_tap(&tap_name).await;
                         if tap_exists {
                             format!(
@@ -463,7 +463,10 @@ pub async fn install(
 
         if cfg!(target_os = "linux") {
             let prefix = install_mode.prefix()?;
-            BottleDownloader::relocate_bottle(&formula_cellar, prefix.to_str().unwrap_or("/home/linuxbrew/.linuxbrew"))?;
+            BottleDownloader::relocate_bottle(
+                &formula_cellar,
+                prefix.to_str().unwrap_or("/home/linuxbrew/.linuxbrew"),
+            )?;
         }
 
         create_symlinks(

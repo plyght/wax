@@ -97,13 +97,17 @@ enum Commands {
         cask: bool,
     },
 
-    #[command(about = "Upgrade a formula to the latest version")]
+    #[command(about = "Upgrade formulae to the latest version")]
     #[command(alias = "up")]
     Upgrade {
-        formula: String,
+        #[arg(help = "Package name(s) to upgrade (upgrades all if omitted)")]
+        packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
     },
+
+    #[command(about = "List packages with available updates")]
+    Outdated,
 
     #[command(about = "Generate lockfile from installed packages")]
     Lock,
@@ -212,9 +216,10 @@ async fn main() -> Result<()> {
             dry_run,
             cask,
         } => commands::uninstall::uninstall(&cache, &formula, dry_run, cask).await,
-        Commands::Upgrade { formula, dry_run } => {
-            commands::upgrade::upgrade(&cache, &formula, dry_run).await
+        Commands::Upgrade { packages, dry_run } => {
+            commands::upgrade::upgrade(&cache, &packages, dry_run).await
         }
+        Commands::Outdated => commands::outdated::outdated(&cache).await,
         Commands::Lock => commands::lock::lock().await,
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action } => commands::tap::tap(action).await,

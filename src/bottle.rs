@@ -141,19 +141,14 @@ impl BottleDownloader {
     }
 
     pub fn relocate_bottle(dir: &Path, prefix: &str) -> Result<()> {
-        let placeholders = [
-            "@@HOMEBREW_PREFIX@@",
-            "@@HOMEBREW_CELLAR@@",
-        ];
+        let placeholders = ["@@HOMEBREW_PREFIX@@", "@@HOMEBREW_CELLAR@@"];
         let cellar = format!("{}/Cellar", prefix);
 
         Self::relocate_dir(dir, &placeholders, prefix, &cellar)
     }
 
     fn relocate_dir(dir: &Path, placeholders: &[&str], prefix: &str, cellar: &str) -> Result<()> {
-        let entries: Vec<_> = std::fs::read_dir(dir)?
-            .filter_map(|e| e.ok())
-            .collect();
+        let entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
 
         for entry in entries {
             let path = entry.path();
@@ -203,8 +198,13 @@ impl BottleDownloader {
                 if &content[i..i + placeholder_bytes.len()] == placeholder_bytes {
                     if placeholder_bytes.len() >= replacement.len() {
                         let pad_len = placeholder_bytes.len() - replacement.len();
-                        content.splice(i..i + placeholder_bytes.len(), 
-                            replacement.iter().copied().chain(std::iter::repeat(0).take(pad_len)));
+                        content.splice(
+                            i..i + placeholder_bytes.len(),
+                            replacement
+                                .iter()
+                                .copied()
+                                .chain(std::iter::repeat_n(0, pad_len)),
+                        );
                     } else {
                         content.splice(i..i + placeholder_bytes.len(), replacement.iter().copied());
                     }
@@ -250,11 +250,18 @@ impl BottleDownloader {
         let interpreter = format!("{}/lib/ld.so", prefix);
         if Path::new(&interpreter).exists() {
             let output = Command::new(&patchelf)
-                .args(["--set-interpreter", &interpreter, path.to_str().unwrap_or_default()])
+                .args([
+                    "--set-interpreter",
+                    &interpreter,
+                    path.to_str().unwrap_or_default(),
+                ])
                 .output();
             if let Ok(out) = output {
                 if !out.status.success() {
-                    debug!("patchelf set-interpreter failed: {:?}", String::from_utf8_lossy(&out.stderr));
+                    debug!(
+                        "patchelf set-interpreter failed: {:?}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
                 }
             }
         }
@@ -270,7 +277,11 @@ impl BottleDownloader {
                     .replace("@@HOMEBREW_CELLAR@@", cellar);
                 if new_rpath != rpath.as_ref() {
                     let _ = Command::new(&patchelf)
-                        .args(["--set-rpath", new_rpath.trim(), path.to_str().unwrap_or_default()])
+                        .args([
+                            "--set-rpath",
+                            new_rpath.trim(),
+                            path.to_str().unwrap_or_default(),
+                        ])
                         .output();
                     debug!("Relocated ELF rpath: {:?}", path);
                 }

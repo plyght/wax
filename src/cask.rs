@@ -96,10 +96,10 @@ impl CaskInstaller {
     fn check_platform_support() -> Result<()> {
         #[cfg(not(target_os = "macos"))]
         {
-            return Err(WaxError::PlatformNotSupported(
+            Err(WaxError::PlatformNotSupported(
                 "Cask installation is only supported on macOS. Use formulae for Linux packages."
                     .to_string(),
-            ));
+            ))
         }
         #[cfg(target_os = "macos")]
         {
