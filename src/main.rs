@@ -33,8 +33,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(about = "Update formula index")]
-    Update,
+    #[command(about = "Update formula index or wax itself")]
+    Update {
+        #[arg(
+            short = 's',
+            long = "self",
+            help = "Update wax itself instead of formula index"
+        )]
+        update_self: bool,
+        #[arg(short, long, help = "Use nightly build from GitHub (with --self)")]
+        nightly: bool,
+        #[arg(
+            short,
+            long,
+            help = "Force reinstall even if on latest version (with --self)"
+        )]
+        force: bool,
+    },
 
     #[command(about = "Search formulae and casks")]
     #[command(alias = "find")]
@@ -178,7 +193,22 @@ async fn main() -> Result<()> {
     let cache = Cache::new()?;
 
     let result = match cli.command {
-        Commands::Update => commands::update::update(&api_client, &cache).await,
+        Commands::Update {
+            update_self,
+            nightly,
+            force,
+        } => {
+            if update_self {
+                let channel = if nightly {
+                    commands::self_update::Channel::Nightly
+                } else {
+                    commands::self_update::Channel::Stable
+                };
+                commands::self_update::self_update(channel, force).await
+            } else {
+                commands::update::update(&api_client, &cache).await
+            }
+        }
         Commands::Search { query } => commands::search::search(&api_client, &cache, &query).await,
         Commands::Info { formula, cask } => {
             commands::info::info(&api_client, &cache, &formula, cask).await

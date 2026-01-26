@@ -53,6 +53,9 @@ pub enum WaxError {
 
     #[error("Tap error: {0}")]
     TapError(String),
+
+    #[error("Self-update error: {0}")]
+    SelfUpdateError(String),
 }
 
 pub type Result<T> = std::result::Result<T, WaxError>;

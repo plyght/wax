@@ -25,6 +25,7 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 - **Minimal Resource Usage**: Single compiled binary with async I/O, no Ruby runtime overhead
 - **Smart Caching**: Local formula index for offline search and instant lookups
 - **Flexible Installation**: User-local (`~/.local/wax`) or system-wide deployment options
+- **Built-in Self-Updater**: Update wax itself from crates.io (stable) or GitHub (nightly)
 
 ## Installation
 
@@ -44,6 +45,12 @@ sudo cp target/release/wax /usr/local/bin/
 ```bash
 # Update formula index
 wax update
+
+# Update wax itself
+wax update -s            # stable (from crates.io)
+wax update --self        # same as above
+wax update -sn           # nightly (from GitHub)
+wax update -sf           # force reinstall
 
 # Search packages
 wax search nginx
@@ -81,10 +88,14 @@ wax uninstall tree
 wax uninstall iterm2
 wax rm tree          # shorthand
 
+# Check for outdated packages
+wax outdated
+
 # Upgrade packages (auto-detects formulae or casks)
-wax upgrade nginx
-wax upgrade iterm2
-wax up nginx         # shorthand
+wax upgrade              # upgrade all outdated packages
+wax upgrade nginx        # upgrade specific package
+wax upgrade nginx tree   # upgrade multiple packages
+wax up nginx             # shorthand
 
 # Generate lockfile
 wax lock
