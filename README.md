@@ -196,6 +196,7 @@ See `docs/comparison.md` for detailed methodology and analysis.
 
 ## Limitations
 
+- **Linux Bottles**: Linux bottles require `patchelf` for ELF binary relocation. Install it first: `wax install patchelf`
 - **Build System Detection**: Source builds use heuristic detection of build systems. Complex or non-standard build configurations may fail.
 - **Formula DSL Subset**: Parses essential Ruby formula syntax. Advanced features (conditional deps, patches, custom install blocks) may not be fully supported.
 - **macOS Primary**: Developed for macOS. Linux support is functional but less tested.

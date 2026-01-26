@@ -139,6 +139,167 @@ impl BottleDownloader {
         debug!("Extraction complete");
         Ok(())
     }
+
+    pub fn relocate_bottle(dir: &Path, prefix: &str) -> Result<()> {
+        let placeholders = [
+            "@@HOMEBREW_PREFIX@@",
+            "@@HOMEBREW_CELLAR@@",
+        ];
+        let cellar = format!("{}/Cellar", prefix);
+
+        Self::relocate_dir(dir, &placeholders, prefix, &cellar)
+    }
+
+    fn relocate_dir(dir: &Path, placeholders: &[&str], prefix: &str, cellar: &str) -> Result<()> {
+        let entries: Vec<_> = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .collect();
+
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+
+            if file_type.is_dir() {
+                Self::relocate_dir(&path, placeholders, prefix, cellar)?;
+            } else if file_type.is_file() {
+                Self::relocate_file(&path, placeholders, prefix, cellar)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn relocate_file(path: &Path, placeholders: &[&str], prefix: &str, cellar: &str) -> Result<()> {
+        let content = match std::fs::read(path) {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+
+        if content.len() >= 4 && &content[0..4] == b"\x7fELF" {
+            return Self::relocate_elf(path, prefix, cellar);
+        }
+
+        let mut content = content;
+        let metadata = std::fs::metadata(path)?;
+        let original_permissions = metadata.permissions();
+        let mut perms = original_permissions.clone();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(perms.mode() | 0o200);
+            std::fs::set_permissions(path, perms)?;
+        }
+
+        let mut modified = false;
+        for placeholder in placeholders {
+            let replacement = if *placeholder == "@@HOMEBREW_CELLAR@@" {
+                cellar.as_bytes()
+            } else {
+                prefix.as_bytes()
+            };
+
+            let placeholder_bytes = placeholder.as_bytes();
+            let mut i = 0;
+            while i + placeholder_bytes.len() <= content.len() {
+                if &content[i..i + placeholder_bytes.len()] == placeholder_bytes {
+                    if placeholder_bytes.len() >= replacement.len() {
+                        let pad_len = placeholder_bytes.len() - replacement.len();
+                        content.splice(i..i + placeholder_bytes.len(), 
+                            replacement.iter().copied().chain(std::iter::repeat(0).take(pad_len)));
+                    } else {
+                        content.splice(i..i + placeholder_bytes.len(), replacement.iter().copied());
+                    }
+                    modified = true;
+                    i += placeholder_bytes.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        if modified {
+            std::fs::write(path, &content)?;
+            #[cfg(unix)]
+            {
+                std::fs::set_permissions(path, original_permissions)?;
+            }
+            debug!("Relocated: {:?}", path);
+        }
+        Ok(())
+    }
+
+    fn relocate_elf(path: &Path, prefix: &str, cellar: &str) -> Result<()> {
+        use std::process::Command;
+
+        let patchelf = which_patchelf();
+        if patchelf.is_none() {
+            debug!("patchelf not found, skipping ELF relocation for {:?}", path);
+            return Ok(());
+        }
+        let patchelf = patchelf.unwrap();
+
+        let metadata = std::fs::metadata(path)?;
+        let original_permissions = metadata.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = original_permissions.clone();
+            perms.set_mode(perms.mode() | 0o200);
+            std::fs::set_permissions(path, perms)?;
+        }
+
+        let interpreter = format!("{}/lib/ld.so", prefix);
+        if Path::new(&interpreter).exists() {
+            let output = Command::new(&patchelf)
+                .args(["--set-interpreter", &interpreter, path.to_str().unwrap_or_default()])
+                .output();
+            if let Ok(out) = output {
+                if !out.status.success() {
+                    debug!("patchelf set-interpreter failed: {:?}", String::from_utf8_lossy(&out.stderr));
+                }
+            }
+        }
+
+        if let Ok(output) = Command::new(&patchelf)
+            .args(["--print-rpath", path.to_str().unwrap_or_default()])
+            .output()
+        {
+            if output.status.success() {
+                let rpath = String::from_utf8_lossy(&output.stdout);
+                let new_rpath = rpath
+                    .replace("@@HOMEBREW_PREFIX@@", prefix)
+                    .replace("@@HOMEBREW_CELLAR@@", cellar);
+                if new_rpath != rpath.as_ref() {
+                    let _ = Command::new(&patchelf)
+                        .args(["--set-rpath", new_rpath.trim(), path.to_str().unwrap_or_default()])
+                        .output();
+                    debug!("Relocated ELF rpath: {:?}", path);
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(path, original_permissions)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn which_patchelf() -> Option<String> {
+    for path in [
+        "/home/linuxbrew/.linuxbrew/bin/patchelf",
+        "/usr/bin/patchelf",
+        "/usr/local/bin/patchelf",
+        "patchelf",
+    ] {
+        if let Ok(output) = std::process::Command::new(path).arg("--version").output() {
+            if output.status.success() {
+                return Some(path.to_string());
+            }
+        }
+    }
+    None
 }
 
 impl Default for BottleDownloader {
@@ -191,7 +352,8 @@ pub fn detect_platform() -> String {
             }
         }
         ("linux", "x86_64") => "x86_64_linux".to_string(),
-        ("linux", "aarch64") => "aarch64_linux".to_string(),
+        ("linux", "aarch64") => "arm64_linux".to_string(),
+        ("linux", "arm") => "arm64_linux".to_string(),
         _ => "unknown".to_string(),
     }
 }

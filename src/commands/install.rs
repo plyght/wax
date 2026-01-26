@@ -439,7 +439,31 @@ pub async fn install(
         if actual_content_dir.exists() {
             copy_dir_all(&actual_content_dir, &formula_cellar)?;
         } else {
-            copy_dir_all(&extract_dir, &formula_cellar)?;
+            let name_dir = extract_dir.join(&name);
+            if name_dir.exists() {
+                let mut found_version_dir = None;
+                if let Ok(mut entries) = std::fs::read_dir(&name_dir) {
+                    while let Some(Ok(entry)) = entries.next() {
+                        let entry_name = entry.file_name().to_string_lossy().to_string();
+                        if entry_name.starts_with(&version) && entry.path().is_dir() {
+                            found_version_dir = Some(entry.path());
+                            break;
+                        }
+                    }
+                }
+                if let Some(version_dir) = found_version_dir {
+                    copy_dir_all(&version_dir, &formula_cellar)?;
+                } else {
+                    copy_dir_all(&extract_dir, &formula_cellar)?;
+                }
+            } else {
+                copy_dir_all(&extract_dir, &formula_cellar)?;
+            }
+        }
+
+        if cfg!(target_os = "linux") {
+            let prefix = install_mode.prefix()?;
+            BottleDownloader::relocate_bottle(&formula_cellar, prefix.to_str().unwrap_or("/home/linuxbrew/.linuxbrew"))?;
         }
 
         create_symlinks(

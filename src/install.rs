@@ -330,6 +330,20 @@ pub async fn create_symlinks(
         }
     }
 
+    let opt_dir = prefix.join("opt");
+    if !dry_run {
+        fs::create_dir_all(&opt_dir).await?;
+    }
+    let opt_link = opt_dir.join(formula_name);
+    if !opt_link.exists() && !dry_run {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink(&formula_path, &opt_link)?;
+        }
+        created_links.push(opt_link);
+    }
+
     debug!("Created {} symlinks", created_links.len());
     Ok(created_links)
 }
