@@ -20,6 +20,16 @@ pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
 
         if ty.is_dir() {
             copy_dir_all(&src_path, &dst_path)?;
+        } else if ty.is_symlink() {
+            #[cfg(unix)]
+            {
+                let target = std::fs::read_link(&src_path)?;
+                std::os::unix::fs::symlink(target, &dst_path)?;
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::copy(&src_path, &dst_path)?;
+            }
         } else {
             std::fs::copy(&src_path, &dst_path)?;
         }

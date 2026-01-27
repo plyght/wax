@@ -19,6 +19,8 @@ pub struct InstalledCask {
     pub artifact_type: Option<String>,
     #[serde(default)]
     pub binary_paths: Option<Vec<String>>,
+    #[serde(default)]
+    pub app_name: Option<String>,
 }
 
 pub struct CaskState {

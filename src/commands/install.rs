@@ -577,6 +577,7 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     let mut installed_binaries: Vec<String> = Vec::new();
     let mut binary_paths: Vec<String> = Vec::new();
+    let mut installed_app_name: Option<String> = None;
 
     match artifact_type {
         "dmg" | "zip" => {
@@ -591,6 +592,7 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
             } else {
                 installer.install_zip(&download_path, &app_name).await?
             }
+            installed_app_name = Some(app_name);
         }
         "pkg" => installer.install_pkg(&download_path).await?,
         "tar.gz" => {
@@ -622,6 +624,7 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
         } else {
             Some(binary_paths)
         },
+        app_name: installed_app_name,
     };
     state.add(installed_cask).await?;
 

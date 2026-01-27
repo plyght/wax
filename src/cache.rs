@@ -1,7 +1,8 @@
-use crate::api::{Cask, Formula};
+use crate::api::{ApiClient, Cask, Formula};
 use crate::error::Result;
 use crate::tap::TapManager;
 use crate::ui::dirs;
+use console::style;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
@@ -89,15 +90,62 @@ impl Cache {
     }
 
     pub async fn load_formulae(&self) -> Result<Vec<Formula>> {
-        let json = fs::read_to_string(self.formulae_path()).await?;
+        let path = self.formulae_path();
+        if !path.exists() {
+            self.auto_init().await?;
+        }
+        let json = fs::read_to_string(path).await?;
         let formulae = serde_json::from_str(&json)?;
         Ok(formulae)
     }
 
     pub async fn load_casks(&self) -> Result<Vec<Cask>> {
-        let json = fs::read_to_string(self.casks_path()).await?;
+        let path = self.casks_path();
+        if !path.exists() {
+            self.auto_init().await?;
+        }
+        let json = fs::read_to_string(path).await?;
         let casks = serde_json::from_str(&json)?;
         Ok(casks)
+    }
+
+    async fn auto_init(&self) -> Result<()> {
+        eprintln!("{} package index not found, fetching...", style("→").cyan());
+
+        let api_client = ApiClient::new();
+
+        let (formulae_result, casks_result) = tokio::join!(
+            api_client.fetch_formulae_conditional(None, None),
+            api_client.fetch_casks_conditional(None, None)
+        );
+
+        let formulae_fetch = formulae_result?;
+        let casks_fetch = casks_result?;
+
+        if let Some(formulae) = formulae_fetch.data {
+            self.save_formulae(&formulae).await?;
+        }
+
+        if let Some(casks) = casks_fetch.data {
+            self.save_casks(&casks).await?;
+        }
+
+        let metadata = CacheMetadata {
+            last_updated: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+            formula_count: 0,
+            cask_count: 0,
+            formulae_etag: formulae_fetch.etag,
+            formulae_last_modified: formulae_fetch.last_modified,
+            casks_etag: casks_fetch.etag,
+            casks_last_modified: casks_fetch.last_modified,
+        };
+        self.save_metadata(&metadata).await?;
+
+        eprintln!("{} index ready\n", style("✓").green());
+        Ok(())
     }
 
     pub async fn load_metadata(&self) -> Result<Option<CacheMetadata>> {

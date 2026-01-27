@@ -167,8 +167,11 @@ async fn uninstall_cask(
         _ => {
             #[cfg(target_os = "macos")]
             {
-                let app_path =
-                    std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name));
+                let app_name = cask
+                    .app_name
+                    .clone()
+                    .unwrap_or_else(|| format!("{}.app", cask_name));
+                let app_path = std::path::PathBuf::from("/Applications").join(&app_name);
 
                 if app_path.exists() {
                     tokio::fs::remove_dir_all(&app_path).await?;
