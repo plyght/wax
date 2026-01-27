@@ -89,13 +89,13 @@ jobs:
           ESCAPED_DIFF=$(echo "$DIFF" | jq -Rs .)
           
           REQUEST=$(jq -n \
-            --arg diff "Generate release notes for version $VERSION of wax (a fast Homebrew-compatible package manager written in Rust). Analyze this code diff and write user-friendly release notes. Focus on new features, bug fixes, performance improvements, and breaking changes. Format as markdown. Be concise.\n\nCode diff:\n$DIFF" \
+            --arg diff "Generate release notes for version $VERSION of wax (a fast Homebrew-compatible package manager written in Rust).\n\nCode diff:\n$DIFF" \
             '{
               "model": "gpt-5.2",
               "messages": [
                 {
                   "role": "system", 
-                  "content": "You generate concise release notes from code diffs. Focus on user-facing changes. Use markdown formatting with ## headers for sections like Features, Fixes, Improvements. Skip internal refactoring unless it affects users."
+                  "content": "You generate release notes from code diffs. Rules:\n- No emojis\n- No title/header (release name already shown in GitHub UI)\n- Minimal, concise, yet comprehensive\n- Only include sections with actual changes (omit empty sections entirely)\n- Use markdown ## headers: Features, Fixes, Improvements, Breaking Changes\n- Focus on user-facing changes only, skip internal refactoring\n- If only version bump with no real changes, output exactly: Maintenance release."
                 },
                 {
                   "role": "user",
