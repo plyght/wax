@@ -102,7 +102,7 @@ jobs:
                   "content": $diff
                 }
               ],
-              "max_tokens": 2000
+              "max_completion_tokens": 2000
             }')
           
           RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
