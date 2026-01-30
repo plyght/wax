@@ -152,13 +152,6 @@ impl Tap {
         }
     }
 
-    pub fn is_installed(&self) -> bool {
-        match &self.kind {
-            TapKind::LocalDir { path } | TapKind::LocalFile { path } => path.exists(),
-            _ => self.path.exists(),
-        }
-    }
-
     pub fn url(&self) -> Option<String> {
         match &self.kind {
             TapKind::GitHub { user, repo } => {
@@ -168,10 +161,6 @@ impl Tap {
             TapKind::LocalDir { path } => Some(format!("file://{}", path.display())),
             TapKind::LocalFile { path } => Some(format!("file://{}", path.display())),
         }
-    }
-
-    pub fn is_remote(&self) -> bool {
-        matches!(self.kind, TapKind::GitHub { .. } | TapKind::Git { .. })
     }
 }
 
@@ -309,8 +298,7 @@ impl TapManager {
                     fs::remove_dir_all(&tap.path).await?;
                 }
             }
-            TapKind::LocalDir { .. } | TapKind::LocalFile { .. } => {
-            }
+            TapKind::LocalDir { .. } | TapKind::LocalFile { .. } => {}
         }
 
         self.taps.remove(full_name);
