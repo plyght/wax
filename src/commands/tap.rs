@@ -8,41 +8,17 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
 
     match action {
         Some(crate::TapAction::Add { tap }) => {
-            let parts: Vec<&str> = tap.split('/').collect();
-            if parts.len() != 2 {
-                eprintln!("invalid tap format. use: user/repo");
-                return Ok(());
-            }
-
-            let (user, repo) = (parts[0], parts[1]);
-
-            manager.add_tap(user, repo).await?;
+            manager.add_tap(&tap).await?;
             println!();
             println!("+ tap {}", tap);
         }
         Some(crate::TapAction::Remove { tap }) => {
-            let parts: Vec<&str> = tap.split('/').collect();
-            if parts.len() != 2 {
-                eprintln!("invalid tap format. use: user/repo");
-                return Ok(());
-            }
-
-            let (user, repo) = (parts[0], parts[1]);
-
-            manager.remove_tap(user, repo).await?;
+            manager.remove_tap(&tap).await?;
             println!();
             println!("- tap {}", tap);
         }
         Some(crate::TapAction::Update { tap }) => {
-            let parts: Vec<&str> = tap.split('/').collect();
-            if parts.len() != 2 {
-                eprintln!("invalid tap format. use: user/repo");
-                return Ok(());
-            }
-
-            let (user, repo) = (parts[0], parts[1]);
-
-            manager.update_tap(user, repo).await?;
+            manager.update_tap(&tap).await?;
             println!();
             println!("updated tap {}", tap);
         }
@@ -54,7 +30,8 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
             } else {
                 println!();
                 for tap in taps {
-                    println!("{} {}", style(&tap.full_name).magenta(), &tap.url);
+                    let url_str = tap.url().unwrap_or_else(|| "local".to_string());
+                    println!("{} {}", style(&tap.full_name).magenta(), url_str);
                 }
             }
         }

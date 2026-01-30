@@ -145,19 +145,19 @@ enum Commands {
 enum TapAction {
     #[command(about = "Add a custom tap")]
     Add {
-        #[arg(help = "Tap name in user/repo format")]
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
     #[command(about = "Remove a custom tap")]
     Remove {
-        #[arg(help = "Tap name in user/repo format")]
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
     #[command(about = "List installed taps")]
     List,
     #[command(about = "Update a tap")]
     Update {
-        #[arg(help = "Tap name in user/repo format")]
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
 }
