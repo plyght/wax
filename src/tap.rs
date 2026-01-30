@@ -344,9 +344,7 @@ impl TapManager {
                 }
             }
             TapKind::LocalDir { .. } | TapKind::LocalFile { .. } => {
-                return Err(WaxError::TapError(
-                    "Cannot update local taps. They are managed externally.".to_string(),
-                ));
+                info!("Local tap, no update needed (managed externally)");
             }
         }
 

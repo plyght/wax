@@ -18,9 +18,20 @@ pub async fn tap(action: Option<crate::TapAction>) -> Result<()> {
             println!("- tap {}", tap);
         }
         Some(crate::TapAction::Update { tap }) => {
+            use crate::tap::Tap;
+            let tap_spec = Tap::from_spec(&tap)?;
+            let is_local = matches!(
+                tap_spec.kind,
+                crate::tap::TapKind::LocalDir { .. } | crate::tap::TapKind::LocalFile { .. }
+            );
+
             manager.update_tap(&tap).await?;
             println!();
-            println!("updated tap {}", tap);
+            if is_local {
+                println!("local tap {} (no update needed)", tap);
+            } else {
+                println!("updated tap {}", tap);
+            }
         }
         Some(crate::TapAction::List) | None => {
             let taps = manager.list_taps();
