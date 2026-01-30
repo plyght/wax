@@ -219,10 +219,6 @@ impl InstallState {
             if entry.file_type().await?.is_dir() {
                 let package_name = entry.file_name().to_string_lossy().to_string();
 
-                if packages.contains_key(&package_name) {
-                    continue;
-                }
-
                 let mut versions = Vec::new();
                 let mut version_entries = tokio::fs::read_dir(entry.path()).await?;
                 while let Some(version_entry) = version_entries.next_entry().await? {
@@ -235,21 +231,25 @@ impl InstallState {
                     sort_versions(&mut versions);
                     let version = versions.last().unwrap().clone();
 
-                    packages.insert(
-                        package_name.clone(),
-                        InstalledPackage {
-                            name: package_name,
-                            version,
-                            platform: format!(
-                                "{}-{}",
-                                std::env::consts::OS,
-                                std::env::consts::ARCH
-                            ),
-                            install_date: 0,
-                            install_mode: self.detect_install_mode(cellar),
-                            from_source: false,
-                        },
-                    );
+                    if let Some(existing) = packages.get_mut(&package_name) {
+                        existing.version = version;
+                    } else {
+                        packages.insert(
+                            package_name.clone(),
+                            InstalledPackage {
+                                name: package_name,
+                                version,
+                                platform: format!(
+                                    "{}-{}",
+                                    std::env::consts::OS,
+                                    std::env::consts::ARCH
+                                ),
+                                install_date: 0,
+                                install_mode: self.detect_install_mode(cellar),
+                                from_source: false,
+                            },
+                        );
+                    }
                 }
             }
         }
