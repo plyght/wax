@@ -189,8 +189,69 @@ impl TapManager {
         }
 
         let json = fs::read_to_string(&self.state_path).await?;
-        self.taps = serde_json::from_str(&json)?;
+
+        match serde_json::from_str(&json) {
+            Ok(taps) => {
+                self.taps = taps;
+            }
+            Err(_) => {
+                debug!("Migrating legacy taps.json format");
+                self.taps = Self::migrate_legacy_taps(&json)?;
+                self.save().await?;
+            }
+        }
+
         Ok(())
+    }
+
+    fn migrate_legacy_taps(json: &str) -> Result<HashMap<String, Tap>> {
+        let legacy: HashMap<String, serde_json::Value> = serde_json::from_str(json)
+            .map_err(|e| WaxError::CacheError(format!("Failed to parse taps.json: {}", e)))?;
+
+        let mut taps = HashMap::new();
+
+        for (name, value) in legacy {
+            let full_name = value
+                .get("full_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&name)
+                .to_string();
+
+            let path = value
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .unwrap_or_default();
+
+            let kind = if let (Some(user), Some(repo)) = (
+                value.get("user").and_then(|v| v.as_str()),
+                value.get("repo").and_then(|v| v.as_str()),
+            ) {
+                TapKind::GitHub {
+                    user: user.to_string(),
+                    repo: repo.to_string(),
+                }
+            } else if let Some(url) = value.get("url").and_then(|v| v.as_str()) {
+                TapKind::Git {
+                    url: url.to_string(),
+                }
+            } else if path.is_file() {
+                TapKind::LocalFile { path: path.clone() }
+            } else {
+                TapKind::LocalDir { path: path.clone() }
+            };
+
+            taps.insert(
+                name,
+                Tap {
+                    full_name,
+                    kind,
+                    path,
+                },
+            );
+        }
+
+        Ok(taps)
     }
 
     pub async fn save(&self) -> Result<()> {
