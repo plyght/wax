@@ -539,7 +539,14 @@ async fn install_impl(
     for (name, version, extract_dir) in extracted_packages {
         let _critical = CriticalSection::new();
         let formula_cellar = cellar.join(&name).join(&version);
-        tokio::fs::create_dir_all(&formula_cellar).await?;
+        if formula_cellar.exists() {
+            tokio::fs::remove_dir_all(&formula_cellar).await.or_else(|_| {
+                crate::sudo::sudo_remove(&formula_cellar).map(|_| ())
+            })?;
+        }
+        tokio::fs::create_dir_all(&formula_cellar).await.or_else(|_| {
+            crate::sudo::sudo_mkdir(&formula_cellar)
+        })?;
 
         let actual_content_dir = extract_dir.join(&name).join(&version);
         if actual_content_dir.exists() {

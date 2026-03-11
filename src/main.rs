@@ -10,6 +10,7 @@ mod formula_parser;
 mod install;
 mod lockfile;
 mod signal;
+mod sudo;
 mod tap;
 mod ui;
 mod version;

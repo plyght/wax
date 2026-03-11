@@ -1,7 +1,9 @@
 use crate::error::Result;
+use crate::sudo;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::time::Duration;
+use tracing::debug;
 
 pub const PROGRESS_BAR_CHARS: &str = "█▓▒░ ";
 pub const PROGRESS_BAR_TEMPLATE: &str =
@@ -10,6 +12,22 @@ pub const PROGRESS_BAR_PREFIX_TEMPLATE: &str =
     "{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}";
 
 pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
+    match copy_dir_all_inner(src, dst) {
+        Ok(()) => Ok(()),
+        Err(ref e) if sudo::is_permission_error(e) || sudo::is_file_exists_error(e) => {
+            debug!(
+                "copy_dir_all failed ({:?}), retrying with sudo: {} -> {}",
+                e,
+                src.display(),
+                dst.display()
+            );
+            sudo::sudo_copy(src, dst)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn copy_dir_all_inner(src: &PathBuf, dst: &PathBuf) -> Result<()> {
     std::fs::create_dir_all(dst)?;
 
     for entry in std::fs::read_dir(src)? {
@@ -19,21 +37,42 @@ pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
         let dst_path = dst.join(entry.file_name());
 
         if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
+            if let Ok(dst_meta) = dst_path.symlink_metadata() {
+                if dst_meta.is_symlink() || dst_meta.is_file() {
+                    std::fs::remove_file(&dst_path).or_else(|_| sudo::sudo_remove(&dst_path))?;
+                }
+            }
+            copy_dir_all_inner(&src_path, &dst_path)?;
         } else if ty.is_symlink() {
             #[cfg(unix)]
             {
                 let target = std::fs::read_link(&src_path)?;
-                if dst_path.symlink_metadata().is_ok() {
-                    std::fs::remove_file(&dst_path)?;
+                if let Ok(dst_meta) = dst_path.symlink_metadata() {
+                    if dst_meta.is_dir() && !dst_meta.is_symlink() {
+                        std::fs::remove_dir_all(&dst_path)
+                            .or_else(|_| sudo::sudo_remove(&dst_path).map(|_| ()))?;
+                    } else {
+                        std::fs::remove_file(&dst_path)
+                            .or_else(|_| sudo::sudo_remove(&dst_path).map(|_| ()))?;
+                    }
                 }
-                std::os::unix::fs::symlink(target, &dst_path)?;
+                std::os::unix::fs::symlink(&target, &dst_path)
+                    .or_else(|_| sudo::sudo_symlink(target.as_ref(), &dst_path).map(|_| ()))?;
             }
             #[cfg(not(unix))]
             {
                 std::fs::copy(&src_path, &dst_path)?;
             }
         } else {
+            if let Ok(dst_meta) = dst_path.symlink_metadata() {
+                if dst_meta.is_dir() && !dst_meta.is_symlink() {
+                    std::fs::remove_dir_all(&dst_path)
+                        .or_else(|_| sudo::sudo_remove(&dst_path).map(|_| ()))?;
+                } else if dst_meta.is_symlink() {
+                    std::fs::remove_file(&dst_path)
+                        .or_else(|_| sudo::sudo_remove(&dst_path).map(|_| ()))?;
+                }
+            }
             std::fs::copy(&src_path, &dst_path)?;
         }
     }

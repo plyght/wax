@@ -1,5 +1,6 @@
 use crate::bottle::{homebrew_prefix, run_command_with_timeout};
 use crate::error::{Result, WaxError};
+use crate::sudo;
 use crate::ui::dirs;
 use crate::version::sort_versions;
 use serde::{Deserialize, Serialize};
@@ -299,7 +300,9 @@ pub async fn create_symlinks(
         }
 
         if !dry_run {
-            fs::create_dir_all(&target_dir).await?;
+            fs::create_dir_all(&target_dir).await.or_else(|_| {
+                sudo::sudo_mkdir(&target_dir)
+            })?;
         }
 
         link_directory_recursive(&source_dir, &target_dir, dry_run, &mut created_links).await?;
@@ -307,18 +310,29 @@ pub async fn create_symlinks(
 
     let opt_dir = prefix.join("opt");
     if !dry_run {
-        fs::create_dir_all(&opt_dir).await?;
+        fs::create_dir_all(&opt_dir).await.or_else(|_| {
+            sudo::sudo_mkdir(&opt_dir)
+        })?;
     }
     let opt_link = opt_dir.join(formula_name);
     if !dry_run && opt_link.symlink_metadata().is_ok() {
-        let _ = fs::remove_file(&opt_link).await;
-        let _ = fs::remove_dir_all(&opt_link).await;
+        if opt_link.is_dir() && !opt_link.is_symlink() {
+            fs::remove_dir_all(&opt_link).await.or_else(|_| {
+                sudo::sudo_remove(&opt_link).map(|_| ())
+            })?;
+        } else {
+            fs::remove_file(&opt_link).await.or_else(|_| {
+                sudo::sudo_remove(&opt_link).map(|_| ())
+            })?;
+        }
     }
     if !dry_run {
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
-            symlink(&formula_path, &opt_link)?;
+            symlink(&formula_path, &opt_link).or_else(|_| {
+                sudo::sudo_symlink(&formula_path, &opt_link).map(|_| ())
+            })?;
         }
         created_links.push(opt_link);
     }
@@ -355,7 +369,9 @@ fn link_directory_recursive<'a>(
                     }
                     if !dry_run {
                         debug!("Removing existing symlink/file at {:?}", target_path);
-                        let _ = fs::remove_file(&target_path).await;
+                        fs::remove_file(&target_path).await.or_else(|_| {
+                            sudo::sudo_remove(&target_path).map(|_| ())
+                        })?;
                     }
                 }
 
@@ -363,7 +379,9 @@ fn link_directory_recursive<'a>(
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::symlink;
-                        symlink(&source_path, &target_path)?;
+                        symlink(&source_path, &target_path).or_else(|_| {
+                            sudo::sudo_symlink(&source_path, &target_path).map(|_| ())
+                        })?;
                     }
                     #[cfg(not(unix))]
                     {
@@ -377,7 +395,9 @@ fn link_directory_recursive<'a>(
                 if target_path.symlink_metadata().is_ok() {
                     if !dry_run {
                         debug!("Removing existing symlink/file at {:?}", target_path);
-                        let _ = fs::remove_file(&target_path).await;
+                        fs::remove_file(&target_path).await.or_else(|_| {
+                            sudo::sudo_remove(&target_path).map(|_| ())
+                        })?;
                     } else {
                         debug!("Symlink target already exists: {:?}", target_path);
                         continue;
@@ -388,7 +408,9 @@ fn link_directory_recursive<'a>(
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::symlink;
-                        symlink(&source_path, &target_path)?;
+                        symlink(&source_path, &target_path).or_else(|_| {
+                            sudo::sudo_symlink(&source_path, &target_path).map(|_| ())
+                        })?;
                     }
                     #[cfg(not(unix))]
                     {
@@ -456,7 +478,9 @@ pub async fn remove_symlinks(
                 if let Ok(link_target) = fs::read_link(&opt_link).await {
                     if link_target.starts_with(&formula_path) {
                         if !dry_run {
-                            fs::remove_file(&opt_link).await?;
+                            fs::remove_file(&opt_link).await.or_else(|_| {
+                                sudo::sudo_remove(&opt_link).map(|_| ())
+                            })?;
                         }
                         removed_links.push(opt_link);
                     }
@@ -498,7 +522,9 @@ fn unlink_directory_recursive<'a>(
                     if let Ok(link_target) = fs::read_link(&target_path).await {
                         if link_target.starts_with(formula_path) {
                             if !dry_run {
-                                fs::remove_file(&target_path).await?;
+                                fs::remove_file(&target_path).await.or_else(|_| {
+                                    sudo::sudo_remove(&target_path).map(|_| ())
+                                })?;
                             }
                             removed_links.push(target_path);
                         }
