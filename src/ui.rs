@@ -53,10 +53,6 @@ pub fn create_spinner(message: &str) -> ProgressBar {
     spinner
 }
 
-pub fn print_success(message: &str) {
-    println!("{}", message);
-}
-
 pub mod dirs {
     use crate::error::{Result, WaxError};
     use std::path::PathBuf;

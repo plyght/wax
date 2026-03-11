@@ -43,7 +43,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         if needs_install {
             packages_to_install.push((name.clone(), lock_pkg.clone()));
         } else {
-            println!("{} is already installed", name);
+            println!("{} is already installed", style(&name).magenta());
         }
     }
 
@@ -194,7 +194,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     println!();
     println!(
-        "{} {} synced [{:.2}ms]",
+        "{} {} synced [{}ms]",
         package_count,
         if package_count == 1 {
             "package"

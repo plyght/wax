@@ -13,12 +13,7 @@ pub async fn tap(action: Option<crate::TapAction>, cache: Option<&Cache>) -> Res
             if let Some(cache) = cache {
                 cache.invalidate_all_tap_caches().await?;
             }
-            println!();
-            println!(
-                "{} tap {}",
-                style("+").green(),
-                style(&tap).magenta()
-            );
+            println!("{} tap {}", style("+").green(), style(&tap).magenta());
         }
         Some(crate::TapAction::Remove { tap }) => {
             let tap_spec = crate::tap::Tap::from_spec(&tap)?;
@@ -27,12 +22,7 @@ pub async fn tap(action: Option<crate::TapAction>, cache: Option<&Cache>) -> Res
             if let Some(cache) = cache {
                 cache.invalidate_tap_cache(&full_name).await?;
             }
-            println!();
-            println!(
-                "{} tap {}",
-                style("-").red(),
-                style(&tap).magenta()
-            );
+            println!("{} tap {}", style("-").red(), style(&tap).magenta());
         }
         Some(crate::TapAction::Update { tap }) => {
             let tap_spec = crate::tap::Tap::from_spec(&tap)?;
@@ -45,7 +35,6 @@ pub async fn tap(action: Option<crate::TapAction>, cache: Option<&Cache>) -> Res
             if let Some(cache) = cache {
                 cache.invalidate_tap_cache(&tap_spec.full_name).await?;
             }
-            println!();
             if is_local {
                 println!(
                     "{} tap {} {}",

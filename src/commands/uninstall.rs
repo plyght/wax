@@ -114,14 +114,13 @@ async fn uninstall_package_direct(
 
     state.remove(formula_name).await?;
 
+    let elapsed = start.elapsed();
     println!(
         "- {}@{}",
         style(formula_name).magenta(),
         style(&package.version).dim()
     );
-
-    let elapsed = start.elapsed();
-    println!("\n1 package removed [{}ms]", elapsed.as_millis());
+    println!("1 package removed [{}ms]", elapsed.as_millis());
 
     Ok(())
 }
@@ -189,15 +188,14 @@ async fn uninstall_cask(
 
     state.remove(cask_name).await?;
 
+    let elapsed = start.elapsed();
     println!(
         "- {}@{} {}",
         style(cask_name).magenta(),
         style(&cask.version).dim(),
         style("(cask)").yellow()
     );
-
-    let elapsed = start.elapsed();
-    println!("\n1 package removed [{}ms]", elapsed.as_millis());
+    println!("1 package removed [{}ms]", elapsed.as_millis());
 
     Ok(())
 }

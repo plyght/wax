@@ -302,38 +302,7 @@ pub async fn create_symlinks(
             fs::create_dir_all(&target_dir).await?;
         }
 
-        let mut entries = fs::read_dir(&source_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let file_name = entry.file_name();
-            let source_path = entry.path();
-            let target_path = target_dir.join(&file_name);
-
-            if target_path.symlink_metadata().is_ok() {
-                if !dry_run {
-                    debug!("Removing existing symlink/file at {:?}", target_path);
-                    let _ = fs::remove_file(&target_path).await;
-                } else {
-                    debug!("Symlink target already exists: {:?}", target_path);
-                    continue;
-                }
-            }
-
-            if !dry_run {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::symlink;
-                    symlink(&source_path, &target_path)?;
-                }
-                #[cfg(not(unix))]
-                {
-                    return Err(WaxError::PlatformNotSupported(
-                        "Symlinks not supported on this platform".to_string(),
-                    ));
-                }
-            }
-
-            created_links.push(target_path);
-        }
+        link_directory_recursive(&source_dir, &target_dir, dry_run, &mut created_links).await?;
     }
 
     let opt_dir = prefix.join("opt");
@@ -343,8 +312,9 @@ pub async fn create_symlinks(
     let opt_link = opt_dir.join(formula_name);
     if !dry_run && opt_link.symlink_metadata().is_ok() {
         let _ = fs::remove_file(&opt_link).await;
+        let _ = fs::remove_dir_all(&opt_link).await;
     }
-    if !opt_link.exists() && !dry_run {
+    if !dry_run {
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
@@ -355,6 +325,83 @@ pub async fn create_symlinks(
 
     debug!("Created {} symlinks", created_links.len());
     Ok(created_links)
+}
+
+fn link_directory_recursive<'a>(
+    source_dir: &'a Path,
+    target_dir: &'a Path,
+    dry_run: bool,
+    created_links: &'a mut Vec<PathBuf>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut entries = fs::read_dir(source_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_name = entry.file_name();
+            let source_path = entry.path();
+            let target_path = target_dir.join(&file_name);
+            let source_meta = entry.metadata().await?;
+
+            if source_meta.is_dir() {
+                if let Ok(target_meta) = fs::symlink_metadata(&target_path).await {
+                    if target_meta.is_dir() && !target_meta.is_symlink() {
+                        link_directory_recursive(
+                            &source_path,
+                            &target_path,
+                            dry_run,
+                            created_links,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    if !dry_run {
+                        debug!("Removing existing symlink/file at {:?}", target_path);
+                        let _ = fs::remove_file(&target_path).await;
+                    }
+                }
+
+                if !dry_run {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::symlink;
+                        symlink(&source_path, &target_path)?;
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        return Err(WaxError::PlatformNotSupported(
+                            "Symlinks not supported on this platform".to_string(),
+                        ));
+                    }
+                }
+                created_links.push(target_path);
+            } else {
+                if target_path.symlink_metadata().is_ok() {
+                    if !dry_run {
+                        debug!("Removing existing symlink/file at {:?}", target_path);
+                        let _ = fs::remove_file(&target_path).await;
+                    } else {
+                        debug!("Symlink target already exists: {:?}", target_path);
+                        continue;
+                    }
+                }
+
+                if !dry_run {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::symlink;
+                        symlink(&source_path, &target_path)?;
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        return Err(WaxError::PlatformNotSupported(
+                            "Symlinks not supported on this platform".to_string(),
+                        ));
+                    }
+                }
+                created_links.push(target_path);
+            }
+        }
+        Ok(())
+    })
 }
 
 #[instrument(skip(cellar_path))]
@@ -391,27 +438,27 @@ pub async fn remove_symlinks(
             continue;
         }
 
-        let mut entries = fs::read_dir(&source_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let file_name = entry.file_name();
-            let target_path = target_dir.join(&file_name);
+        unlink_directory_recursive(
+            &source_dir,
+            &target_dir,
+            &formula_path,
+            dry_run,
+            &mut removed_links,
+        )
+        .await?;
+    }
 
-            if !target_path.exists() {
-                continue;
-            }
-
-            #[cfg(unix)]
-            {
-                if let Ok(metadata) = fs::symlink_metadata(&target_path).await {
-                    if metadata.is_symlink() {
-                        if let Ok(link_target) = fs::read_link(&target_path).await {
-                            if link_target.starts_with(&formula_path) {
-                                if !dry_run {
-                                    fs::remove_file(&target_path).await?;
-                                }
-                                removed_links.push(target_path);
-                            }
+    let opt_link = prefix.join("opt").join(formula_name);
+    #[cfg(unix)]
+    {
+        if let Ok(metadata) = fs::symlink_metadata(&opt_link).await {
+            if metadata.is_symlink() {
+                if let Ok(link_target) = fs::read_link(&opt_link).await {
+                    if link_target.starts_with(&formula_path) {
+                        if !dry_run {
+                            fs::remove_file(&opt_link).await?;
                         }
+                        removed_links.push(opt_link);
                     }
                 }
             }
@@ -420,4 +467,54 @@ pub async fn remove_symlinks(
 
     debug!("Removed {} symlinks", removed_links.len());
     Ok(removed_links)
+}
+
+fn unlink_directory_recursive<'a>(
+    source_dir: &'a Path,
+    target_dir: &'a Path,
+    formula_path: &'a Path,
+    dry_run: bool,
+    removed_links: &'a mut Vec<PathBuf>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut entries = match fs::read_dir(source_dir).await {
+            Ok(e) => e,
+            Err(_) => return Ok(()),
+        };
+
+        while let Some(entry) = entries.next_entry().await? {
+            let file_name = entry.file_name();
+            let source_path = entry.path();
+            let target_path = target_dir.join(&file_name);
+
+            let target_meta = match fs::symlink_metadata(&target_path).await {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            #[cfg(unix)]
+            {
+                if target_meta.is_symlink() {
+                    if let Ok(link_target) = fs::read_link(&target_path).await {
+                        if link_target.starts_with(formula_path) {
+                            if !dry_run {
+                                fs::remove_file(&target_path).await?;
+                            }
+                            removed_links.push(target_path);
+                        }
+                    }
+                } else if target_meta.is_dir() && source_path.is_dir() {
+                    unlink_directory_recursive(
+                        &source_path,
+                        &target_path,
+                        formula_path,
+                        dry_run,
+                        removed_links,
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(())
+    })
 }

@@ -139,11 +139,13 @@ impl Builder {
         if !configure_script.exists() {
             let bootstrap = source_dir.join("bootstrap");
             if bootstrap.exists() {
-                self.run_command(source_dir, "./bootstrap", &[], "Bootstrapping").await?;
+                self.run_command(source_dir, "./bootstrap", &[], "Bootstrapping")
+                    .await?;
             } else {
                 let autogen = source_dir.join("autogen.sh");
                 if autogen.exists() {
-                    self.run_command(source_dir, "./autogen.sh", &[], "Generating build files").await?;
+                    self.run_command(source_dir, "./autogen.sh", &[], "Generating build files")
+                        .await?;
                 }
             }
         }
@@ -151,12 +153,15 @@ impl Builder {
         let mut args = vec![format!("--prefix={}", prefix.display())];
         args.extend(configure_args.iter().cloned());
 
-        self.run_command(source_dir, "./configure", &args, "Configuring").await?;
+        self.run_command(source_dir, "./configure", &args, "Configuring")
+            .await?;
 
         let make_args = vec![format!("-j{}", self.num_cores)];
-        self.run_command(source_dir, "make", &make_args, "Compiling").await?;
+        self.run_command(source_dir, "make", &make_args, "Compiling")
+            .await?;
 
-        self.run_command(source_dir, "make", &["install".to_string()], "Installing").await?;
+        self.run_command(source_dir, "make", &["install".to_string()], "Installing")
+            .await?;
 
         Ok(())
     }
@@ -189,7 +194,8 @@ impl Builder {
         ];
         args.extend(configure_args.iter().cloned());
 
-        self.run_command(source_dir, "cmake", &args, "Configuring CMake").await?;
+        self.run_command(source_dir, "cmake", &args, "Configuring CMake")
+            .await?;
 
         let build_args = vec![
             "--build".to_string(),
@@ -197,10 +203,12 @@ impl Builder {
             "--parallel".to_string(),
             self.num_cores.to_string(),
         ];
-        self.run_command(source_dir, "cmake", &build_args, "Building").await?;
+        self.run_command(source_dir, "cmake", &build_args, "Building")
+            .await?;
 
         let install_args = vec!["--install".to_string(), build_dir.display().to_string()];
-        self.run_command(source_dir, "cmake", &install_args, "Installing").await?;
+        self.run_command(source_dir, "cmake", &install_args, "Installing")
+            .await?;
 
         Ok(())
     }
@@ -222,21 +230,24 @@ impl Builder {
         ];
         args.extend(configure_args.iter().cloned());
 
-        self.run_command(source_dir, "meson", &args, "Configuring Meson").await?;
+        self.run_command(source_dir, "meson", &args, "Configuring Meson")
+            .await?;
 
         let ninja_args = vec![
             "-C".to_string(),
             build_dir.display().to_string(),
             format!("-j{}", self.num_cores),
         ];
-        self.run_command(source_dir, "ninja", &ninja_args, "Building").await?;
+        self.run_command(source_dir, "ninja", &ninja_args, "Building")
+            .await?;
 
         let install_args = vec![
             "-C".to_string(),
             build_dir.display().to_string(),
             "install".to_string(),
         ];
-        self.run_command(source_dir, "ninja", &install_args, "Installing").await?;
+        self.run_command(source_dir, "ninja", &install_args, "Installing")
+            .await?;
 
         Ok(())
     }
@@ -248,13 +259,15 @@ impl Builder {
             format!("PREFIX={}", prefix.display()),
             format!("-j{}", self.num_cores),
         ];
-        self.run_command(source_dir, "make", &make_args, "Building").await?;
+        self.run_command(source_dir, "make", &make_args, "Building")
+            .await?;
 
         let install_args = vec![
             format!("PREFIX={}", prefix.display()),
             "install".to_string(),
         ];
-        self.run_command(source_dir, "make", &install_args, "Installing").await?;
+        self.run_command(source_dir, "make", &install_args, "Installing")
+            .await?;
 
         Ok(())
     }

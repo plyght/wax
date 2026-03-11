@@ -1,8 +1,7 @@
 use crate::api::{ApiClient, Cask, Formula};
 use crate::error::Result;
 use crate::tap::TapManager;
-use crate::ui::dirs;
-use console::style;
+use crate::ui::{create_spinner, dirs};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
@@ -86,16 +85,18 @@ impl Cache {
         if !self.is_initialized() {
             self.auto_init().await?;
         } else if self.is_stale().await {
-            eprintln!(
-                "{} index stale, refreshing...",
-                style("→").cyan()
-            );
+            let spinner = create_spinner("Refreshing index…");
             let api_client = ApiClient::new();
             let metadata = self.load_metadata().await?;
 
             let (formulae_etag, formulae_last_modified) = metadata
                 .as_ref()
-                .map(|m| (m.formulae_etag.as_deref(), m.formulae_last_modified.as_deref()))
+                .map(|m| {
+                    (
+                        m.formulae_etag.as_deref(),
+                        m.formulae_last_modified.as_deref(),
+                    )
+                })
                 .unwrap_or((None, None));
 
             let (casks_etag, casks_last_modified) = metadata
@@ -135,19 +136,23 @@ impl Cache {
                 formulae_etag: formulae_fetch
                     .etag
                     .or_else(|| metadata.as_ref().and_then(|m| m.formulae_etag.clone())),
-                formulae_last_modified: formulae_fetch
-                    .last_modified
-                    .or_else(|| metadata.as_ref().and_then(|m| m.formulae_last_modified.clone())),
+                formulae_last_modified: formulae_fetch.last_modified.or_else(|| {
+                    metadata
+                        .as_ref()
+                        .and_then(|m| m.formulae_last_modified.clone())
+                }),
                 casks_etag: casks_fetch
                     .etag
                     .or_else(|| metadata.as_ref().and_then(|m| m.casks_etag.clone())),
-                casks_last_modified: casks_fetch
-                    .last_modified
-                    .or_else(|| metadata.as_ref().and_then(|m| m.casks_last_modified.clone())),
+                casks_last_modified: casks_fetch.last_modified.or_else(|| {
+                    metadata
+                        .as_ref()
+                        .and_then(|m| m.casks_last_modified.clone())
+                }),
             };
             self.save_metadata(&new_metadata).await?;
 
-            eprintln!("{} index ready\n", style("✓").green());
+            spinner.finish_and_clear();
         }
         Ok(())
     }
@@ -198,7 +203,7 @@ impl Cache {
     }
 
     async fn auto_init(&self) -> Result<()> {
-        eprintln!("{} package index not found, fetching...", style("→").cyan());
+        let spinner = create_spinner("Fetching package index…");
 
         let api_client = ApiClient::new();
 
@@ -232,7 +237,7 @@ impl Cache {
         };
         self.save_metadata(&metadata).await?;
 
-        eprintln!("{} index ready\n", style("✓").green());
+        spinner.finish_and_clear();
         Ok(())
     }
 

@@ -9,8 +9,7 @@ use crate::formula_parser::FormulaParser;
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::tap::TapManager;
 use crate::ui::{
-    copy_dir_all, print_success, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE,
-    PROGRESS_BAR_TEMPLATE,
+    copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
 };
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -119,8 +118,7 @@ async fn install_from_source_task(
     };
     state.add(package).await?;
 
-    spinner.finish_with_message(format!("Built and installed {}", formula.name));
-    println!();
+    spinner.finish_and_clear();
     println!(
         "+ {}@{} {}",
         style(&formula.name).magenta(),
@@ -262,13 +260,11 @@ pub async fn install(
 
     if !already_installed.is_empty() {
         for pkg in &already_installed {
-            println!("{} is already installed", pkg);
+            println!("{} is already installed", style(pkg).magenta());
         }
-        println!();
     }
 
     if !errors.is_empty() {
-        println!();
         for (pkg, err) in &errors {
             eprintln!("{}: {}", pkg, err);
         }
@@ -427,7 +423,6 @@ pub async fn install(
     }
 
     if !failed_packages.is_empty() {
-        println!();
         for err in &failed_packages {
             eprintln!("{}", err);
         }
@@ -504,11 +499,9 @@ pub async fn install(
     }
 
     let elapsed = start.elapsed();
-
     let successful_count = extracted_packages_count + source_install_count;
-    println!();
     println!(
-        "{} {} installed [{:.2}ms]",
+        "\n{} {} installed [{}ms]",
         successful_count,
         if successful_count == 1 {
             "package"
@@ -535,8 +528,7 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     let installed_casks = state.load().await?;
 
     if installed_casks.contains_key(cask_name) {
-        println!("{} is already installed", cask_name);
-        println!();
+        println!("{} is already installed", style(cask_name).magenta());
         return Ok(());
     }
 
@@ -573,7 +565,6 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
     installer
         .download_cask(&cask.url, &download_path, Some(&pb))
         .await?;
-    pb.set_prefix(format!("[✓] {}", display_name));
     pb.finish_and_clear();
 
     CaskInstaller::verify_checksum(&download_path, &cask.sha256)?;
@@ -633,29 +624,18 @@ async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<(
 
     let elapsed = start.elapsed();
 
-    println!();
+    println!(
+        "\n+ {}@{} {}",
+        style(cask_name).magenta(),
+        style(&cask.version).dim(),
+        style("(cask)").yellow()
+    );
     if !installed_binaries.is_empty() {
-        println!(
-            "+ {}@{} {}",
-            style(cask_name).magenta(),
-            style(&cask.version).dim(),
-            style("(cask)").yellow()
-        );
-        println!("  with binaries:");
         for binary in installed_binaries {
-            println!("  - {}", binary);
+            println!("  {}", binary);
         }
-    } else {
-        println!(
-            "+ {}@{} {}",
-            style(cask_name).magenta(),
-            style(&cask.version).dim(),
-            style("(cask)").yellow()
-        );
     }
-
-    println!();
-    println!("1 cask installed [{:.2}ms]", elapsed.as_millis());
+    println!("1 cask installed [{}ms]", elapsed.as_millis());
 
     Ok(())
 }
@@ -705,7 +685,10 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     }
 
     if !already_installed.is_empty() {
-        println!("already installed: {}", already_installed.join(", "));
+        println!(
+            "already installed: {}",
+            style(already_installed.join(", ")).magenta()
+        );
     }
 
     if !errors.is_empty() {
@@ -759,24 +742,24 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     let elapsed = start.elapsed();
 
     if failed.is_empty() {
-        print_success(&format!(
-            "Installed {} {} in {:.1}s",
+        println!(
+            "{} {} installed [{}ms]",
             installed_count,
             if installed_count == 1 {
                 "cask"
             } else {
                 "casks"
             },
-            elapsed.as_secs_f64()
-        ));
+            elapsed.as_millis()
+        );
         Ok(())
     } else {
         println!(
-            "installed {}/{} casks in {:.1}s ({} failed)",
+            "{}/{} casks installed ({} failed) [{}ms]",
             installed_count,
             to_install.len(),
-            elapsed.as_secs_f64(),
-            failed.len()
+            failed.len(),
+            elapsed.as_millis()
         );
         Err(WaxError::InstallError(format!(
             "Some casks failed: {}",

@@ -225,10 +225,7 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         ));
     }
     if !tap_matches.is_empty() {
-        parts.push(format!(
-            "{} from taps",
-            tap_matches.len()
-        ));
+        parts.push(format!("{} from taps", tap_matches.len()));
     }
     if !cask_matches.is_empty() {
         parts.push(format!(

@@ -67,7 +67,11 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
 
     let mut tap_manager = TapManager::new()?;
     tap_manager.load().await?;
-    let taps = tap_manager.list_taps().iter().map(|t| t.full_name.clone()).collect::<Vec<_>>();
+    let taps = tap_manager
+        .list_taps()
+        .iter()
+        .map(|t| t.full_name.clone())
+        .collect::<Vec<_>>();
     let tap_count = taps.len();
 
     if tap_count > 0 {
@@ -121,7 +125,6 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
         "updated"
     };
 
-    println!();
     if tap_count > 0 {
         println!(
             "{} {} · {} formulae, {} casks, {} {} [{}ms]",

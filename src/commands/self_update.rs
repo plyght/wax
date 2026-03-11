@@ -110,8 +110,6 @@ pub async fn self_update(channel: Channel, force: bool) -> Result<()> {
         channel, force
     );
 
-    println!();
-
     match channel {
         Channel::Stable => update_stable(force).await,
         Channel::Nightly => update_nightly(force).await,
@@ -129,39 +127,27 @@ async fn update_stable(force: bool) -> Result<()> {
 
     println!(
         "  {} {}",
-        style("Current version:").dim(),
+        style("current:").dim(),
         style(CURRENT_VERSION).cyan()
     );
     println!(
         "  {} {}",
-        style("Latest version:").dim(),
+        style("latest:").dim(),
         style(&latest_version).cyan()
     );
-    println!();
 
     if !update_available && !force {
         println!(
-            "{} Already on the latest stable version.",
+            "{} already on the latest stable version",
             style("✓").green()
         );
         println!(
-            "  {} Use {} to reinstall anyway.",
+            "  {} use {} to reinstall",
             style("hint:").dim(),
             style("-f/--force").yellow()
         );
         return Ok(());
     }
-
-    if !update_available && force {
-        println!(
-            "{} Forcing reinstall of stable version...",
-            style("→").yellow()
-        );
-    } else {
-        println!("{} Updating to v{}...", style("→").green(), latest_version);
-    }
-
-    println!();
 
     let spinner = create_spinner("Installing from crates.io...");
 
@@ -175,11 +161,7 @@ async fn update_stable(force: bool) -> Result<()> {
 
     spinner.finish_and_clear();
 
-    println!(
-        "{} Successfully updated to v{}",
-        style("✓").green(),
-        latest_version
-    );
+    println!("{} updated to v{}", style("✓").green(), latest_version);
 
     Ok(())
 }
@@ -187,29 +169,14 @@ async fn update_stable(force: bool) -> Result<()> {
 async fn update_nightly(force: bool) -> Result<()> {
     println!(
         "  {} {}",
-        style("Current version:").dim(),
+        style("current:").dim(),
         style(CURRENT_VERSION).cyan()
     );
     println!(
         "  {} {}",
-        style("Channel:").dim(),
+        style("channel:").dim(),
         style("nightly (GitHub main)").yellow()
     );
-    println!();
-
-    if force {
-        println!(
-            "{} Installing latest nightly build from GitHub...",
-            style("→").yellow()
-        );
-    } else {
-        println!(
-            "{} Updating to latest nightly build from GitHub...",
-            style("→").green()
-        );
-    }
-
-    println!();
 
     let spinner = create_spinner("Building from source (this may take a moment)...");
 
@@ -223,10 +190,7 @@ async fn update_nightly(force: bool) -> Result<()> {
 
     spinner.finish_and_clear();
 
-    println!(
-        "{} Successfully installed latest nightly build",
-        style("✓").green()
-    );
+    println!("{} installed latest nightly build", style("✓").green());
 
     Ok(())
 }

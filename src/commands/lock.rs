@@ -19,7 +19,6 @@ pub async fn lock() -> Result<()> {
     let lockfile_path = Lockfile::default_path();
     lockfile.save(&lockfile_path).await?;
 
-    println!();
     println!(
         "locked {} {} in wax.lock",
         package_count,

@@ -14,8 +14,6 @@ pub async fn outdated(cache: &Cache) -> Result<()> {
 
     if outdated.is_empty() {
         println!("all packages are up to date");
-        let elapsed = start.elapsed();
-        println!("\n[{}ms] done", elapsed.as_millis());
         return Ok(());
     }
 

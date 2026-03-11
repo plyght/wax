@@ -4,6 +4,7 @@ use crate::cask::CaskState;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
+use crate::ui::create_spinner;
 use crate::version::is_same_or_newer;
 use console::style;
 use tracing::instrument;
@@ -29,8 +30,6 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
         for package in packages {
             upgrade_single(cache, package, dry_run).await?;
         }
-        let elapsed = start.elapsed();
-        println!("\n[{}ms] done", elapsed.as_millis());
         Ok(())
     }
 }
@@ -44,12 +43,6 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         println!("\n[{}ms] done", elapsed.as_millis());
         return Ok(());
     }
-
-    println!(
-        "upgrading {} package{}...\n",
-        style(outdated.len()).cyan(),
-        if outdated.len() == 1 { "" } else { "s" }
-    );
 
     if dry_run {
         for pkg in &outdated {
@@ -66,27 +59,17 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                 style(&pkg.latest_version).green()
             );
         }
-        let elapsed = start.elapsed();
-        println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+        println!("\ndry run - no changes made");
         return Ok(());
     }
 
+    let total = outdated.len();
     let mut success_count = 0;
     let mut fail_count = 0;
+    let mut failed_names = Vec::new();
 
-    for pkg in outdated {
-        let cask_indicator = if pkg.is_cask {
-            format!(" {}", style("(cask)").yellow())
-        } else {
-            String::new()
-        };
-        println!(
-            "upgrading {}{}: {} → {}",
-            style(&pkg.name).magenta(),
-            cask_indicator,
-            style(&pkg.installed_version).dim(),
-            style(&pkg.latest_version).green()
-        );
+    for (i, pkg) in outdated.into_iter().enumerate() {
+        let spinner = create_spinner(&format!("upgrading {} ({}/{})", pkg.name, i + 1, total));
 
         let result = if pkg.is_cask {
             upgrade_cask_internal(cache, &pkg.name, false).await
@@ -94,14 +77,21 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
             upgrade_formula_internal(cache, &pkg.name, pkg.install_mode, false).await
         };
 
+        spinner.finish_and_clear();
+
         match result {
             Ok(()) => {
                 success_count += 1;
-                println!("  {} upgraded\n", style("✓").green());
             }
             Err(e) => {
                 fail_count += 1;
-                println!("  {} failed: {}\n", style("✗").red(), e);
+                eprintln!(
+                    "{} {} failed: {}",
+                    style("✗").red(),
+                    style(&pkg.name).magenta(),
+                    e
+                );
+                failed_names.push(pkg.name.clone());
             }
         }
     }
@@ -109,14 +99,14 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     let elapsed = start.elapsed();
     if fail_count > 0 {
         println!(
-            "\n{} upgraded, {} failed [{}ms]",
+            "{} upgraded, {} failed [{}ms]",
             style(success_count).green(),
             style(fail_count).red(),
             elapsed.as_millis()
         );
     } else {
         println!(
-            "\n{} package{} upgraded [{}ms]",
+            "{} package{} upgraded [{}ms]",
             style(success_count).green(),
             if success_count == 1 { "" } else { "s" },
             elapsed.as_millis()

@@ -263,18 +263,19 @@ async fn main() -> Result<()> {
         use console::style;
         use error::WaxError;
 
+        let prefix = style("error:").red().bold();
         match e {
             WaxError::NotInstalled(pkg) => {
-                eprintln!("\n{} is not installed", style(&pkg).magenta());
+                eprintln!("{} {} is not installed", prefix, style(&pkg).magenta());
             }
             WaxError::FormulaNotFound(pkg) => {
-                eprintln!("\nformula not found: {}", style(&pkg).magenta());
+                eprintln!("{} formula not found: {}", prefix, style(&pkg).magenta());
             }
             WaxError::CaskNotFound(pkg) => {
-                eprintln!("\ncask not found: {}", style(&pkg).magenta());
+                eprintln!("{} cask not found: {}", prefix, style(&pkg).magenta());
             }
             _ => {
-                eprintln!("\n{}", e);
+                eprintln!("{} {}", prefix, e);
             }
         }
         std::process::exit(1);
