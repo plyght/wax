@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
                 commands::update::update(&api_client, &cache).await
             }
         }
-        Commands::Search { query } => commands::search::search(&api_client, &cache, &query).await,
+        Commands::Search { query } => commands::search::search(&cache, &query).await,
         Commands::Info { formula, cask } => {
             commands::info::info(&api_client, &cache, &formula, cask).await
         }
@@ -256,7 +256,7 @@ async fn main() -> Result<()> {
         Commands::Outdated => commands::outdated::outdated(&cache).await,
         Commands::Lock => commands::lock::lock().await,
         Commands::Sync => commands::sync::sync(&cache).await,
-        Commands::Tap { action } => commands::tap::tap(action).await,
+        Commands::Tap { action } => commands::tap::tap(action, Some(&cache)).await,
     };
 
     if let Err(e) = result {

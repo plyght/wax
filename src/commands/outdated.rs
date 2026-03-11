@@ -8,6 +8,8 @@ use tracing::instrument;
 pub async fn outdated(cache: &Cache) -> Result<()> {
     let start = std::time::Instant::now();
 
+    cache.ensure_fresh().await?;
+
     let outdated = get_outdated_packages(cache).await?;
 
     if outdated.is_empty() {

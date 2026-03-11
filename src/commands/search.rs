@@ -1,7 +1,5 @@
-use crate::api::ApiClient;
 use crate::cache::Cache;
 use crate::cask::CaskState;
-use crate::commands::update;
 use crate::error::Result;
 use crate::install::InstallState;
 use console::style;
@@ -40,13 +38,13 @@ fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<
         let desc_lower = description.to_lowercase();
         let desc_words: Vec<&str> = desc_lower.split(|c: char| !c.is_alphanumeric()).collect();
 
-        for word in desc_words {
-            if word == query_lower {
+        for word in &desc_words {
+            if *word == query_lower {
                 return Some(600);
             }
         }
 
-        for word in &name_words {
+        for word in &desc_words {
             if word.contains(&query_lower) && word.len() < query_lower.len() * 3 {
                 return Some(400);
             }
@@ -67,12 +65,9 @@ fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<
     None
 }
 
-#[instrument(skip(api_client, cache))]
-pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Result<()> {
-    if !cache.is_initialized() {
-        println!("initializing package index (first time only)...");
-        update::update(api_client, cache).await?;
-    }
+#[instrument(skip(cache))]
+pub async fn search(cache: &Cache, query: &str) -> Result<()> {
+    cache.ensure_fresh().await?;
 
     let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_casks().await?;
@@ -216,6 +211,37 @@ pub async fn search(api_client: &ApiClient, cache: &Cache, query: &str) -> Resul
             println!("  {}", desc);
         }
     }
+
+    let mut parts = Vec::new();
+    if !formula_matches.is_empty() {
+        parts.push(format!(
+            "{} {}",
+            formula_matches.len(),
+            if formula_matches.len() == 1 {
+                "formula"
+            } else {
+                "formulae"
+            }
+        ));
+    }
+    if !tap_matches.is_empty() {
+        parts.push(format!(
+            "{} from taps",
+            tap_matches.len()
+        ));
+    }
+    if !cask_matches.is_empty() {
+        parts.push(format!(
+            "{} {}",
+            cask_matches.len(),
+            if cask_matches.len() == 1 {
+                "cask"
+            } else {
+                "casks"
+            }
+        ));
+    }
+    println!("\n{}", style(parts.join(", ")).dim());
 
     Ok(())
 }

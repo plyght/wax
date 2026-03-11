@@ -21,6 +21,8 @@ pub struct OutdatedPackage {
 pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Result<()> {
     let start = std::time::Instant::now();
 
+    cache.ensure_fresh().await?;
+
     if packages.is_empty() {
         upgrade_all(cache, dry_run, start).await
     } else {
@@ -147,10 +149,10 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
             .ok_or_else(|| WaxError::NotInstalled(formula_name.to_string()))?
     };
 
-    let formulae = cache.load_formulae().await?;
+    let formulae = cache.load_all_formulae().await?;
     let formula = formulae
         .iter()
-        .find(|f| f.name == formula_name)
+        .find(|f| f.name == formula_name || f.full_name == formula_name)
         .ok_or_else(|| WaxError::FormulaNotFound(formula_name.to_string()))?;
 
     let latest_version = &formula.versions.stable;
@@ -277,7 +279,7 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
     let cask_state = CaskState::new()?;
     let installed_casks = cask_state.load().await?;
 
-    let formulae = cache.load_formulae().await?;
+    let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_casks().await?;
 
     let mut outdated = Vec::new();

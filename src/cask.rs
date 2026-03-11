@@ -470,14 +470,17 @@ impl Default for CaskInstaller {
     }
 }
 
-pub fn detect_artifact_type(url: &str) -> Option<&str> {
-    if url.ends_with(".dmg") {
+pub fn detect_artifact_type(url: &str) -> Option<&'static str> {
+    let path = url.split('?').next().unwrap_or(url);
+    let path = path.split('#').next().unwrap_or(path);
+
+    if path.ends_with(".dmg") {
         Some("dmg")
-    } else if url.ends_with(".pkg") {
+    } else if path.ends_with(".pkg") {
         Some("pkg")
-    } else if url.ends_with(".zip") {
+    } else if path.ends_with(".zip") {
         Some("zip")
-    } else if url.ends_with(".tar.gz") {
+    } else if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
         Some("tar.gz")
     } else {
         None

@@ -139,11 +139,11 @@ impl Builder {
         if !configure_script.exists() {
             let bootstrap = source_dir.join("bootstrap");
             if bootstrap.exists() {
-                self.run_command(source_dir, "./bootstrap", &[], "Bootstrapping")?;
+                self.run_command(source_dir, "./bootstrap", &[], "Bootstrapping").await?;
             } else {
                 let autogen = source_dir.join("autogen.sh");
                 if autogen.exists() {
-                    self.run_command(source_dir, "./autogen.sh", &[], "Generating build files")?;
+                    self.run_command(source_dir, "./autogen.sh", &[], "Generating build files").await?;
                 }
             }
         }
@@ -151,12 +151,12 @@ impl Builder {
         let mut args = vec![format!("--prefix={}", prefix.display())];
         args.extend(configure_args.iter().cloned());
 
-        self.run_command(source_dir, "./configure", &args, "Configuring")?;
+        self.run_command(source_dir, "./configure", &args, "Configuring").await?;
 
         let make_args = vec![format!("-j{}", self.num_cores)];
-        self.run_command(source_dir, "make", &make_args, "Compiling")?;
+        self.run_command(source_dir, "make", &make_args, "Compiling").await?;
 
-        self.run_command(source_dir, "make", &["install".to_string()], "Installing")?;
+        self.run_command(source_dir, "make", &["install".to_string()], "Installing").await?;
 
         Ok(())
     }
@@ -189,7 +189,7 @@ impl Builder {
         ];
         args.extend(configure_args.iter().cloned());
 
-        self.run_command(source_dir, "cmake", &args, "Configuring CMake")?;
+        self.run_command(source_dir, "cmake", &args, "Configuring CMake").await?;
 
         let build_args = vec![
             "--build".to_string(),
@@ -197,10 +197,10 @@ impl Builder {
             "--parallel".to_string(),
             self.num_cores.to_string(),
         ];
-        self.run_command(source_dir, "cmake", &build_args, "Building")?;
+        self.run_command(source_dir, "cmake", &build_args, "Building").await?;
 
         let install_args = vec!["--install".to_string(), build_dir.display().to_string()];
-        self.run_command(source_dir, "cmake", &install_args, "Installing")?;
+        self.run_command(source_dir, "cmake", &install_args, "Installing").await?;
 
         Ok(())
     }
@@ -222,21 +222,21 @@ impl Builder {
         ];
         args.extend(configure_args.iter().cloned());
 
-        self.run_command(source_dir, "meson", &args, "Configuring Meson")?;
+        self.run_command(source_dir, "meson", &args, "Configuring Meson").await?;
 
         let ninja_args = vec![
             "-C".to_string(),
             build_dir.display().to_string(),
             format!("-j{}", self.num_cores),
         ];
-        self.run_command(source_dir, "ninja", &ninja_args, "Building")?;
+        self.run_command(source_dir, "ninja", &ninja_args, "Building").await?;
 
         let install_args = vec![
             "-C".to_string(),
             build_dir.display().to_string(),
             "install".to_string(),
         ];
-        self.run_command(source_dir, "ninja", &install_args, "Installing")?;
+        self.run_command(source_dir, "ninja", &install_args, "Installing").await?;
 
         Ok(())
     }
@@ -248,18 +248,18 @@ impl Builder {
             format!("PREFIX={}", prefix.display()),
             format!("-j{}", self.num_cores),
         ];
-        self.run_command(source_dir, "make", &make_args, "Building")?;
+        self.run_command(source_dir, "make", &make_args, "Building").await?;
 
         let install_args = vec![
             format!("PREFIX={}", prefix.display()),
             "install".to_string(),
         ];
-        self.run_command(source_dir, "make", &install_args, "Installing")?;
+        self.run_command(source_dir, "make", &install_args, "Installing").await?;
 
         Ok(())
     }
 
-    fn run_command(
+    async fn run_command(
         &self,
         work_dir: &Path,
         program: &str,
@@ -268,33 +268,44 @@ impl Builder {
     ) -> Result<()> {
         debug!("{}: {} {:?}", phase, program, args);
 
-        let mut cmd = Command::new(program);
-        cmd.current_dir(work_dir);
+        let work_dir = work_dir.to_path_buf();
+        let program = program.to_string();
+        let args = args.to_vec();
+        let use_ccache = self.use_ccache;
+        let num_cores = self.num_cores;
+        let phase = phase.to_string();
 
-        for arg in args {
-            cmd.arg(arg);
-        }
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = Command::new(&program);
+            cmd.current_dir(&work_dir);
 
-        if self.use_ccache && (program == "gcc" || program == "clang" || program == "cc") {
-            cmd.env("CC", "ccache gcc");
-            cmd.env("CXX", "ccache g++");
-        }
+            for arg in &args {
+                cmd.arg(arg);
+            }
 
-        cmd.env("MAKEFLAGS", format!("-j{}", self.num_cores));
+            if use_ccache && (program == "gcc" || program == "clang" || program == "cc") {
+                cmd.env("CC", "ccache gcc");
+                cmd.env("CXX", "ccache g++");
+            }
 
-        let output = cmd.output()?;
+            cmd.env("MAKEFLAGS", format!("-j{}", num_cores));
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let last_lines: Vec<&str> = stderr.lines().rev().take(50).collect();
-            return Err(WaxError::BuildError(format!(
-                "{} failed:\n{}",
-                phase,
-                last_lines.into_iter().rev().collect::<Vec<_>>().join("\n")
-            )));
-        }
+            let output = cmd.output()?;
 
-        Ok(())
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let last_lines: Vec<&str> = stderr.lines().rev().take(50).collect();
+                return Err(WaxError::BuildError(format!(
+                    "{} failed:\n{}",
+                    phase,
+                    last_lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+                )));
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| WaxError::BuildError(format!("Build task panicked: {}", e)))?
     }
 
     fn has_ninja() -> bool {

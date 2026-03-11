@@ -1,12 +1,14 @@
 use crate::api::ApiClient;
 use crate::cache::{Cache, CacheMetadata};
 use crate::error::Result;
+use crate::tap::TapManager;
 use crate::ui::create_spinner;
+use console::style;
 use tracing::instrument;
 
 #[instrument(skip(api_client, cache))]
 pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
-    let spinner = create_spinner("Updating formula index...");
+    let spinner = create_spinner("Updating package index...");
 
     let start = std::time::Instant::now();
 
@@ -63,6 +65,26 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
         (cached, count)
     };
 
+    let mut tap_manager = TapManager::new()?;
+    tap_manager.load().await?;
+    let taps = tap_manager.list_taps().iter().map(|t| t.full_name.clone()).collect::<Vec<_>>();
+    let tap_count = taps.len();
+
+    if tap_count > 0 {
+        cache.invalidate_all_tap_caches().await?;
+
+        for tap_name in &taps {
+            if let Err(e) = tap_manager.update_tap(tap_name).await {
+                eprintln!(
+                    "  {} failed to update tap {}: {}",
+                    style("!").yellow(),
+                    style(tap_name).magenta(),
+                    e
+                );
+            }
+        }
+    }
+
     let new_metadata = CacheMetadata {
         last_updated: chrono::Utc::now().timestamp(),
         formula_count,
@@ -89,7 +111,7 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
     spinner.finish_and_clear();
 
     let elapsed = start.elapsed();
-    let status = if formulae_fetch.not_modified && casks_fetch.not_modified {
+    let core_status = if formulae_fetch.not_modified && casks_fetch.not_modified {
         "up to date"
     } else if formulae_fetch.not_modified {
         "updated casks"
@@ -100,13 +122,27 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
     };
 
     println!();
-    println!(
-        "{} · {} formulae, {} casks [{:.2}ms]",
-        status,
-        formula_count,
-        cask_count,
-        elapsed.as_millis()
-    );
+    if tap_count > 0 {
+        println!(
+            "{} {} · {} formulae, {} casks, {} {} [{}ms]",
+            style("✓").green(),
+            core_status,
+            style(formula_count).cyan(),
+            style(cask_count).cyan(),
+            style(tap_count).cyan(),
+            if tap_count == 1 { "tap" } else { "taps" },
+            elapsed.as_millis()
+        );
+    } else {
+        println!(
+            "{} {} · {} formulae, {} casks [{}ms]",
+            style("✓").green(),
+            core_status,
+            style(formula_count).cyan(),
+            style(cask_count).cyan(),
+            elapsed.as_millis()
+        );
+    }
 
     Ok(())
 }

@@ -193,21 +193,26 @@ impl BottleDownloader {
             };
 
             let placeholder_bytes = placeholder.as_bytes();
+            if replacement.len() > placeholder_bytes.len() {
+                debug!(
+                    "Skipping relocation: replacement ({} bytes) longer than placeholder ({} bytes) in {:?}",
+                    replacement.len(),
+                    placeholder_bytes.len(),
+                    path
+                );
+                continue;
+            }
             let mut i = 0;
             while i + placeholder_bytes.len() <= content.len() {
                 if &content[i..i + placeholder_bytes.len()] == placeholder_bytes {
-                    if placeholder_bytes.len() >= replacement.len() {
-                        let pad_len = placeholder_bytes.len() - replacement.len();
-                        content.splice(
-                            i..i + placeholder_bytes.len(),
-                            replacement
-                                .iter()
-                                .copied()
-                                .chain(std::iter::repeat_n(0, pad_len)),
-                        );
-                    } else {
-                        content.splice(i..i + placeholder_bytes.len(), replacement.iter().copied());
-                    }
+                    let pad_len = placeholder_bytes.len() - replacement.len();
+                    content.splice(
+                        i..i + placeholder_bytes.len(),
+                        replacement
+                            .iter()
+                            .copied()
+                            .chain(std::iter::repeat_n(0, pad_len)),
+                    );
                     modified = true;
                     i += placeholder_bytes.len();
                 } else {

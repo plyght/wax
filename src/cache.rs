@@ -60,8 +60,96 @@ impl Cache {
             .join(format!("{}.json", tap_name.replace('/', "-")))
     }
 
+    const STALE_THRESHOLD_SECS: i64 = 3600;
+
     pub fn is_initialized(&self) -> bool {
         self.formulae_path().exists() && self.casks_path().exists()
+    }
+
+    pub async fn is_stale(&self) -> bool {
+        if !self.is_initialized() {
+            return true;
+        }
+        match self.load_metadata().await {
+            Ok(Some(metadata)) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                (now - metadata.last_updated) > Self::STALE_THRESHOLD_SECS
+            }
+            _ => true,
+        }
+    }
+
+    pub async fn ensure_fresh(&self) -> Result<()> {
+        if !self.is_initialized() {
+            self.auto_init().await?;
+        } else if self.is_stale().await {
+            eprintln!(
+                "{} index stale, refreshing...",
+                style("→").cyan()
+            );
+            let api_client = ApiClient::new();
+            let metadata = self.load_metadata().await?;
+
+            let (formulae_etag, formulae_last_modified) = metadata
+                .as_ref()
+                .map(|m| (m.formulae_etag.as_deref(), m.formulae_last_modified.as_deref()))
+                .unwrap_or((None, None));
+
+            let (casks_etag, casks_last_modified) = metadata
+                .as_ref()
+                .map(|m| (m.casks_etag.as_deref(), m.casks_last_modified.as_deref()))
+                .unwrap_or((None, None));
+
+            let (formulae_result, casks_result) = tokio::join!(
+                api_client.fetch_formulae_conditional(formulae_etag, formulae_last_modified),
+                api_client.fetch_casks_conditional(casks_etag, casks_last_modified)
+            );
+
+            let formulae_fetch = formulae_result?;
+            let casks_fetch = casks_result?;
+
+            let formula_count = if let Some(data) = &formulae_fetch.data {
+                self.save_formulae(data).await?;
+                data.len()
+            } else {
+                metadata.as_ref().map(|m| m.formula_count).unwrap_or(0)
+            };
+
+            let cask_count = if let Some(data) = &casks_fetch.data {
+                self.save_casks(data).await?;
+                data.len()
+            } else {
+                metadata.as_ref().map(|m| m.cask_count).unwrap_or(0)
+            };
+
+            let new_metadata = CacheMetadata {
+                last_updated: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64,
+                formula_count,
+                cask_count,
+                formulae_etag: formulae_fetch
+                    .etag
+                    .or_else(|| metadata.as_ref().and_then(|m| m.formulae_etag.clone())),
+                formulae_last_modified: formulae_fetch
+                    .last_modified
+                    .or_else(|| metadata.as_ref().and_then(|m| m.formulae_last_modified.clone())),
+                casks_etag: casks_fetch
+                    .etag
+                    .or_else(|| metadata.as_ref().and_then(|m| m.casks_etag.clone())),
+                casks_last_modified: casks_fetch
+                    .last_modified
+                    .or_else(|| metadata.as_ref().and_then(|m| m.casks_last_modified.clone())),
+            };
+            self.save_metadata(&new_metadata).await?;
+
+            eprintln!("{} index ready\n", style("✓").green());
+        }
+        Ok(())
     }
 
     #[instrument(skip(self, formulae))]
@@ -155,6 +243,24 @@ impl Cache {
         let json = fs::read_to_string(self.metadata_path()).await?;
         let metadata = serde_json::from_str(&json)?;
         Ok(Some(metadata))
+    }
+
+    pub async fn invalidate_tap_cache(&self, tap_name: &str) -> Result<()> {
+        let path = self.tap_cache_path(tap_name);
+        if path.exists() {
+            fs::remove_file(&path).await?;
+            debug!("Invalidated tap cache for {}", tap_name);
+        }
+        Ok(())
+    }
+
+    pub async fn invalidate_all_tap_caches(&self) -> Result<()> {
+        let taps_dir = self.taps_cache_dir();
+        if taps_dir.exists() {
+            fs::remove_dir_all(&taps_dir).await?;
+            debug!("Invalidated all tap caches");
+        }
+        Ok(())
     }
 
     pub async fn load_all_formulae(&self) -> Result<Vec<Formula>> {

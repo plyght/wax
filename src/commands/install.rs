@@ -1,9 +1,8 @@
-use crate::api::{ApiClient, Formula};
+use crate::api::Formula;
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::builder::Builder;
 use crate::cache::Cache;
 use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask};
-use crate::commands::update;
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
@@ -146,11 +145,7 @@ pub async fn install(
         return Err(WaxError::InvalidInput("No packages specified".to_string()));
     }
 
-    if !cache.is_initialized() {
-        println!("initializing package index (first time only)...");
-        let api_client = ApiClient::new();
-        update::update(&api_client, cache).await?;
-    }
+    cache.ensure_fresh().await?;
 
     if cask {
         return install_multiple_casks(cache, package_names, dry_run).await;
@@ -210,7 +205,10 @@ pub async fn install(
                     .any(|c| &c.token == package_name || &c.full_token == package_name);
 
                 if cask_exists {
-                    return install_cask(cache, package_name, dry_run).await;
+                    if let Err(e) = install_cask(cache, package_name, dry_run).await {
+                        errors.push((package_name.clone(), format!("cask install failed: {}", e)));
+                    }
+                    continue;
                 }
 
                 let error_msg = if package_name.contains('/') {
@@ -285,20 +283,21 @@ pub async fn install(
         return Ok(());
     }
 
-    let package_list = package_names
+    let requested: Vec<&str> = package_names
         .iter()
         .filter(|p| !already_installed.contains(p) && !errors.iter().any(|(e, _)| e == *p))
         .map(|s| s.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect();
+    let package_list = requested.join(", ");
 
-    if all_to_install.len() > package_names.len() {
+    let dep_count = all_to_install.len().saturating_sub(requested.len());
+    if dep_count > 0 {
         println!();
         println!(
             "installing {} + {} {}",
             package_list,
-            all_to_install.len() - package_names.len(),
-            if all_to_install.len() - package_names.len() == 1 {
+            dep_count,
+            if dep_count == 1 {
                 "dependency"
             } else {
                 "dependencies"
@@ -335,6 +334,7 @@ pub async fn install(
 
     let semaphore = Arc::new(Semaphore::new(8));
     let mut tasks = Vec::new();
+    let mut source_install_count = 0usize;
 
     let temp_dir = Arc::new(TempDir::new()?);
 
@@ -353,6 +353,7 @@ pub async fn install(
             }
 
             install_from_source_task(pkg.clone(), &cellar, install_mode, &state, &platform).await?;
+            source_install_count += 1;
             continue;
         }
 
@@ -410,7 +411,7 @@ pub async fn install(
 
     let results = futures::future::join_all(tasks).await;
 
-    let mut extracted_packages = Vec::new();
+    let mut extracted_packages: Vec<(String, String, std::path::PathBuf)> = Vec::new();
     let mut failed_packages = Vec::new();
 
     for result in results {
@@ -437,6 +438,7 @@ pub async fn install(
         }
     }
 
+    let extracted_packages_count = extracted_packages.len();
     println!();
     for (name, version, extract_dir) in extracted_packages {
         let formula_cellar = cellar.join(&name).join(&version);
@@ -503,11 +505,12 @@ pub async fn install(
 
     let elapsed = start.elapsed();
 
+    let successful_count = extracted_packages_count + source_install_count;
     println!();
     println!(
         "{} {} installed [{:.2}ms]",
-        package_names.len(),
-        if package_names.len() == 1 {
+        successful_count,
+        if successful_count == 1 {
             "package"
         } else {
             "packages"

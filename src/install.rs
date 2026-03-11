@@ -308,9 +308,14 @@ pub async fn create_symlinks(
             let source_path = entry.path();
             let target_path = target_dir.join(&file_name);
 
-            if target_path.exists() {
-                debug!("Symlink target already exists: {:?}", target_path);
-                continue;
+            if target_path.symlink_metadata().is_ok() {
+                if !dry_run {
+                    debug!("Removing existing symlink/file at {:?}", target_path);
+                    let _ = fs::remove_file(&target_path).await;
+                } else {
+                    debug!("Symlink target already exists: {:?}", target_path);
+                    continue;
+                }
             }
 
             if !dry_run {
@@ -336,6 +341,9 @@ pub async fn create_symlinks(
         fs::create_dir_all(&opt_dir).await?;
     }
     let opt_link = opt_dir.join(formula_name);
+    if !dry_run && opt_link.symlink_metadata().is_ok() {
+        let _ = fs::remove_file(&opt_link).await;
+    }
     if !opt_link.exists() && !dry_run {
         #[cfg(unix)]
         {

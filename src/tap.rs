@@ -324,6 +324,7 @@ impl TapManager {
         let output = tokio::process::Command::new("git")
             .arg("clone")
             .arg("--depth=1")
+            .arg("--single-branch")
             .arg(&url)
             .arg(&tap.path)
             .output()
@@ -390,14 +391,35 @@ impl TapManager {
 
         match &tap.kind {
             TapKind::GitHub { .. } | TapKind::Git { .. } => {
-                let output = tokio::process::Command::new("git")
-                    .arg("pull")
+                if !tap.path.exists() {
+                    return Err(WaxError::TapError(format!(
+                        "Tap directory does not exist: {}",
+                        tap.path.display()
+                    )));
+                }
+
+                let fetch_output = tokio::process::Command::new("git")
+                    .args(["fetch", "--depth=1"])
                     .current_dir(&tap.path)
                     .output()
                     .await?;
 
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                if !fetch_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&fetch_output.stderr);
+                    return Err(WaxError::TapError(format!(
+                        "Failed to fetch tap updates: {}",
+                        stderr
+                    )));
+                }
+
+                let reset_output = tokio::process::Command::new("git")
+                    .args(["reset", "--hard", "origin/HEAD"])
+                    .current_dir(&tap.path)
+                    .output()
+                    .await?;
+
+                if !reset_output.status.success() {
+                    let stderr = String::from_utf8_lossy(&reset_output.stderr);
                     return Err(WaxError::TapError(format!(
                         "Failed to update tap: {}",
                         stderr

@@ -24,6 +24,9 @@ pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
             #[cfg(unix)]
             {
                 let target = std::fs::read_link(&src_path)?;
+                if dst_path.symlink_metadata().is_ok() {
+                    std::fs::remove_file(&dst_path)?;
+                }
                 std::os::unix::fs::symlink(target, &dst_path)?;
             }
             #[cfg(not(unix))]

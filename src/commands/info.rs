@@ -1,17 +1,14 @@
 use crate::api::ApiClient;
 use crate::cache::Cache;
 use crate::cask::CaskState;
-use crate::commands::update;
 use crate::error::{Result, WaxError};
+
 use console::style;
 use tracing::instrument;
 
 #[instrument(skip(api_client, cache))]
 pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool) -> Result<()> {
-    if !cache.is_initialized() {
-        println!("initializing package index (first time only)...");
-        update::update(api_client, cache).await?;
-    }
+    cache.ensure_fresh().await?;
 
     if cask {
         return info_cask(api_client, cache, name).await;
@@ -107,10 +104,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
 
 #[instrument(skip(api_client, cache))]
 async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<()> {
-    if !cache.is_initialized() {
-        println!("initializing package index (first time only)...");
-        update::update(api_client, cache).await?;
-    }
+    cache.ensure_fresh().await?;
 
     let casks = cache.load_casks().await?;
 

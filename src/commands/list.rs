@@ -18,7 +18,7 @@ pub async fn list() -> Result<()> {
         .iter()
         .find(|p| p.exists())
         .cloned()
-        .unwrap_or_else(homebrew_prefix);
+        .unwrap_or_else(|| homebrew_prefix().join("Cellar"));
 
     let cask_state = CaskState::new()?;
     let installed_casks = cask_state.load().await?;
@@ -91,6 +91,46 @@ pub async fn list() -> Result<()> {
             );
         }
     }
+
+    let total = packages.len() + installed_casks.len();
+    let parts: Vec<String> = [
+        if packages.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{} {}",
+                packages.len(),
+                if packages.len() == 1 {
+                    "formula"
+                } else {
+                    "formulae"
+                }
+            ))
+        },
+        if installed_casks.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{} {}",
+                installed_casks.len(),
+                if installed_casks.len() == 1 {
+                    "cask"
+                } else {
+                    "casks"
+                }
+            ))
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    println!(
+        "\n{} {} installed ({})",
+        style(total).cyan(),
+        if total == 1 { "package" } else { "packages" },
+        parts.join(", ")
+    );
 
     Ok(())
 }
