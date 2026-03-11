@@ -14,10 +14,29 @@ pub async fn uninstall(
     cask: bool,
     yes: bool,
 ) -> Result<()> {
+    uninstall_impl(cache, formula_name, dry_run, cask, yes, false).await
+}
+
+pub async fn uninstall_quiet(
+    cache: &Cache,
+    formula_name: &str,
+    cask: bool,
+) -> Result<()> {
+    uninstall_impl(cache, formula_name, false, cask, true, true).await
+}
+
+async fn uninstall_impl(
+    cache: &Cache,
+    formula_name: &str,
+    dry_run: bool,
+    cask: bool,
+    yes: bool,
+    quiet: bool,
+) -> Result<()> {
     let start = std::time::Instant::now();
 
     if cask {
-        return uninstall_cask(cache, formula_name, dry_run, start).await;
+        return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
     }
 
     let state = InstallState::new()?;
@@ -30,7 +49,7 @@ pub async fn uninstall(
         let installed_casks = cask_state.load().await?;
 
         if installed_casks.contains_key(formula_name) {
-            return uninstall_cask(cache, formula_name, dry_run, start).await;
+            return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
         }
 
         state.sync_from_cellar().await?;
@@ -56,7 +75,7 @@ pub async fn uninstall(
         .map(|f| f.name.clone())
         .collect();
 
-    if !dependents.is_empty() {
+    if !dependents.is_empty() && !quiet {
         println!("{} is a dependency of:", style(formula_name).magenta());
         for dep in &dependents {
             println!("  - {}", dep);
@@ -78,7 +97,7 @@ pub async fn uninstall(
         }
     }
 
-    uninstall_package_direct(formula_name, &package, state, dry_run, start).await
+    uninstall_package_direct(formula_name, &package, state, dry_run, start, quiet).await
 }
 
 async fn uninstall_package_direct(
@@ -87,11 +106,14 @@ async fn uninstall_package_direct(
     state: InstallState,
     dry_run: bool,
     start: std::time::Instant,
+    quiet: bool,
 ) -> Result<()> {
     if dry_run {
-        println!("- {}", formula_name);
-        let elapsed = start.elapsed();
-        println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+        if !quiet {
+            println!("- {}", formula_name);
+            let elapsed = start.elapsed();
+            println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+        }
         return Ok(());
     }
 
@@ -114,13 +136,15 @@ async fn uninstall_package_direct(
 
     state.remove(formula_name).await?;
 
-    let elapsed = start.elapsed();
-    println!(
-        "- {}@{}",
-        style(formula_name).magenta(),
-        style(&package.version).dim()
-    );
-    println!("1 package removed [{}ms]", elapsed.as_millis());
+    if !quiet {
+        let elapsed = start.elapsed();
+        println!(
+            "- {}@{}",
+            style(formula_name).magenta(),
+            style(&package.version).dim()
+        );
+        println!("1 package removed [{}ms]", elapsed.as_millis());
+    }
 
     Ok(())
 }
@@ -130,6 +154,7 @@ async fn uninstall_cask(
     cask_name: &str,
     dry_run: bool,
     start: std::time::Instant,
+    quiet: bool,
 ) -> Result<()> {
     let state = CaskState::new()?;
     let installed_casks = state.load().await?;
@@ -139,9 +164,11 @@ async fn uninstall_cask(
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
     if dry_run {
-        println!("- {} (cask)", cask_name);
-        let elapsed = start.elapsed();
-        println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+        if !quiet {
+            println!("- {} (cask)", cask_name);
+            let elapsed = start.elapsed();
+            println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+        }
         return Ok(());
     }
 
@@ -159,9 +186,11 @@ async fn uninstall_cask(
             }
         }
         "pkg" => {
-            println!(
-                "PKG uninstallation not fully supported - you may need to manually remove files"
-            );
+            if !quiet {
+                println!(
+                    "PKG uninstallation not fully supported - you may need to manually remove files"
+                );
+            }
         }
         _ => {
             #[cfg(target_os = "macos")]
@@ -188,14 +217,16 @@ async fn uninstall_cask(
 
     state.remove(cask_name).await?;
 
-    let elapsed = start.elapsed();
-    println!(
-        "- {}@{} {}",
-        style(cask_name).magenta(),
-        style(&cask.version).dim(),
-        style("(cask)").yellow()
-    );
-    println!("1 package removed [{}ms]", elapsed.as_millis());
+    if !quiet {
+        let elapsed = start.elapsed();
+        println!(
+            "- {}@{} {}",
+            style(cask_name).magenta(),
+            style(&cask.version).dim(),
+            style("(cask)").yellow()
+        );
+        println!("1 package removed [{}ms]", elapsed.as_millis());
+    }
 
     Ok(())
 }

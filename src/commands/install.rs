@@ -7,6 +7,7 @@ use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
+use crate::signal::{check_cancelled, CriticalSection};
 use crate::tap::TapManager;
 use crate::ui::{
     copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
@@ -139,6 +140,41 @@ pub async fn install(
     global: bool,
     build_from_source: bool,
 ) -> Result<()> {
+    install_impl(cache, package_names, dry_run, cask, user, global, build_from_source, false, None).await
+}
+
+pub async fn install_quiet(
+    cache: &Cache,
+    package_names: &[String],
+    cask: bool,
+    user: bool,
+    global: bool,
+) -> Result<()> {
+    install_impl(cache, package_names, false, cask, user, global, false, true, None).await
+}
+
+pub async fn install_quiet_with_progress(
+    cache: &Cache,
+    package_names: &[String],
+    cask: bool,
+    user: bool,
+    global: bool,
+    pb: &ProgressBar,
+) -> Result<()> {
+    install_impl(cache, package_names, false, cask, user, global, false, true, Some(pb)).await
+}
+
+async fn install_impl(
+    cache: &Cache,
+    package_names: &[String],
+    dry_run: bool,
+    cask: bool,
+    user: bool,
+    global: bool,
+    build_from_source: bool,
+    quiet: bool,
+    external_pb: Option<&ProgressBar>,
+) -> Result<()> {
     if package_names.is_empty() {
         return Err(WaxError::InvalidInput("No packages specified".to_string()));
     }
@@ -258,13 +294,13 @@ pub async fn install(
         }
     }
 
-    if !already_installed.is_empty() {
+    if !already_installed.is_empty() && !quiet {
         for pkg in &already_installed {
             println!("{} is already installed", style(pkg).magenta());
         }
     }
 
-    if !errors.is_empty() {
+    if !errors.is_empty() && !quiet {
         for (pkg, err) in &errors {
             eprintln!("{}: {}", pkg, err);
         }
@@ -287,7 +323,7 @@ pub async fn install(
     let package_list = requested.join(", ");
 
     let dep_count = all_to_install.len().saturating_sub(requested.len());
-    if dep_count > 0 {
+    if dep_count > 0 && !quiet {
         println!();
         println!(
             "installing {} + {} {}",
@@ -302,11 +338,13 @@ pub async fn install(
     }
 
     if dry_run {
-        println!();
-        for name in &all_to_install {
-            println!("+ {}", name);
+        if !quiet {
+            println!();
+            for name in &all_to_install {
+                println!("+ {}", name);
+            }
+            println!("\ndry run - no changes made");
         }
-        println!("\ndry run - no changes made");
         return Ok(());
     }
 
@@ -330,6 +368,7 @@ pub async fn install(
 
     let semaphore = Arc::new(Semaphore::new(8));
     let mut tasks = Vec::new();
+    let mut inline_extracted: Vec<(String, String, std::path::PathBuf)> = Vec::new();
     let mut source_install_count = 0usize;
 
     let temp_dir = Arc::new(TempDir::new()?);
@@ -343,7 +382,9 @@ pub async fn install(
             .is_some();
 
         if !has_bottle || build_from_source {
-            if build_from_source && has_bottle {
+            check_cancelled()?;
+
+            if build_from_source && has_bottle && !quiet {
                 println!();
                 println!("building {} from source", pkg.name);
             }
@@ -374,17 +415,36 @@ pub async fn install(
         let name = pkg.name.clone();
         let version = pkg.versions.stable.clone();
 
+        if let Some(ext_pb) = external_pb {
+            let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
+
+            downloader.download(&url, &tarball_path, Some(ext_pb)).await?;
+
+            BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
+
+            let extract_dir = temp_dir.path().join(&name);
+            BottleDownloader::extract(&tarball_path, &extract_dir)?;
+
+            inline_extracted.push((name, version, extract_dir));
+            continue;
+        }
+
         let downloader = Arc::clone(&downloader);
         let semaphore = Arc::clone(&semaphore);
         let temp_dir = Arc::clone(&temp_dir);
 
-        let pb = multi.add(ProgressBar::new(0));
-        let style = ProgressStyle::default_bar()
-            .template(PROGRESS_BAR_TEMPLATE)
-            .unwrap()
-            .progress_chars(PROGRESS_BAR_CHARS);
-        pb.set_style(style);
-        pb.set_message(name.clone());
+        let pb = if quiet {
+            ProgressBar::hidden()
+        } else {
+            let pb = multi.add(ProgressBar::new(0));
+            let style = ProgressStyle::default_bar()
+                .template(PROGRESS_BAR_TEMPLATE)
+                .unwrap()
+                .progress_chars(PROGRESS_BAR_CHARS);
+            pb.set_style(style);
+            pb.set_message(name.clone());
+            pb
+        };
 
         let task = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
@@ -422,7 +482,9 @@ pub async fn install(
         }
     }
 
-    if !failed_packages.is_empty() {
+    extracted_packages.extend(inline_extracted);
+
+    if !failed_packages.is_empty() && !quiet {
         for err in &failed_packages {
             eprintln!("{}", err);
         }
@@ -434,8 +496,13 @@ pub async fn install(
     }
 
     let extracted_packages_count = extracted_packages.len();
-    println!();
+    check_cancelled()?;
+
+    if !quiet {
+        println!();
+    }
     for (name, version, extract_dir) in extracted_packages {
+        let _critical = CriticalSection::new();
         let formula_cellar = cellar.join(&name).join(&version);
         tokio::fs::create_dir_all(&formula_cellar).await?;
 
@@ -495,21 +562,25 @@ pub async fn install(
         };
         state.add(package).await?;
 
-        println!("+ {}@{}", style(&name).magenta(), style(&version).dim());
+        if !quiet {
+            println!("+ {}@{}", style(&name).magenta(), style(&version).dim());
+        }
     }
 
-    let elapsed = start.elapsed();
-    let successful_count = extracted_packages_count + source_install_count;
-    println!(
-        "\n{} {} installed [{}ms]",
-        successful_count,
-        if successful_count == 1 {
-            "package"
-        } else {
-            "packages"
-        },
-        elapsed.as_millis()
-    );
+    if !quiet {
+        let elapsed = start.elapsed();
+        let successful_count = extracted_packages_count + source_install_count;
+        println!(
+            "\n{} {} installed [{}ms]",
+            successful_count,
+            if successful_count == 1 {
+                "package"
+            } else {
+                "packages"
+            },
+            elapsed.as_millis()
+        );
+    }
 
     Ok(())
 }
@@ -730,6 +801,7 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
     let mut failed = Vec::new();
 
     for cask_name in &to_install {
+        check_cancelled()?;
         match install_cask(cache, cask_name, false).await {
             Ok(_) => installed_count += 1,
             Err(e) => {

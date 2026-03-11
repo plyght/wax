@@ -350,21 +350,45 @@ pub fn detect_platform() -> String {
         ("macos", "aarch64") => {
             let version_info = macos_version();
             match version_info.as_str() {
+                "26" => "arm64_tahoe".to_string(),
+                "16" => "arm64_tahoe".to_string(),
                 "15" => "arm64_sequoia".to_string(),
                 "14" => "arm64_sonoma".to_string(),
                 "13" => "arm64_ventura".to_string(),
                 "12" => "arm64_monterey".to_string(),
-                _ => "arm64_sonoma".to_string(),
+                v => {
+                    if let Ok(major) = v.parse::<u32>() {
+                        if major > 26 {
+                            "arm64_tahoe".to_string()
+                        } else {
+                            "arm64_sequoia".to_string()
+                        }
+                    } else {
+                        "arm64_sequoia".to_string()
+                    }
+                }
             }
         }
         ("macos", "x86_64") => {
             let version_info = macos_version();
             match version_info.as_str() {
+                "26" => "tahoe".to_string(),
+                "16" => "tahoe".to_string(),
                 "15" => "sequoia".to_string(),
                 "14" => "sonoma".to_string(),
                 "13" => "ventura".to_string(),
                 "12" => "monterey".to_string(),
-                _ => "sonoma".to_string(),
+                v => {
+                    if let Ok(major) = v.parse::<u32>() {
+                        if major > 26 {
+                            "tahoe".to_string()
+                        } else {
+                            "sequoia".to_string()
+                        }
+                    } else {
+                        "sequoia".to_string()
+                    }
+                }
             }
         }
         ("linux", "x86_64") => "x86_64_linux".to_string(),

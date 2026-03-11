@@ -3,6 +3,7 @@ use crate::cache::Cache;
 use crate::error::{Result, WaxError};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::lockfile::Lockfile;
+use crate::signal::{check_cancelled, CriticalSection};
 use crate::ui::{copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -153,8 +154,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     let cellar = install_mode.cellar_path()?;
 
+    check_cancelled()?;
+
     println!();
     for (name, version, platform, extract_dir) in extracted_packages {
+        let _critical = CriticalSection::new();
         let formula_cellar = cellar.join(&name).join(&version);
         tokio::fs::create_dir_all(&formula_cellar).await?;
 

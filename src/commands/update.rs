@@ -1,6 +1,7 @@
 use crate::api::ApiClient;
 use crate::cache::{Cache, CacheMetadata};
 use crate::error::Result;
+use crate::signal::check_cancelled;
 use crate::tap::TapManager;
 use crate::ui::create_spinner;
 use console::style;
@@ -78,6 +79,7 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
         cache.invalidate_all_tap_caches().await?;
 
         for tap_name in &taps {
+            check_cancelled()?;
             if let Err(e) = tap_manager.update_tap(tap_name).await {
                 eprintln!(
                     "  {} failed to update tap {}: {}",

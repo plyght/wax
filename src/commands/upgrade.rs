@@ -4,9 +4,11 @@ use crate::cask::CaskState;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
-use crate::ui::create_spinner;
+use crate::signal::{check_cancelled, CriticalSection};
+use crate::ui::{create_spinner, PROGRESS_BAR_CHARS};
 use crate::version::is_same_or_newer;
 use console::style;
+use indicatif::{ProgressBar, ProgressStyle};
 use tracing::instrument;
 
 #[derive(Debug)]
@@ -69,18 +71,80 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     let mut failed_names = Vec::new();
 
     for (i, pkg) in outdated.into_iter().enumerate() {
-        let spinner = create_spinner(&format!("upgrading {} ({}/{})", pkg.name, i + 1, total));
+        check_cancelled()?;
+        let _critical = CriticalSection::new();
 
-        let result = if pkg.is_cask {
-            upgrade_cask_internal(cache, &pkg.name, false).await
+        let label = format!("({}/{}) {}", i + 1, total, pkg.name);
+
+        let spinner = create_spinner(&format!("removing {} ({}/{})", pkg.name, i + 1, total));
+        let uninstall_result = if pkg.is_cask {
+            uninstall::uninstall_quiet(cache, &pkg.name, true).await
         } else {
-            upgrade_formula_internal(cache, &pkg.name, pkg.install_mode, false).await
+            uninstall::uninstall_quiet(cache, &pkg.name, false).await
         };
-
         spinner.finish_and_clear();
+
+        let result = match uninstall_result {
+            Ok(()) => {
+                let pb = ProgressBar::new(0);
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(&format!(
+                            "{{spinner:.green}} {} {{bar:30.cyan/blue}} {{bytes}}/{{total_bytes}} {{bytes_per_sec}}",
+                            label
+                        ))
+                        .unwrap()
+                        .progress_chars(PROGRESS_BAR_CHARS),
+                );
+                pb.enable_steady_tick(std::time::Duration::from_millis(80));
+
+                let install_result = if pkg.is_cask {
+                    install::install_quiet_with_progress(
+                        cache,
+                        &[pkg.name.clone()],
+                        true,
+                        false,
+                        false,
+                        &pb,
+                    )
+                    .await
+                } else {
+                    let (user_flag, global_flag) = match pkg.install_mode {
+                        Some(InstallMode::User) => (true, false),
+                        Some(InstallMode::Global) => (false, true),
+                        _ => (false, false),
+                    };
+                    install::install_quiet_with_progress(
+                        cache,
+                        &[pkg.name.clone()],
+                        false,
+                        user_flag,
+                        global_flag,
+                        &pb,
+                    )
+                    .await
+                };
+                pb.finish_and_clear();
+                install_result
+            }
+            Err(e) => Err(e),
+        };
 
         match result {
             Ok(()) => {
+                let cask_indicator = if pkg.is_cask {
+                    format!(" {}", style("(cask)").yellow())
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{} {}{} {} → {}",
+                    style("✓").green(),
+                    style(&pkg.name).magenta(),
+                    cask_indicator,
+                    style(&pkg.installed_version).dim(),
+                    style(&pkg.latest_version).green()
+                );
                 success_count += 1;
             }
             Err(e) => {
@@ -168,7 +232,7 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
         return Ok(());
     }
 
-    upgrade_formula_internal(cache, formula_name, Some(installed.install_mode), false).await
+    upgrade_formula_internal(cache, formula_name, Some(installed.install_mode)).await
 }
 
 async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
@@ -213,16 +277,17 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
         return Ok(());
     }
 
-    upgrade_cask_internal(cache, cask_name, false).await
+    upgrade_cask_internal(cache, cask_name).await
 }
 
 async fn upgrade_formula_internal(
     cache: &Cache,
     formula_name: &str,
     install_mode: Option<InstallMode>,
-    _dry_run: bool,
 ) -> Result<()> {
-    uninstall::uninstall(cache, formula_name, false, false, true).await?;
+    let _critical = CriticalSection::new();
+
+    uninstall::uninstall_quiet(cache, formula_name, false).await?;
 
     let (user_flag, global_flag) = match install_mode {
         Some(InstallMode::User) => (true, false),
@@ -230,29 +295,27 @@ async fn upgrade_formula_internal(
         None => (false, false),
     };
 
-    install::install(
+    install::install_quiet(
         cache,
         &[formula_name.to_string()],
         false,
-        false,
         user_flag,
         global_flag,
-        false,
     )
     .await?;
 
     Ok(())
 }
 
-async fn upgrade_cask_internal(cache: &Cache, cask_name: &str, _dry_run: bool) -> Result<()> {
-    uninstall::uninstall(cache, cask_name, false, true, true).await?;
+async fn upgrade_cask_internal(cache: &Cache, cask_name: &str) -> Result<()> {
+    let _critical = CriticalSection::new();
 
-    install::install(
+    uninstall::uninstall_quiet(cache, cask_name, true).await?;
+
+    install::install_quiet(
         cache,
         &[cask_name.to_string()],
-        false,
         true,
-        false,
         false,
         false,
     )

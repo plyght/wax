@@ -56,6 +56,9 @@ pub enum WaxError {
 
     #[error("Self-update error: {0}")]
     SelfUpdateError(String),
+
+    #[error("operation interrupted")]
+    Interrupted,
 }
 
 pub type Result<T> = std::result::Result<T, WaxError>;

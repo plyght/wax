@@ -9,6 +9,7 @@ mod error;
 mod formula_parser;
 mod install;
 mod lockfile;
+mod signal;
 mod tap;
 mod ui;
 mod version;
@@ -139,6 +140,13 @@ enum Commands {
         #[command(subcommand)]
         action: Option<TapAction>,
     },
+
+    #[command(about = "Check system for potential problems")]
+    #[command(alias = "dr")]
+    Doctor {
+        #[arg(long, help = "Automatically fix detected issues")]
+        fix: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -191,6 +199,7 @@ fn init_logging(verbose: bool) -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    signal::install_handler();
     init_logging(cli.verbose)?;
 
     let api_client = ApiClient::new();
@@ -257,6 +266,7 @@ async fn main() -> Result<()> {
         Commands::Lock => commands::lock::lock().await,
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action } => commands::tap::tap(action, Some(&cache)).await,
+        Commands::Doctor { fix } => commands::doctor::doctor(&cache, fix).await,
     };
 
     if let Err(e) = result {
@@ -265,6 +275,10 @@ async fn main() -> Result<()> {
 
         let prefix = style("error:").red().bold();
         match e {
+            WaxError::Interrupted => {
+                eprintln!("\n{} interrupted", style("✗").red());
+                std::process::exit(130);
+            }
             WaxError::NotInstalled(pkg) => {
                 eprintln!("{} {} is not installed", prefix, style(&pkg).magenta());
             }
