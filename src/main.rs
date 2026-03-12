@@ -166,20 +166,6 @@ enum Commands {
         action: Option<ServicesAction>,
     },
 
-    #[command(about = "Install a specific version of a formula")]
-    #[command(name = "version-install")]
-    #[command(alias = "vi")]
-    VersionInstall {
-        #[arg(help = "Formula name")]
-        formula: String,
-        #[arg(help = "Version to install")]
-        version: String,
-        #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
-        user: bool,
-        #[arg(long, help = "Install to system directory (may need sudo)")]
-        global: bool,
-    },
-
     #[command(about = "Open a formula's source repository")]
     #[command(alias = "src")]
     Source {
@@ -357,15 +343,6 @@ async fn main() -> Result<()> {
                 commands::services::services_restart(&formula, nice).await
             }
         },
-        Commands::VersionInstall {
-            formula,
-            version,
-            user,
-            global,
-        } => {
-            commands::version_install::version_install(&cache, &formula, &version, user, global)
-                .await
-        }
         Commands::Source { formula } => commands::source::source(&cache, &formula).await,
     };
 

@@ -3,6 +3,7 @@ use crate::bottle::{detect_platform, BottleDownloader};
 use crate::builder::Builder;
 use crate::cache::Cache;
 use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask};
+use crate::commands::version_install;
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
@@ -305,6 +306,17 @@ async fn install_impl(
                         errors.push((package_name.clone(), format!("cask install failed: {}", e)));
                     }
                     continue;
+                }
+
+                if let Some((name, ver)) = package_name.rsplit_once('@') {
+                    if !name.is_empty() && !ver.is_empty() {
+                        if let Err(e) =
+                            version_install::version_install(cache, name, ver, user, global).await
+                        {
+                            errors.push((package_name.clone(), format!("{}", e)));
+                        }
+                        continue;
+                    }
                 }
 
                 let error_msg = if package_name.contains('/') {

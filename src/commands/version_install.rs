@@ -10,40 +10,6 @@ use tracing::instrument;
 
 const GHCR_BASE: &str = "https://ghcr.io/v2/homebrew/core";
 
-fn platform_fallback_chain(platform: &str) -> Vec<String> {
-    let mut chain = vec![platform.to_string()];
-
-    let arm64_chain = [
-        "arm64_tahoe",
-        "arm64_sequoia",
-        "arm64_sonoma",
-        "arm64_ventura",
-        "arm64_monterey",
-        "arm64_big_sur",
-    ];
-    let x86_chain = [
-        "tahoe", "sequoia", "sonoma", "ventura", "monterey", "big_sur", "catalina",
-    ];
-
-    let fallbacks = if platform.starts_with("arm64_") {
-        &arm64_chain[..]
-    } else if platform == "x86_64_linux" || platform == "arm64_linux" {
-        return chain;
-    } else {
-        &x86_chain[..]
-    };
-
-    let start_idx = fallbacks.iter().position(|p| *p == platform).unwrap_or(0);
-    for p in &fallbacks[start_idx..] {
-        if *p != platform {
-            chain.push(p.to_string());
-        }
-    }
-
-    chain.push("all".to_string());
-    chain
-}
-
 async fn get_ghcr_token(client: &reqwest::Client, formula_name: &str) -> Result<String> {
     let scope = format!("repository:homebrew/core/{}:pull", formula_name);
     let token_url = format!("https://ghcr.io/token?scope={}", scope);
@@ -94,7 +60,7 @@ async fn resolve_bottle_for_platform(
     version: &str,
     platform: &str,
     token: &str,
-) -> Result<(String, String, String)> {
+) -> Result<(String, String)> {
     let manifest_url = format!("{}/{}/manifests/{}", GHCR_BASE, formula_name, version);
 
     let resp = client
@@ -125,10 +91,7 @@ async fn resolve_bottle_for_platform(
         ))
     })?;
 
-    let fallback_platforms = platform_fallback_chain(platform);
-
     let mut matched_digest: Option<String> = None;
-    let mut matched_platform = String::new();
     let mut available_platforms: Vec<String> = Vec::new();
 
     for manifest in manifests {
@@ -142,14 +105,8 @@ async fn resolve_bottle_for_platform(
 
         available_platforms.push(manifest_platform.to_string());
 
-        if matched_digest.is_none() {
-            for candidate in &fallback_platforms {
-                if manifest_platform == candidate {
-                    matched_digest = Some(manifest["digest"].as_str().unwrap_or("").to_string());
-                    matched_platform = manifest_platform.to_string();
-                    break;
-                }
-            }
+        if matched_digest.is_none() && manifest_platform == platform {
+            matched_digest = Some(manifest["digest"].as_str().unwrap_or("").to_string());
         }
     }
 
@@ -213,7 +170,7 @@ async fn resolve_bottle_for_platform(
     let sha256 = digest.strip_prefix("sha256:").unwrap_or(digest).to_string();
     let blob_url = format!("{}/{}/blobs/{}", GHCR_BASE, formula_name, digest);
 
-    Ok((blob_url, sha256, matched_platform))
+    Ok((blob_url, sha256))
 }
 
 #[instrument(skip(cache))]
@@ -299,15 +256,8 @@ pub async fn version_install(
         formula_name, version, platform
     ));
 
-    let (blob_url, sha256, resolved_platform) =
+    let (blob_url, sha256) =
         resolve_bottle_for_platform(&client, formula_name, version, &platform, &token).await?;
-
-    if resolved_platform != platform {
-        spinner.set_message(format!(
-            "Using compatible bottle from {} (no {} bottle available)",
-            resolved_platform, platform
-        ));
-    }
 
     spinner.finish_and_clear();
     check_cancelled()?;
