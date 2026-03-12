@@ -142,20 +142,21 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         } else {
             ""
         };
-        if desc.is_empty() {
-            println!(
-                "{} · {}{}",
-                style(&formula.name).magenta(),
-                style(&formula.versions.stable).dim(),
-                style(installed_suffix).dim()
-            );
+        let status_label = if formula.disabled {
+            format!(" {}", style("[disabled]").red())
+        } else if formula.deprecated {
+            format!(" {}", style("[deprecated]").yellow())
         } else {
-            println!(
-                "{} · {}{}",
-                style(&formula.name).magenta(),
-                style(&formula.versions.stable).dim(),
-                style(installed_suffix).dim()
-            );
+            String::new()
+        };
+        println!(
+            "{} · {}{}{}",
+            style(&formula.name).magenta(),
+            style(&formula.versions.stable).dim(),
+            style(installed_suffix).dim(),
+            status_label
+        );
+        if !desc.is_empty() {
             println!("  {}", desc);
         }
     }
@@ -167,20 +168,21 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         } else {
             ""
         };
-        if desc.is_empty() {
-            println!(
-                "{} · {}{}",
-                style(&formula.full_name).magenta(),
-                style(&formula.versions.stable).dim(),
-                style(installed_suffix).dim()
-            );
+        let status_label = if formula.disabled {
+            format!(" {}", style("[disabled]").red())
+        } else if formula.deprecated {
+            format!(" {}", style("[deprecated]").yellow())
         } else {
-            println!(
-                "{} · {}{}",
-                style(&formula.full_name).magenta(),
-                style(&formula.versions.stable).dim(),
-                style(installed_suffix).dim()
-            );
+            String::new()
+        };
+        println!(
+            "{} · {}{}{}",
+            style(&formula.full_name).magenta(),
+            style(&formula.versions.stable).dim(),
+            style(installed_suffix).dim(),
+            status_label
+        );
+        if !desc.is_empty() {
             println!("  {}", desc);
         }
     }
@@ -192,22 +194,22 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         } else {
             ""
         };
-        if desc.is_empty() {
-            println!(
-                "{} {} · {}{}",
-                style(&cask.token).magenta(),
-                style("(cask)").yellow(),
-                style(&cask.version).dim(),
-                style(installed_suffix).dim()
-            );
+        let status_label = if cask.disabled {
+            format!(" {}", style("[disabled]").red())
+        } else if cask.deprecated {
+            format!(" {}", style("[deprecated]").yellow())
         } else {
-            println!(
-                "{} {} · {}{}",
-                style(&cask.token).magenta(),
-                style("(cask)").yellow(),
-                style(&cask.version).dim(),
-                style(installed_suffix).dim()
-            );
+            String::new()
+        };
+        println!(
+            "{} {} · {}{}{}",
+            style(&cask.token).magenta(),
+            style("(cask)").yellow(),
+            style(&cask.version).dim(),
+            style(installed_suffix).dim(),
+            status_label
+        );
+        if !desc.is_empty() {
             println!("  {}", desc);
         }
     }

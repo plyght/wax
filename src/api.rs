@@ -18,6 +18,14 @@ pub struct Formula {
     pub dependencies: Option<Vec<String>>,
     pub build_dependencies: Option<Vec<String>>,
     pub bottle: Option<BottleInfo>,
+    #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default)]
+    pub disabled: bool,
+    pub deprecation_reason: Option<String>,
+    pub disable_reason: Option<String>,
+    pub keg_only: Option<bool>,
+    pub keg_only_reason: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +65,10 @@ pub struct Cask {
     pub desc: Option<String>,
     pub homepage: String,
     pub version: String,
+    #[serde(default)]
+    pub deprecated: bool,
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

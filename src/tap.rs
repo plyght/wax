@@ -468,6 +468,12 @@ impl TapManager {
                             dependencies: Some(parsed.runtime_dependencies.clone()),
                             build_dependencies: Some(parsed.build_dependencies.clone()),
                             bottle: None,
+                            deprecated: false,
+                            disabled: false,
+                            deprecation_reason: None,
+                            disable_reason: None,
+                            keg_only: None,
+                            keg_only_reason: None,
                         };
                         Ok(vec![formula])
                     }
@@ -513,6 +519,12 @@ impl TapManager {
                                     dependencies: Some(parsed.runtime_dependencies.clone()),
                                     build_dependencies: Some(parsed.build_dependencies.clone()),
                                     bottle: None,
+                                    deprecated: false,
+                                    disabled: false,
+                                    deprecation_reason: None,
+                                    disable_reason: None,
+                                    keg_only: None,
+                                    keg_only_reason: None,
                                 };
                                 formulae.push(formula);
                             }

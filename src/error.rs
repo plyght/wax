@@ -57,6 +57,18 @@ pub enum WaxError {
     #[error("Self-update error: {0}")]
     SelfUpdateError(String),
 
+    #[error("Service error: {0}")]
+    ServiceError(String),
+
+    #[error("Bundle error: {0}")]
+    BundleError(String),
+
+    #[error("Version not found: {0}")]
+    VersionNotFound(String),
+
+    #[error("TOML error: {0}")]
+    TomlError(#[from] toml::de::Error),
+
     #[error("operation interrupted")]
     Interrupted,
 }

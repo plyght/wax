@@ -1,3 +1,4 @@
+pub mod bundle;
 pub mod doctor;
 pub mod info;
 pub mod install;
@@ -6,8 +7,11 @@ pub mod lock;
 pub mod outdated;
 pub mod search;
 pub mod self_update;
+pub mod services;
+pub mod source;
 pub mod sync;
 pub mod tap;
 pub mod uninstall;
 pub mod update;
 pub mod upgrade;
+pub mod version_install;

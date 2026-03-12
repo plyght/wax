@@ -67,6 +67,8 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
     check_broken_symlinks(&mut d).await;
     check_state_consistency(&mut d).await;
     check_tools(&mut d);
+    check_glibc_version(&mut d);
+    check_metal_toolchain(&mut d);
 
     println!();
     let mut parts = vec![format!("{} passed", style(d.passed).green())];
@@ -496,6 +498,51 @@ async fn check_state_consistency(d: &mut DiagResult) {
 
     if missing_names.is_empty() && orphaned_names.is_empty() {
         d.pass("install state consistent with cellar");
+    }
+}
+
+fn check_glibc_version(_d: &mut DiagResult) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(output) = run_command_with_timeout("ldd", &["--version"], 2) {
+            let first_line = output.lines().next().unwrap_or("");
+            if let Some(ver_str) = first_line.split_whitespace().last() {
+                let parts: Vec<u32> = ver_str.split('.').filter_map(|p| p.parse().ok()).collect();
+                if parts.len() >= 2 {
+                    let (major, minor) = (parts[0], parts[1]);
+                    if major == 2 && minor < 39 {
+                        d.warn(&format!(
+                            "glibc {}.{} detected — Homebrew 5.2.0 will require glibc 2.39+. \
+                             Consider upgrading to Ubuntu 24.04 or equivalent.",
+                            major, minor
+                        ));
+                    } else {
+                        d.pass(&format!("glibc version: {}", ver_str));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn check_metal_toolchain(d: &mut DiagResult) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(output) =
+            run_command_with_timeout("system_profiler", &["SPDisplaysDataType"], 5)
+        {
+            let has_metal = output.contains("Metal Support") || output.contains("Metal Family");
+            if has_metal {
+                let metal_version = output
+                    .lines()
+                    .find(|l| l.contains("Metal Support") || l.contains("Metal Family"))
+                    .map(|l| l.trim())
+                    .unwrap_or("detected");
+                d.pass(&format!("Metal: {}", metal_version));
+            } else {
+                d.warn("Metal GPU support not detected");
+            }
+        }
     }
 }
 

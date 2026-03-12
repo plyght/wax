@@ -613,6 +613,38 @@ async fn install_impl(
         }
     }
 
+    let state_snapshot = state.load().await?;
+    let installed_names: std::collections::HashSet<String> =
+        state_snapshot.keys().cloned().collect();
+
+    for pkg_name in package_names {
+        if pkg_name.ends_with("-full") {
+            let base_name = pkg_name.trim_end_matches("-full");
+            if !installed_names.contains(base_name) {
+                let opt_dir = install_mode.prefix()?.join("opt");
+                let base_link = opt_dir.join(base_name);
+                let full_link = opt_dir.join(pkg_name);
+
+                if full_link.exists() && !base_link.exists() {
+                    #[cfg(unix)]
+                    {
+                        if let Ok(target) = std::fs::read_link(&full_link) {
+                            let _ = std::os::unix::fs::symlink(&target, &base_link);
+                            if !quiet {
+                                println!(
+                                    "  {} auto-linked {} → {}",
+                                    style("→").cyan(),
+                                    style(base_name).magenta(),
+                                    style(pkg_name).dim()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if !quiet {
         let elapsed = start.elapsed();
         let successful_count = extracted_packages_count + source_install_count;

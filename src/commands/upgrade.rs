@@ -32,8 +32,25 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
     if packages.is_empty() {
         upgrade_all(cache, dry_run, start).await
     } else {
+        let mut failed_names = Vec::new();
         for package in packages {
-            upgrade_single(cache, package, dry_run).await?;
+            if let Err(e) = upgrade_single(cache, package, dry_run).await {
+                eprintln!(
+                    "{} {} failed: {}",
+                    style("✗").red(),
+                    style(package).magenta(),
+                    e
+                );
+                failed_names.push(package.clone());
+            }
+        }
+        if !failed_names.is_empty() {
+            eprintln!(
+                "\n{} package{} failed to upgrade: {}",
+                style(failed_names.len()).red(),
+                if failed_names.len() == 1 { "" } else { "s" },
+                failed_names.join(", ")
+            );
         }
         Ok(())
     }

@@ -148,6 +148,75 @@ enum Commands {
         #[arg(long, help = "Automatically fix detected issues")]
         fix: bool,
     },
+
+    #[command(about = "Install packages from a Waxfile (formulae, casks, cargo, uv)")]
+    Bundle {
+        #[arg(long, help = "Path to Waxfile (default: ./Waxfile.toml)")]
+        file: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[command(subcommand)]
+        action: Option<BundleAction>,
+    },
+
+    #[command(about = "Manage background services")]
+    #[command(alias = "svc")]
+    Services {
+        #[command(subcommand)]
+        action: Option<ServicesAction>,
+    },
+
+    #[command(about = "Install a specific version of a formula")]
+    #[command(name = "version-install")]
+    #[command(alias = "vi")]
+    VersionInstall {
+        #[arg(help = "Formula name")]
+        formula: String,
+        #[arg(help = "Version to install")]
+        version: String,
+        #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
+        user: bool,
+        #[arg(long, help = "Install to system directory (may need sudo)")]
+        global: bool,
+    },
+
+    #[command(about = "Open a formula's source repository")]
+    #[command(alias = "src")]
+    Source {
+        #[arg(help = "Formula or cask name")]
+        formula: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BundleAction {
+    #[command(about = "Dump installed packages as a Waxfile")]
+    Dump,
+}
+
+#[derive(Subcommand)]
+enum ServicesAction {
+    #[command(about = "List all services")]
+    List,
+    #[command(about = "Start a service")]
+    Start {
+        #[arg(help = "Formula name")]
+        formula: String,
+        #[arg(long, help = "Nice priority (-20 to 20)")]
+        nice: Option<i32>,
+    },
+    #[command(about = "Stop a service")]
+    Stop {
+        #[arg(help = "Formula name")]
+        formula: String,
+    },
+    #[command(about = "Restart a service")]
+    Restart {
+        #[arg(help = "Formula name")]
+        formula: String,
+        #[arg(long, help = "Nice priority (-20 to 20)")]
+        nice: Option<i32>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -268,6 +337,36 @@ async fn main() -> Result<()> {
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action } => commands::tap::tap(action, Some(&cache)).await,
         Commands::Doctor { fix } => commands::doctor::doctor(&cache, fix).await,
+        Commands::Bundle {
+            file,
+            dry_run,
+            action,
+        } => match action {
+            Some(BundleAction::Dump) => commands::bundle::bundle_dump(&cache).await,
+            None => commands::bundle::bundle(&cache, file.as_deref(), dry_run).await,
+        },
+        Commands::Services { action } => match action {
+            Some(ServicesAction::List) | None => commands::services::services_list().await,
+            Some(ServicesAction::Start { formula, nice }) => {
+                commands::services::services_start(&formula, nice).await
+            }
+            Some(ServicesAction::Stop { formula }) => {
+                commands::services::services_stop(&formula).await
+            }
+            Some(ServicesAction::Restart { formula, nice }) => {
+                commands::services::services_restart(&formula, nice).await
+            }
+        },
+        Commands::VersionInstall {
+            formula,
+            version,
+            user,
+            global,
+        } => {
+            commands::version_install::version_install(&cache, &formula, &version, user, global)
+                .await
+        }
+        Commands::Source { formula } => commands::source::source(&cache, &formula).await,
     };
 
     if let Err(e) = result {
