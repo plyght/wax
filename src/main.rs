@@ -106,8 +106,9 @@ enum Commands {
         global: bool,
     },
 
-    #[command(about = "Uninstall a formula or cask  [alias: rm, remove]")]
-    #[command(visible_alias = "rm")]
+    #[command(about = "Uninstall a formula or cask  [alias: ui, rm, remove]")]
+    #[command(visible_alias = "ui")]
+    #[command(alias = "rm")]
     #[command(alias = "remove")]
     #[command(alias = "delete")]
     Uninstall {

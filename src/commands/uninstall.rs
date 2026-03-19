@@ -3,7 +3,10 @@ use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
 use console::style;
+use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
+use std::time::Instant;
+
 pub async fn uninstall(
     cache: &Cache,
     formulae: &[String],
@@ -28,14 +31,36 @@ pub async fn uninstall(
         formulae.to_vec()
     };
 
-    for name in &names {
-        uninstall_impl(cache, name, dry_run, cask, yes, false).await?;
+    let total = names.len();
+    let start = Instant::now();
+
+    if total > 1 {
+        println!("uninstalling {} packages\n", style(total).bold());
     }
+
+    for (i, name) in names.iter().enumerate() {
+        let prefix = if total > 1 {
+            format!("[{}/{}] ", i + 1, total)
+        } else {
+            String::new()
+        };
+        uninstall_impl(cache, name, dry_run, cask, yes, false, &prefix).await?;
+    }
+
+    if total > 1 && !dry_run {
+        println!(
+            "\n{} {} removed [{}ms]",
+            style(total).bold(),
+            if total == 1 { "package" } else { "packages" },
+            start.elapsed().as_millis()
+        );
+    }
+
     Ok(())
 }
 
 pub async fn uninstall_quiet(cache: &Cache, formula_name: &str, cask: bool) -> Result<()> {
-    uninstall_impl(cache, formula_name, false, cask, true, true).await
+    uninstall_impl(cache, formula_name, false, cask, true, true, "").await
 }
 
 async fn uninstall_impl(
@@ -45,6 +70,7 @@ async fn uninstall_impl(
     cask: bool,
     yes: bool,
     quiet: bool,
+    prefix: &str,
 ) -> Result<()> {
     let start = std::time::Instant::now();
 
@@ -110,7 +136,7 @@ async fn uninstall_impl(
         }
     }
 
-    uninstall_package_direct(formula_name, &package, state, dry_run, start, quiet).await
+    uninstall_package_direct(formula_name, &package, state, dry_run, start, quiet, prefix).await
 }
 
 async fn uninstall_package_direct(
@@ -120,15 +146,39 @@ async fn uninstall_package_direct(
     dry_run: bool,
     start: std::time::Instant,
     quiet: bool,
+    prefix: &str,
 ) -> Result<()> {
     if dry_run {
         if !quiet {
-            println!("- {}", formula_name);
-            let elapsed = start.elapsed();
-            println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+            println!(
+                "{}would remove {}@{}",
+                prefix,
+                style(formula_name).magenta(),
+                style(&package.version).dim()
+            );
         }
         return Ok(());
     }
+
+    let spinner = if !quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.red} {msg}")
+                .unwrap()
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        pb.set_message(format!(
+            "{}removing {}@{}...",
+            prefix,
+            style(formula_name).magenta(),
+            style(&package.version).dim()
+        ));
+        Some(pb)
+    } else {
+        None
+    };
 
     let install_mode = package.install_mode;
     let cellar = install_mode.cellar_path()?;
@@ -149,14 +199,19 @@ async fn uninstall_package_direct(
 
     state.remove(formula_name).await?;
 
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+
     if !quiet {
-        let elapsed = start.elapsed();
         println!(
-            "- {}@{}",
+            "{} {}{}{} {}",
+            style("✗").red().bold(),
+            prefix,
             style(formula_name).magenta(),
-            style(&package.version).dim()
+            style(format!("@{}", package.version)).dim(),
+            style(format!("[{}ms]", start.elapsed().as_millis())).dim(),
         );
-        println!("1 package removed [{}ms]", elapsed.as_millis());
     }
 
     Ok(())
@@ -231,14 +286,13 @@ async fn uninstall_cask(
     state.remove(cask_name).await?;
 
     if !quiet {
-        let elapsed = start.elapsed();
         println!(
-            "- {}@{} {}",
+            "{} {}{}  {}",
+            style("✗").red().bold(),
             style(cask_name).magenta(),
-            style(&cask.version).dim(),
-            style("(cask)").yellow()
+            style(format!("@{} (cask)", cask.version)).dim(),
+            style(format!("[{}ms]", start.elapsed().as_millis())).dim(),
         );
-        println!("1 package removed [{}ms]", elapsed.as_millis());
     }
 
     Ok(())
