@@ -243,6 +243,10 @@ async fn install_impl(
         return Err(WaxError::InvalidInput("No packages specified".to_string()));
     }
 
+    for name in package_names {
+        crate::error::validate_package_name(name)?;
+    }
+
     cache.ensure_fresh().await?;
 
     if cask {

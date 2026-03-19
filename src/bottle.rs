@@ -160,7 +160,23 @@ impl BottleDownloader {
         let decoder = GzDecoder::new(file);
         let mut archive = Archive::new(decoder);
 
-        archive.unpack(dest_dir)?;
+        let canonical_dest = dunce::canonicalize(dest_dir)?;
+
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.into_owned();
+
+            // Reject absolute paths and path traversal
+            if path.is_absolute() || path.components().any(|c| c == std::path::Component::ParentDir) {
+                return Err(WaxError::InstallError(format!(
+                    "Tar entry contains unsafe path: {}",
+                    path.display()
+                )));
+            }
+
+            let full_path = canonical_dest.join(&path);
+            entry.unpack(&full_path)?;
+        }
 
         debug!("Extraction complete");
         Ok(())

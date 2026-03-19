@@ -1,5 +1,5 @@
 use crate::bottle::homebrew_prefix;
-use crate::error::{Result, WaxError};
+use crate::error::{validate_package_name, Result, WaxError};
 use crate::install::InstallState;
 use console::style;
 #[allow(unused_imports)]
@@ -202,6 +202,7 @@ pub async fn services_list() -> Result<()> {
 
 #[instrument]
 pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()> {
+    validate_package_name(formula_name)?;
     let state = InstallState::new()?;
     let installed = state.load().await?;
 
@@ -317,6 +318,7 @@ pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()>
 
 #[instrument]
 pub async fn services_stop(formula_name: &str) -> Result<()> {
+    validate_package_name(formula_name)?;
     #[cfg(target_os = "macos")]
     {
         let plist_dir = launchctl_plist_dir();

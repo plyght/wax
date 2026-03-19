@@ -242,6 +242,7 @@ impl ApiClient {
 
     #[instrument(skip(self))]
     pub async fn fetch_cask_details(&self, cask_name: &str) -> Result<CaskDetails> {
+        crate::error::validate_package_name(cask_name)?;
         info!("Fetching details for cask: {}", cask_name);
         let url = format!("https://formulae.brew.sh/api/cask/{}.json", cask_name);
         let response = self.client.get(&url).send().await?;
