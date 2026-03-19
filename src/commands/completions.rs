@@ -85,17 +85,62 @@ fn install_completions(shell: Shell) -> Result<()> {
 
     match shell {
         Shell::Zsh => {
-            println!(
-                "\nAdd to your ~/.zshrc if not already present:\n  {}",
-                style("fpath=(~/.zsh/completions $fpath)").dim()
-            );
-            println!("Then run: {}", style("exec zsh").dim());
+            let zshrc = PathBuf::from(&home).join(".zshrc");
+            let fpath_line = "fpath=(~/.zsh/completions $fpath)";
+
+            let already_configured = std::fs::read_to_string(&zshrc)
+                .map(|content| content.contains(fpath_line))
+                .unwrap_or(false);
+
+            if already_configured {
+                println!("completions are ready — restart zsh or run: {}", style("exec zsh").dim());
+            } else {
+                let prompt = inquire::Confirm::new(
+                    &format!("Add fpath to ~/.zshrc and restart zsh?"),
+                )
+                .with_default(true)
+                .prompt();
+
+                match prompt {
+                    Ok(true) => {
+                        let mut zshrc_content = std::fs::read_to_string(&zshrc).unwrap_or_default();
+                        // Insert before compinit if present, otherwise append near the top
+                        if let Some(pos) = zshrc_content.find("autoload -Uz compinit") {
+                            zshrc_content.insert_str(pos, &format!("{}\n", fpath_line));
+                        } else if let Some(pos) = zshrc_content.find("compinit") {
+                            zshrc_content.insert_str(pos, &format!("{}\n", fpath_line));
+                        } else {
+                            // Append with a newline
+                            if !zshrc_content.ends_with('\n') {
+                                zshrc_content.push('\n');
+                            }
+                            zshrc_content.push_str(fpath_line);
+                            zshrc_content.push('\n');
+                        }
+                        std::fs::write(&zshrc, &zshrc_content)?;
+                        println!("{} added fpath to ~/.zshrc", style("✓").green());
+                        println!("\nrun {} to activate completions", style("exec zsh").cyan());
+                    }
+                    Ok(false) => {
+                        println!(
+                            "\nadd this to your ~/.zshrc manually:\n  {}",
+                            style(fpath_line).dim()
+                        );
+                    }
+                    Err(_) => {
+                        println!(
+                            "\nadd this to your ~/.zshrc manually:\n  {}",
+                            style(fpath_line).dim()
+                        );
+                    }
+                }
+            }
         }
         Shell::Bash => {
-            println!("Completions will load automatically in new shells.");
+            println!("completions will load automatically in new shells.");
         }
         Shell::Fish => {
-            println!("Completions will load automatically in new shells.");
+            println!("completions will load automatically in new shells.");
         }
         _ => {}
     }
