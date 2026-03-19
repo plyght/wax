@@ -1,3 +1,4 @@
+use indicatif::MultiProgress;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -7,6 +8,35 @@ static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CRITICAL_SECTION: AtomicBool = AtomicBool::new(false);
 
 static CURRENT_OP: OnceLock<Mutex<String>> = OnceLock::new();
+static ACTIVE_MULTI: OnceLock<Mutex<Option<MultiProgress>>> = OnceLock::new();
+
+fn active_multi_mutex() -> &'static Mutex<Option<MultiProgress>> {
+    ACTIVE_MULTI.get_or_init(|| Mutex::new(None))
+}
+
+pub fn set_active_multi(multi: MultiProgress) {
+    if let Ok(mut guard) = active_multi_mutex().lock() {
+        *guard = Some(multi);
+    }
+}
+
+pub fn clear_active_multi() {
+    if let Ok(mut guard) = active_multi_mutex().lock() {
+        *guard = None;
+    }
+}
+
+/// Print a message that appears correctly above/alongside active progress bars.
+fn print_interrupt(msg: &str) {
+    let used_multi = active_multi_mutex()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|m| m.println(msg).is_ok()))
+        .unwrap_or(false);
+    if !used_multi {
+        eprintln!("{}", msg);
+    }
+}
 
 fn current_op_mutex() -> &'static Mutex<String> {
     CURRENT_OP.get_or_init(|| Mutex::new(String::new()))
@@ -79,19 +109,19 @@ pub fn install_handler() {
         let op = get_current_op();
         if is_in_critical_section() {
             if op.is_empty() {
-                eprintln!("\nfinishing current operation, please wait...");
+                print_interrupt("\nfinishing current operation, please wait...");
             } else {
-                eprintln!("\nfinishing {} — do not interrupt, cleaning up when done...", op);
+                print_interrupt(&format!("\nfinishing {} — do not interrupt, cleaning up when done...", op));
             }
             request_shutdown();
         } else if is_shutdown_requested() {
-            eprintln!("\nforce quitting");
+            print_interrupt("\nforce quitting");
             std::process::exit(130);
         } else {
             if op.is_empty() {
-                eprintln!("\ninterrupted, cleaning up temp files...");
+                print_interrupt("\ninterrupted, cleaning up temp files...");
             } else {
-                eprintln!("\ninterrupted while {} — cleaning up temp files...", op);
+                print_interrupt(&format!("\ninterrupted while {} — cleaning up temp files...", op));
             }
             request_shutdown();
         }

@@ -2,7 +2,7 @@ use crate::cache::Cache;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
-use crate::signal::{clear_current_op, set_current_op};
+use crate::signal::{clear_active_multi, clear_current_op, set_active_multi, set_current_op};
 use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -29,14 +29,15 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     let total = resolved.len();
     let start = Instant::now();
     let multi = MultiProgress::new();
+    set_active_multi(multi.clone());
 
-    // Overall progress bar for multi-package reinstalls
+    // Overall progress bar for multi-package reinstalls, anchored to the bottom
     let overall_pb = if total > 1 {
         println!(
             "reinstalling {} packages\n",
             style(total).bold()
         );
-        let pb = multi.add(ProgressBar::new(total as u64));
+        let pb = multi.insert_from_back(0, ProgressBar::new(total as u64));
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("  overall  {bar:40.white/dim} {pos}/{len}  eta {eta}")
@@ -62,8 +63,8 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             String::new()
         };
 
-        // Spinner for uninstall phase
-        let spinner = multi.add(ProgressBar::new_spinner());
+        // Spinner for uninstall phase (inserted above the overall bar)
+        let spinner = multi.insert_from_back(1, ProgressBar::new_spinner());
         spinner.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
@@ -83,8 +84,8 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         }
         spinner.finish_and_clear();
 
-        // Progress bar for download/install phase
-        let pb = multi.add(ProgressBar::new(0));
+        // Progress bar for download/install phase (inserted above the overall bar)
+        let pb = multi.insert_from_back(1, ProgressBar::new(0));
         pb.set_style(
             ProgressStyle::default_bar()
                 .template(&format!(
@@ -133,6 +134,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         pb.finish_and_clear();
     }
     clear_current_op();
+    clear_active_multi();
 
     println!(
         "\n{} {} reinstalled [{}ms]",
