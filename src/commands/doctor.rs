@@ -68,6 +68,7 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
     check_opt_symlinks(&mut d).await;
     check_state_consistency(&mut d).await;
     check_unrelocated_bottles(&mut d).await;
+    check_invalid_signatures(&mut d).await;
     check_tools(&mut d);
     check_glibc_version(&mut d);
     check_metal_toolchain(&mut d);
@@ -803,18 +804,232 @@ fn scan_dir_for_placeholders(dir: &Path) -> bool {
 }
 
 fn is_mach_o_with_placeholders(path: &Path) -> bool {
-    let content = match std::fs::read(path) {
-        Ok(c) => c,
+    use std::io::Read;
+
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
         Err(_) => return false,
     };
-    if !crate::bottle::is_mach_o(&content) {
+
+    // Read header: 4 (magic) + 4 (cputype) + 4 (cpusubtype) + 4 (filetype)
+    //              + 4 (ncmds) + 4 (sizeofcmds) + 4 (flags) [+ 4 reserved for 64-bit]
+    let mut header = [0u8; 32];
+    if f.read(&mut header).unwrap_or(0) < 8 {
         return false;
     }
-    // Fast byte scan for placeholder strings
+
+    if !crate::bottle::is_mach_o(&header) {
+        return false;
+    }
+
+    // Parse sizeofcmds (bytes 20-23, little-endian) for 64-bit Mach-O.
+    // For fat binaries we fall back to a generous 64KB scan of the file start.
     let placeholder = b"@@HOMEBREW_";
-    content
-        .windows(placeholder.len())
-        .any(|w| w == placeholder)
+    let magic = &header[0..4];
+    let is_fat = magic == b"\xBE\xBA\xFE\xCA" || magic == b"\xCA\xFE\xBA\xBE";
+
+    let scan_len = if is_fat {
+        65536usize
+    } else {
+        // sizeofcmds is at offset 20 (LE u32); load commands follow the 32-byte header
+        let sizeofcmds = u32::from_le_bytes([header[20], header[21], header[22], header[23]]) as usize;
+        32 + sizeofcmds
+    };
+
+    // Re-read from the start, limiting to scan_len bytes
+    drop(f);
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut buf = vec![0u8; scan_len];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf[..n].windows(placeholder.len()).any(|w| w == placeholder)
+}
+
+async fn check_invalid_signatures(d: &mut DiagResult) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Read;
+        use std::process::Command;
+
+        let prefix = homebrew_prefix();
+        let cellar = prefix.join("Cellar");
+        if !cellar.exists() {
+            return;
+        }
+
+        let mut invalid: Vec<(String, String)> = Vec::new();
+
+        let entries = match std::fs::read_dir(&cellar) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for pkg_entry in entries.filter_map(|e| e.ok()) {
+            let pkg_dir = pkg_entry.path();
+            if !pkg_dir.is_dir() {
+                continue;
+            }
+            let name = pkg_entry.file_name().to_string_lossy().to_string();
+
+            let mut versions: Vec<String> = match std::fs::read_dir(&pkg_dir) {
+                Ok(e) => e
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect(),
+                Err(_) => continue,
+            };
+            crate::version::sort_versions(&mut versions);
+
+            let Some(version) = versions.last() else {
+                continue;
+            };
+            let ver_dir = pkg_dir.join(version);
+            let mut pkg_invalid = false;
+
+            'outer: for subdir in &["bin", "lib"] {
+                let dir = ver_dir.join(subdir);
+                if !dir.is_dir() {
+                    continue;
+                }
+                let Ok(dir_entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in dir_entries.filter_map(|e| e.ok()) {
+                    let file = entry.path();
+                    // Follow symlinks: use metadata (not symlink_metadata)
+                    let Ok(meta) = std::fs::metadata(&file) else {
+                        continue;
+                    };
+                    if !meta.is_file() {
+                        continue;
+                    }
+                    // Read only 4 magic bytes to detect Mach-O
+                    let mut buf = [0u8; 4];
+                    let Ok(mut f) = std::fs::File::open(&file) else {
+                        continue;
+                    };
+                    if f.read(&mut buf).is_err() {
+                        continue;
+                    }
+                    if !crate::bottle::is_mach_o(&buf) {
+                        continue;
+                    }
+                    let Some(path_str) = file.to_str() else {
+                        continue;
+                    };
+                    // "invalid signature" = was signed but modified; "not signed" = fine to ignore
+                    if let Ok(out) = Command::new("codesign").args(["-v", path_str]).output() {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        if stderr.contains("invalid signature")
+                            || stderr.contains("code or signature have been modified")
+                        {
+                            pkg_invalid = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            if pkg_invalid {
+                invalid.push((name, version.clone()));
+            }
+        }
+
+        if invalid.is_empty() {
+            d.pass("all Mach-O binaries have valid code signatures");
+            return;
+        }
+
+        if d.fix {
+            d.warn(&format!(
+                "{} packages have invalid code signatures — re-signing...",
+                invalid.len()
+            ));
+            for (name, version) in &invalid {
+                let ver_dir = cellar.join(name).join(version);
+                let resigned = resign_macho_binaries(&ver_dir);
+                if resigned > 0 {
+                    d.fixed(&format!("re-signed {}@{} ({} binaries)", name, version, resigned));
+                } else {
+                    d.fail(&format!("failed to re-sign {}@{}", name, version));
+                }
+            }
+        } else {
+            for (i, (name, version)) in invalid.iter().enumerate() {
+                if i < 5 {
+                    d.fail(&format!(
+                        "invalid code signature: {}@{} (modified without re-signing — causes SIGKILL on Apple Silicon)",
+                        style(name).magenta(),
+                        version
+                    ));
+                }
+            }
+            if invalid.len() > 5 {
+                d.fail(&format!("... and {} more with invalid signatures", invalid.len() - 5));
+            }
+            d.warn(&format!(
+                "run {} to re-sign affected packages",
+                style("wax doctor --fix").yellow()
+            ));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = d;
+    }
+}
+
+/// Re-sign all Mach-O binaries in bin/ and lib/ subdirs with an ad-hoc signature.
+/// Returns the number of successfully re-signed files.
+#[cfg(target_os = "macos")]
+fn resign_macho_binaries(ver_dir: &Path) -> usize {
+    use std::io::Read;
+    use std::process::Command;
+
+    let mut count = 0;
+    for subdir in &["bin", "lib"] {
+        let dir = ver_dir.join(subdir);
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let file = entry.path();
+            let Ok(meta) = std::fs::metadata(&file) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let mut buf = [0u8; 4];
+            let Ok(mut f) = std::fs::File::open(&file) else {
+                continue;
+            };
+            if f.read(&mut buf).is_err() {
+                continue;
+            }
+            if !crate::bottle::is_mach_o(&buf) {
+                continue;
+            }
+            let Some(path_str) = file.to_str() else {
+                continue;
+            };
+            if let Ok(out) = Command::new("codesign")
+                .args(["--force", "--sign", "-", path_str])
+                .output()
+            {
+                if out.status.success() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
 }
 
 fn check_tools(d: &mut DiagResult) {

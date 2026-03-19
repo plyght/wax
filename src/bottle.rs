@@ -351,6 +351,8 @@ impl BottleDownloader {
             }
         };
 
+        let mut modified = false;
+
         // Fix the binary's own install name (relevant for dylibs)
         if let Ok(output) = Command::new("otool").args(["-D", path_str]).output() {
             if output.status.success() {
@@ -366,13 +368,14 @@ impl BottleDownloader {
                         let _ = Command::new("install_name_tool")
                             .args(["-id", &new_name, path_str])
                             .output();
+                        modified = true;
                         debug!("Relocated Mach-O install name: {:?}", path);
                     }
                 }
             }
         }
 
-        // Fix all referenced dylib paths
+        // Fix all referenced dylib paths (LC_LOAD_DYLIB)
         if let Ok(output) = Command::new("otool").args(["-L", path_str]).output() {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
@@ -402,16 +405,76 @@ impl BottleDownloader {
                     if let Ok(out) = result {
                         if !out.status.success() {
                             debug!(
-                                "install_name_tool failed for {:?}: {}",
+                                "install_name_tool -change failed for {:?}: {}",
                                 path,
                                 String::from_utf8_lossy(&out.stderr)
                             );
                         } else {
                             debug!("Relocated Mach-O dep {} -> {} in {:?}", lib_path, new_path, path);
+                            modified = true;
                         }
                     }
                 }
             }
+        }
+
+        // Fix RPATH entries (LC_RPATH) — e.g. @@HOMEBREW_PREFIX@@/lib
+        if let Ok(output) = Command::new("otool").args(["-l", path_str]).output() {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                // Parse "path <value> (offset N)" lines inside LC_RPATH sections
+                let mut in_rpath = false;
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("cmd LC_RPATH") || trimmed == "cmd LC_RPATH" {
+                        in_rpath = true;
+                        continue;
+                    }
+                    if trimmed.starts_with("cmd ") {
+                        in_rpath = false;
+                    }
+                    if in_rpath && trimmed.starts_with("path ") {
+                        let rpath = if let Some(end) = trimmed.find(" (offset") {
+                            &trimmed["path ".len()..end]
+                        } else {
+                            &trimmed["path ".len()..]
+                        };
+                        if rpath.contains("@@HOMEBREW_CELLAR@@")
+                            || rpath.contains("@@HOMEBREW_PREFIX@@")
+                        {
+                            let new_rpath = rpath
+                                .replace("@@HOMEBREW_CELLAR@@", cellar)
+                                .replace("@@HOMEBREW_PREFIX@@", prefix);
+                            let result = Command::new("install_name_tool")
+                                .args(["-rpath", rpath, &new_rpath, path_str])
+                                .output();
+                            if let Ok(out) = result {
+                                if out.status.success() {
+                                    debug!("Relocated rpath {} -> {} in {:?}", rpath, new_rpath, path);
+                                    modified = true;
+                                } else {
+                                    debug!(
+                                        "install_name_tool -rpath failed for {:?}: {}",
+                                        path,
+                                        String::from_utf8_lossy(&out.stderr)
+                                    );
+                                }
+                            }
+                        }
+                        in_rpath = false; // each LC_RPATH has one path
+                    }
+                }
+            }
+        }
+
+        // Re-sign with an ad-hoc signature after any modification.
+        // install_name_tool invalidates the code signature on Apple Silicon,
+        // and macOS kills modified unsigned binaries with SIGKILL.
+        if modified {
+            let _ = Command::new("codesign")
+                .args(["--force", "--sign", "-", path_str])
+                .output();
+            debug!("Re-signed Mach-O: {:?}", path);
         }
 
         Ok(())
