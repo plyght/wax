@@ -239,12 +239,12 @@ enum Commands {
         formula: String,
     },
 
-    #[command(about = "Generate shell completions")]
+    #[command(about = "Install shell completions (auto-detects shell)")]
     Completions {
         #[arg(value_enum, help = "Shell to generate completions for (auto-detected if omitted)")]
         shell: Option<Shell>,
-        #[arg(long, help = "Install completions to the appropriate shell config directory")]
-        install: bool,
+        #[arg(long, help = "Print completions to stdout instead of installing")]
+        print: bool,
     },
 
     #[command(about = "Show why a package is installed  [alias: explain]")]
@@ -451,8 +451,8 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Source { formula } => commands::source::source(&cache, &formula).await,
-        Commands::Completions { shell, install } => {
-            commands::completions::completions(shell, install)
+        Commands::Completions { shell, print } => {
+            commands::completions::completions(shell, print)
         }
         Commands::Why { formula } => {
             commands::info::info(&api_client, &cache, &formula, false).await

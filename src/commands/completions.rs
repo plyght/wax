@@ -6,15 +6,17 @@ use std::path::PathBuf;
 
 use crate::Cli;
 
-pub fn completions(shell: Option<Shell>, install: bool) -> Result<()> {
+pub fn completions(shell: Option<Shell>, print: bool) -> Result<()> {
     let shell = shell.unwrap_or_else(detect_shell);
 
-    if install {
-        install_completions(shell)
-    } else {
+    if print {
+        // --print: dump to stdout for manual piping
         let mut cmd = Cli::command();
         generate(shell, &mut cmd, "wax", &mut io::stdout());
         Ok(())
+    } else {
+        // Default: auto-detect shell and install completions
+        install_completions(shell)
     }
 }
 
