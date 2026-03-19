@@ -234,6 +234,16 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
             .ok_or_else(|| WaxError::NotInstalled(formula_name.to_string()))?
     };
 
+    if installed.pinned {
+        println!(
+            "{}@{} is pinned — skipping (run `wax unpin {}` to allow upgrades)",
+            style(formula_name).magenta(),
+            style(&installed.version).dim(),
+            formula_name
+        );
+        return Ok(());
+    }
+
     let formulae = cache.load_all_formulae().await?;
     let formula = formulae
         .iter()
@@ -438,6 +448,9 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
 
     let platform = detect_platform();
     for (name, installed) in &installed_packages {
+        if installed.pinned {
+            continue;
+        }
         if let Some(formula) = formulae.iter().find(|f| &f.name == name) {
             let latest = formula.full_version();
             let version_outdated = !is_same_or_newer(&installed.version, &latest);

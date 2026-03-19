@@ -24,12 +24,7 @@ pub struct Cache {
 
 impl Cache {
     pub fn new() -> Result<Self> {
-        let cache_dir = if let Some(base_dirs) = directories::BaseDirs::new() {
-            base_dirs.cache_dir().join("wax")
-        } else {
-            dirs::home_dir()?.join(".wax").join("cache")
-        };
-
+        let cache_dir = dirs::wax_cache_dir()?;
         Ok(Self { cache_dir })
     }
 
@@ -65,29 +60,27 @@ impl Cache {
         self.formulae_path().exists() && self.casks_path().exists()
     }
 
-    pub async fn is_stale(&self) -> bool {
+    pub async fn ensure_fresh(&self) -> Result<()> {
         if !self.is_initialized() {
-            return true;
+            self.auto_init().await?;
+            return Ok(());
         }
-        match self.load_metadata().await {
-            Ok(Some(metadata)) => {
+
+        let metadata = self.load_metadata().await?;
+        let is_stale = match &metadata {
+            Some(m) => {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs() as i64;
-                (now - metadata.last_updated) > Self::STALE_THRESHOLD_SECS
+                (now - m.last_updated) > Self::STALE_THRESHOLD_SECS
             }
-            _ => true,
-        }
-    }
+            None => true,
+        };
 
-    pub async fn ensure_fresh(&self) -> Result<()> {
-        if !self.is_initialized() {
-            self.auto_init().await?;
-        } else if self.is_stale().await {
+        if is_stale {
             let spinner = create_spinner("Refreshing index…");
             let api_client = ApiClient::new();
-            let metadata = self.load_metadata().await?;
 
             let (formulae_etag, formulae_last_modified) = metadata
                 .as_ref()
@@ -160,7 +153,7 @@ impl Cache {
     #[instrument(skip(self, formulae))]
     pub async fn save_formulae(&self, formulae: &[Formula]) -> Result<()> {
         self.ensure_cache_dir().await?;
-        let json = serde_json::to_string_pretty(formulae)?;
+        let json = serde_json::to_string(formulae)?;
         fs::write(self.formulae_path(), json).await?;
         info!("Saved {} formulae to cache", formulae.len());
         Ok(())
@@ -169,7 +162,7 @@ impl Cache {
     #[instrument(skip(self, casks))]
     pub async fn save_casks(&self, casks: &[Cask]) -> Result<()> {
         self.ensure_cache_dir().await?;
-        let json = serde_json::to_string_pretty(casks)?;
+        let json = serde_json::to_string(casks)?;
         fs::write(self.casks_path(), json).await?;
         info!("Saved {} casks to cache", casks.len());
         Ok(())

@@ -33,22 +33,61 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     let current_platform = detect_platform();
     let mut packages_to_install = Vec::new();
 
-    for (name, lock_pkg) in &lockfile.packages {
-        let needs_install = match installed_packages.get(name) {
-            Some(installed) => {
-                installed.version != lock_pkg.version || installed.platform != lock_pkg.bottle
-            }
-            None => true,
-        };
+    let mut up_to_date = Vec::new();
+    let mut upgrades = Vec::new();
 
-        if needs_install {
-            packages_to_install.push((name.clone(), lock_pkg.clone()));
-        } else {
-            println!("{} is already installed", style(&name).magenta());
+    for (name, lock_pkg) in &lockfile.packages {
+        match installed_packages.get(name) {
+            Some(installed) if installed.version != lock_pkg.version => {
+                upgrades.push((
+                    name.clone(),
+                    installed.version.clone(),
+                    lock_pkg.version.clone(),
+                ));
+                packages_to_install.push((name.clone(), lock_pkg.clone()));
+            }
+            Some(installed) if installed.platform != lock_pkg.bottle => {
+                packages_to_install.push((name.clone(), lock_pkg.clone()));
+            }
+            Some(_) => {
+                up_to_date.push(name.clone());
+            }
+            None => {
+                packages_to_install.push((name.clone(), lock_pkg.clone()));
+            }
+        }
+    }
+
+    // Show diff preview
+    if !packages_to_install.is_empty() || !upgrades.is_empty() {
+        for (name, lock_pkg) in &packages_to_install {
+            if let Some((_, old_ver, new_ver)) = upgrades.iter().find(|(n, _, _)| n == name) {
+                println!(
+                    "  {} {} {} → {}",
+                    style("↑").cyan(),
+                    style(name).magenta(),
+                    style(old_ver).dim(),
+                    style(new_ver).green()
+                );
+            } else {
+                println!(
+                    "  {} {} {}",
+                    style("+").green(),
+                    style(name).magenta(),
+                    style(format!("@{}", lock_pkg.version)).dim()
+                );
+            }
         }
     }
 
     if packages_to_install.is_empty() {
+        if !up_to_date.is_empty() {
+            println!(
+                "{} {} packages up to date",
+                style("✓").green(),
+                up_to_date.len()
+            );
+        }
         return Ok(());
     }
 
@@ -190,6 +229,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
             from_source: false,
             bottle_rebuild: 0,
             bottle_sha256: None,
+            pinned: false,
         };
         state.add(package).await?;
 

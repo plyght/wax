@@ -49,6 +49,10 @@ impl Lockfile {
     pub async fn save(&self, path: &Path) -> Result<()> {
         debug!("Saving lockfile to {:?}", path);
 
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
         let toml_string = toml::to_string_pretty(&self)
             .map_err(|e| WaxError::LockfileError(format!("Failed to serialize lockfile: {}", e)))?;
 
@@ -77,7 +81,9 @@ impl Lockfile {
     }
 
     pub fn default_path() -> PathBuf {
-        PathBuf::from("./wax.lock")
+        crate::ui::dirs::wax_dir()
+            .unwrap_or_else(|_| PathBuf::from(".wax"))
+            .join("wax.lock")
     }
 }
 

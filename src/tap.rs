@@ -131,11 +131,7 @@ impl Tap {
     }
 
     fn tap_directory() -> Result<PathBuf> {
-        if let Some(base_dirs) = directories::BaseDirs::new() {
-            Ok(base_dirs.data_local_dir().join("wax").join("taps"))
-        } else {
-            Ok(dirs::home_dir()?.join(".wax").join("taps"))
-        }
+        Ok(dirs::wax_dir()?.join("taps"))
     }
 
     pub fn formula_dir(&self) -> PathBuf {
@@ -171,12 +167,7 @@ pub struct TapManager {
 
 impl TapManager {
     pub fn new() -> Result<Self> {
-        let state_path = if let Some(base_dirs) = directories::BaseDirs::new() {
-            base_dirs.data_local_dir().join("wax").join("taps.json")
-        } else {
-            dirs::home_dir()?.join(".wax").join("taps.json")
-        };
-
+        let state_path = dirs::wax_dir()?.join("taps.json");
         Ok(Self {
             taps: HashMap::new(),
             state_path,

@@ -2,8 +2,10 @@ use crate::api::ApiClient;
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
+use crate::install::InstallState;
 
 use console::style;
+use std::collections::HashSet;
 use tracing::instrument;
 
 #[instrument(skip(api_client, cache))]
@@ -97,6 +99,42 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     if !formula.versions.bottle {
         println!();
         println!("no precompiled bottle available (will build from source)");
+    }
+
+    // Show "why installed" section if the package is installed locally
+    let state = InstallState::new()?;
+    let installed_packages = state.load().await?;
+    if let Some(pkg) = installed_packages.get(name) {
+        println!();
+        let installed_names: HashSet<String> = installed_packages.keys().cloned().collect();
+        let dependents: Vec<&str> = formulae
+            .iter()
+            .filter(|f| {
+                installed_names.contains(&f.name)
+                    && f.dependencies
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|d| d == name)
+            })
+            .map(|f| f.name.as_str())
+            .collect();
+
+        if dependents.is_empty() {
+            println!("{} installed explicitly", style("installed:").dim());
+        } else {
+            println!("{} required by:", style("installed:").dim());
+            for dep in &dependents {
+                println!("  {} {}", style("←").dim(), style(dep).cyan());
+            }
+        }
+
+        if pkg.from_source {
+            println!("  built from source");
+        }
+        if pkg.pinned {
+            println!("  {}", style("pinned").yellow());
+        }
     }
 
     Ok(())

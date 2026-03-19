@@ -1,28 +1,24 @@
 use crate::bottle::homebrew_prefix;
-use crate::error::{Result, WaxError};
+use crate::error::{validate_package_name, Result, WaxError};
 use crate::install::InstallState;
 use console::style;
-#[allow(unused_imports)]
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing::instrument;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ServiceInfo {
-    pub name: String,
-    pub status: ServiceStatus,
-    pub plist_path: Option<PathBuf>,
-    pub pid: Option<u32>,
+struct ServiceInfo {
+    name: String,
+    status: ServiceStatus,
+    #[allow(dead_code)]
+    plist_path: Option<PathBuf>,
+    pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-pub enum ServiceStatus {
+enum ServiceStatus {
     Running,
     Stopped,
-    Error,
-    Unknown,
 }
 
 impl std::fmt::Display for ServiceStatus {
@@ -30,8 +26,6 @@ impl std::fmt::Display for ServiceStatus {
         match self {
             ServiceStatus::Running => write!(f, "running"),
             ServiceStatus::Stopped => write!(f, "stopped"),
-            ServiceStatus::Error => write!(f, "error"),
-            ServiceStatus::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -171,8 +165,6 @@ pub async fn services_list() -> Result<()> {
         let status_style = match svc.status {
             ServiceStatus::Running => style("running").green(),
             ServiceStatus::Stopped => style("stopped").dim(),
-            ServiceStatus::Error => style("error").red(),
-            ServiceStatus::Unknown => style("unknown").dim(),
         };
 
         let pid_str = svc.pid.map(|p| format!(" (pid {})", p)).unwrap_or_default();
@@ -202,6 +194,7 @@ pub async fn services_list() -> Result<()> {
 
 #[instrument]
 pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()> {
+    validate_package_name(formula_name)?;
     let state = InstallState::new()?;
     let installed = state.load().await?;
 
@@ -227,6 +220,11 @@ pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()>
         let mut plist_content = std::fs::read_to_string(&plist)?;
 
         if let Some(priority) = nice {
+            if !(-20..=20).contains(&priority) {
+                return Err(WaxError::ServiceError(
+                    "Nice priority must be between -20 and 20".to_string(),
+                ));
+            }
             if !plist_content.contains("<key>Nice</key>") {
                 let nice_entry = format!(
                     "\t<key>Nice</key>\n\t<integer>{}</integer>\n</dict>",
@@ -317,6 +315,7 @@ pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()>
 
 #[instrument]
 pub async fn services_stop(formula_name: &str) -> Result<()> {
+    validate_package_name(formula_name)?;
     #[cfg(target_os = "macos")]
     {
         let plist_dir = launchctl_plist_dir();
@@ -450,12 +449,12 @@ async fn get_service_status(formula_name: &str) -> ServiceStatus {
                     ServiceStatus::Stopped
                 }
             }
-            Err(_) => ServiceStatus::Unknown,
+            Err(_) => ServiceStatus::Stopped,
         }
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    ServiceStatus::Unknown
+    ServiceStatus::Stopped
 }
 
 async fn get_service_pid(formula_name: &str) -> Option<u32> {
