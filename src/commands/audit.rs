@@ -144,11 +144,7 @@ pub async fn audit(cache: &Cache) -> Result<()> {
         }
     }
 
-    println!(
-        "\n{} installed, {} issues",
-        installed.len(),
-        total_issues
-    );
+    println!("\n{} installed, {} issues", installed.len(), total_issues);
 
     Ok(())
 }

@@ -119,7 +119,7 @@ async fn install_from_source_task(
         from_source: true,
         bottle_rebuild: 0,
         bottle_sha256: None,
-            pinned: false,
+        pinned: false,
     };
     state.add(package).await?;
 

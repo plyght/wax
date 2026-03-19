@@ -113,7 +113,7 @@ enum Commands {
     #[command(alias = "remove")]
     #[command(alias = "delete")]
     Uninstall {
-        #[arg(conflicts_with = "all")]
+        #[arg(conflicts_with = "all", required_unless_present = "all", num_args = 1..)]
         formulae: Vec<String>,
         #[arg(long)]
         dry_run: bool,
@@ -126,7 +126,7 @@ enum Commands {
     #[command(about = "Reinstall a formula or cask  [alias: ri]")]
     #[command(visible_alias = "ri")]
     Reinstall {
-        #[arg(conflicts_with = "all")]
+        #[arg(conflicts_with = "all", required_unless_present = "all")]
         packages: Vec<String>,
         #[arg(long)]
         cask: bool,
@@ -241,7 +241,10 @@ enum Commands {
 
     #[command(about = "Install shell completions (auto-detects shell)")]
     Completions {
-        #[arg(value_enum, help = "Shell to generate completions for (auto-detected if omitted)")]
+        #[arg(
+            value_enum,
+            help = "Shell to generate completions for (auto-detected if omitted)"
+        )]
         shell: Option<Shell>,
         #[arg(long, help = "Print completions to stdout instead of installing")]
         print: bool,
@@ -401,9 +404,11 @@ async fn main() -> Result<()> {
             cask,
             all,
         } => commands::uninstall::uninstall(&cache, &formulae, dry_run, cask, cli.yes, all).await,
-        Commands::Reinstall { packages, cask, all } => {
-            commands::reinstall::reinstall(&cache, &packages, cask, all).await
-        }
+        Commands::Reinstall {
+            packages,
+            cask,
+            all,
+        } => commands::reinstall::reinstall(&cache, &packages, cask, all).await,
         Commands::Upgrade { packages, dry_run } => {
             commands::upgrade::upgrade(&cache, &packages, dry_run).await
         }
@@ -447,9 +452,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Source { formula } => commands::source::source(&cache, &formula).await,
-        Commands::Completions { shell, print } => {
-            commands::completions::completions(shell, print)
-        }
+        Commands::Completions { shell, print } => commands::completions::completions(shell, print),
         Commands::Why { formula } => {
             commands::info::info(&api_client, &cache, &formula, false).await
         }

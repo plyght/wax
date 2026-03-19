@@ -34,7 +34,10 @@ pub async fn uses(cache: &Cache, formula: &str, installed_only: bool) -> Result<
 
     if dependents.is_empty() {
         if installed_only {
-            println!("no installed packages depend on {}", style(formula).magenta());
+            println!(
+                "no installed packages depend on {}",
+                style(formula).magenta()
+            );
         } else {
             println!("no packages depend on {}", style(formula).magenta());
         }

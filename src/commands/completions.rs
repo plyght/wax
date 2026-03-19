@@ -35,8 +35,8 @@ fn detect_shell() -> Shell {
 }
 
 fn install_completions(shell: Shell) -> Result<()> {
-    let home = std::env::var("HOME")
-        .map_err(|_| WaxError::InstallError("$HOME not set".to_string()))?;
+    let home =
+        std::env::var("HOME").map_err(|_| WaxError::InstallError("$HOME not set".to_string()))?;
 
     let (dest, content) = match shell {
         Shell::Zsh => {
@@ -93,11 +93,14 @@ fn install_completions(shell: Shell) -> Result<()> {
                 .unwrap_or(false);
 
             if already_configured {
-                println!("completions are ready — run {} to activate", style("exec zsh").cyan());
+                println!(
+                    "completions are ready — run {} to activate",
+                    style("exec zsh").cyan()
+                );
             } else {
                 let prompt = inquire::Confirm::new("Add fpath to ~/.zshrc?")
-                .with_default(true)
-                .prompt();
+                    .with_default(true)
+                    .prompt();
 
                 match prompt {
                     Ok(true) => {

@@ -77,19 +77,47 @@ pub type Result<T> = std::result::Result<T, WaxError>;
 
 /// Validate that a package/formula name doesn't contain path traversal or injection characters.
 /// Allows alphanumeric, hyphens, underscores, periods, plus signs, and `@` (for versioned names).
-/// Also allows forward slashes for tap-qualified names (e.g., `user/repo/formula`).
+/// Also allows forward slashes for tap-qualified names (e.g., `user/repo/formula`), but only in
+/// well-formed, relative-style paths (no leading/trailing '/', empty segments, or '.' segments).
 pub fn validate_package_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(WaxError::InvalidInput("Package name cannot be empty".to_string()));
+        return Err(WaxError::InvalidInput(
+            "Package name cannot be empty".to_string(),
+        ));
+    }
+    if name.starts_with('/') || name.ends_with('/') {
+        return Err(WaxError::InvalidInput(format!(
+            "Package name must not start or end with '/': {}",
+            name
+        )));
+    }
+    for segment in name.split('/') {
+        if segment.is_empty() {
+            return Err(WaxError::InvalidInput(format!(
+                "Package name contains empty path segment: {}",
+                name
+            )));
+        }
+        if segment == "." || segment == ".." {
+            return Err(WaxError::InvalidInput(format!(
+                "Package name contains invalid path segment '{}': {}",
+                segment, name
+            )));
+        }
     }
     if name.contains("..") {
         return Err(WaxError::InvalidInput(format!(
-            "Package name contains path traversal: {}", name
+            "Package name contains path traversal: {}",
+            name
         )));
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || "-_.+@/".contains(c)) {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || "-_.+@/".contains(c))
+    {
         return Err(WaxError::InvalidInput(format!(
-            "Package name contains invalid characters: {}", name
+            "Package name contains invalid characters: {}",
+            name
         )));
     }
     Ok(())

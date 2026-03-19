@@ -257,7 +257,7 @@ impl InstallState {
                                 from_source: false,
                                 bottle_rebuild: 0,
                                 bottle_sha256: None,
-                pinned: false,
+                                pinned: false,
                             },
                         );
                     }

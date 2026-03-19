@@ -50,8 +50,14 @@ impl BottleDownloader {
         debug!(
             "Download response: status={}, content-type={:?}, content-encoding={:?}",
             response.status(),
-            response.headers().get("content-type").and_then(|v| v.to_str().ok()),
-            response.headers().get("content-encoding").and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get("content-encoding")
+                .and_then(|v| v.to_str().ok()),
         );
 
         if !response.status().is_success() {
@@ -166,16 +172,28 @@ impl BottleDownloader {
             let mut entry = entry?;
             let path = entry.path()?.into_owned();
 
-            // Reject absolute paths and path traversal
-            if path.is_absolute() || path.components().any(|c| c == std::path::Component::ParentDir) {
+            if path.is_absolute()
+                || path
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+            {
                 return Err(WaxError::InstallError(format!(
                     "Tar entry contains unsafe path: {}",
                     path.display()
                 )));
             }
 
-            let full_path = canonical_dest.join(&path);
-            entry.unpack(&full_path)?;
+            match entry.header().entry_type() {
+                t if t.is_symlink() || t.is_hard_link() => {
+                    return Err(WaxError::InstallError(format!(
+                        "Tar entry contains unsupported link type: {}",
+                        path.display()
+                    )));
+                }
+                _ => {}
+            }
+
+            entry.unpack_in(&canonical_dest)?;
         }
 
         debug!("Extraction complete");
@@ -351,19 +369,55 @@ impl BottleDownloader {
     fn relocate_macho(path: &Path, prefix: &str, cellar: &str) -> Result<()> {
         use std::process::Command;
 
-        // Make writable so install_name_tool can modify it
         #[cfg(unix)]
-        {
+        let _perm_guard = {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = std::fs::metadata(path) {
-                let mut perms = metadata.permissions();
-                let mode = perms.mode();
-                if mode & 0o200 == 0 {
-                    perms.set_mode(mode | 0o200);
-                    let _ = std::fs::set_permissions(path, perms);
+            struct PermissionGuard {
+                path: std::path::PathBuf,
+                original_mode: u32,
+                changed: bool,
+            }
+            impl PermissionGuard {
+                fn new(path: &Path) -> Option<Self> {
+                    if let Ok(metadata) = std::fs::metadata(path) {
+                        let perms = metadata.permissions();
+                        let mode = perms.mode();
+                        if mode & 0o200 == 0 {
+                            let mut new_perms = perms;
+                            new_perms.set_mode(mode | 0o200);
+                            if std::fs::set_permissions(path, new_perms).is_ok() {
+                                return Some(Self {
+                                    path: path.to_path_buf(),
+                                    original_mode: mode,
+                                    changed: true,
+                                });
+                            }
+                            return None;
+                        }
+                        Some(Self {
+                            path: path.to_path_buf(),
+                            original_mode: mode,
+                            changed: false,
+                        })
+                    } else {
+                        None
+                    }
                 }
             }
-        }
+            impl Drop for PermissionGuard {
+                fn drop(&mut self) {
+                    if !self.changed {
+                        return;
+                    }
+                    if let Ok(metadata) = std::fs::metadata(&self.path) {
+                        let mut perms = metadata.permissions();
+                        perms.set_mode(self.original_mode);
+                        let _ = std::fs::set_permissions(&self.path, perms);
+                    }
+                }
+            }
+            PermissionGuard::new(path)
+        };
 
         let path_str = match path.to_str() {
             Some(s) => s,
@@ -432,7 +486,10 @@ impl BottleDownloader {
                                 String::from_utf8_lossy(&out.stderr)
                             );
                         } else {
-                            debug!("Relocated Mach-O dep {} -> {} in {:?}", lib_path, new_path, path);
+                            debug!(
+                                "Relocated Mach-O dep {} -> {} in {:?}",
+                                lib_path, new_path, path
+                            );
                             modified = true;
                         }
                     }
@@ -472,7 +529,10 @@ impl BottleDownloader {
                                 .output();
                             if let Ok(out) = result {
                                 if out.status.success() {
-                                    debug!("Relocated rpath {} -> {} in {:?}", rpath, new_rpath, path);
+                                    debug!(
+                                        "Relocated rpath {} -> {} in {:?}",
+                                        rpath, new_rpath, path
+                                    );
                                     modified = true;
                                 } else {
                                     debug!(
@@ -508,10 +568,7 @@ pub fn is_mach_o(data: &[u8]) -> bool {
     data.len() >= 4
         && matches!(
             &data[0..4],
-            b"\xCE\xFA\xED\xFE"
-                | b"\xCF\xFA\xED\xFE"
-                | b"\xBE\xBA\xFE\xCA"
-                | b"\xCA\xFE\xBA\xBE"
+            b"\xCE\xFA\xED\xFE" | b"\xCF\xFA\xED\xFE" | b"\xBE\xBA\xFE\xCA" | b"\xCA\xFE\xBA\xBE"
         )
 }
 
@@ -581,7 +638,11 @@ fn macos_codename() -> &'static str {
         "12" => "monterey",
         v => {
             if let Ok(major) = v.parse::<u32>() {
-                if major > 26 { "tahoe" } else { "sequoia" }
+                if major > 26 {
+                    "tahoe"
+                } else {
+                    "sequoia"
+                }
             } else {
                 "sequoia"
             }

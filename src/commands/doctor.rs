@@ -828,13 +828,22 @@ fn is_mach_o_with_placeholders(path: &Path) -> bool {
     let magic = &header[0..4];
     let is_fat = magic == b"\xBE\xBA\xFE\xCA" || magic == b"\xCA\xFE\xBA\xBE";
 
-    let scan_len = if is_fat {
+    let mut scan_len = if is_fat {
         65536usize
     } else {
-        // sizeofcmds is at offset 20 (LE u32); load commands follow the 32-byte header
-        let sizeofcmds = u32::from_le_bytes([header[20], header[21], header[22], header[23]]) as usize;
+        let sizeofcmds =
+            u32::from_le_bytes([header[20], header[21], header[22], header[23]]) as usize;
         32 + sizeofcmds
     };
+
+    const MAX_SCAN: usize = 4 * 1024 * 1024;
+    if let Ok(meta) = std::fs::metadata(path) {
+        scan_len = std::cmp::min(scan_len, meta.len() as usize);
+    }
+    scan_len = std::cmp::min(scan_len, MAX_SCAN);
+    if scan_len == 0 {
+        return false;
+    }
 
     // Re-read from the start, limiting to scan_len bytes
     drop(f);
@@ -844,7 +853,9 @@ fn is_mach_o_with_placeholders(path: &Path) -> bool {
     };
     let mut buf = vec![0u8; scan_len];
     let n = f.read(&mut buf).unwrap_or(0);
-    buf[..n].windows(placeholder.len()).any(|w| w == placeholder)
+    buf[..n]
+        .windows(placeholder.len())
+        .any(|w| w == placeholder)
 }
 
 async fn check_invalid_signatures(d: &mut DiagResult) {
@@ -952,7 +963,10 @@ async fn check_invalid_signatures(d: &mut DiagResult) {
                 let ver_dir = cellar.join(name).join(version);
                 let resigned = resign_macho_binaries(&ver_dir);
                 if resigned > 0 {
-                    d.fixed(&format!("re-signed {}@{} ({} binaries)", name, version, resigned));
+                    d.fixed(&format!(
+                        "re-signed {}@{} ({} binaries)",
+                        name, version, resigned
+                    ));
                 } else {
                     d.fail(&format!("failed to re-sign {}@{}", name, version));
                 }
@@ -968,7 +982,10 @@ async fn check_invalid_signatures(d: &mut DiagResult) {
                 }
             }
             if invalid.len() > 5 {
-                d.fail(&format!("... and {} more with invalid signatures", invalid.len() - 5));
+                d.fail(&format!(
+                    "... and {} more with invalid signatures",
+                    invalid.len() - 5
+                ));
             }
             d.warn(&format!(
                 "run {} to re-sign affected packages",

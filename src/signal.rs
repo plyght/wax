@@ -111,7 +111,10 @@ pub fn install_handler() {
             if op.is_empty() {
                 print_interrupt("\nfinishing current operation, please wait...");
             } else {
-                print_interrupt(&format!("\nfinishing {} — do not interrupt, cleaning up when done...", op));
+                print_interrupt(&format!(
+                    "\nfinishing {} — do not interrupt, cleaning up when done...",
+                    op
+                ));
             }
             request_shutdown();
         } else if is_shutdown_requested() {
@@ -121,7 +124,10 @@ pub fn install_handler() {
             if op.is_empty() {
                 print_interrupt("\ninterrupted, cleaning up temp files...");
             } else {
-                print_interrupt(&format!("\ninterrupted while {} — cleaning up temp files...", op));
+                print_interrupt(&format!(
+                    "\ninterrupted while {} — cleaning up temp files...",
+                    op
+                ));
             }
             request_shutdown();
         }

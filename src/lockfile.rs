@@ -49,6 +49,10 @@ impl Lockfile {
     pub async fn save(&self, path: &Path) -> Result<()> {
         debug!("Saving lockfile to {:?}", path);
 
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+
         let toml_string = toml::to_string_pretty(&self)
             .map_err(|e| WaxError::LockfileError(format!("Failed to serialize lockfile: {}", e)))?;
 

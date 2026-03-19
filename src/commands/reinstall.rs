@@ -3,10 +3,21 @@ use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
 use crate::signal::{clear_active_multi, clear_current_op, set_active_multi, set_current_op};
-use crate::ui::{OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
+use crate::ui::{
+    OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS,
+};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::Instant;
+
+struct ReinstallSignalGuard;
+
+impl Drop for ReinstallSignalGuard {
+    fn drop(&mut self) {
+        clear_current_op();
+        clear_active_multi();
+    }
+}
 
 pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool) -> Result<()> {
     let state = InstallState::new()?;
@@ -30,13 +41,11 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     let start = Instant::now();
     let multi = MultiProgress::new();
     set_active_multi(multi.clone());
+    let _signal_guard = ReinstallSignalGuard;
 
     // Overall progress bar for multi-package reinstalls, anchored to the bottom
     let overall_pb = if total > 1 {
-        println!(
-            "reinstalling {} packages\n",
-            style(total).bold()
-        );
+        println!("reinstalling {} packages\n", style(total).bold());
         let pb = multi.insert_from_back(0, ProgressBar::new(total as u64));
         pb.set_style(
             ProgressStyle::default_bar()
@@ -73,11 +82,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         );
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
         set_current_op(format!("removing {}", name));
-        spinner.set_message(format!(
-            "{}removing {}...",
-            prefix,
-            style(name).magenta()
-        ));
+        spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
 
         if installed.contains_key(name.as_str()) {
             uninstall::uninstall_quiet(cache, name, cask).await?;
@@ -88,11 +93,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         let pb = multi.insert_from_back(1, ProgressBar::new(0));
         pb.set_style(
             ProgressStyle::default_bar()
-                .template(&format!(
-                    "{}{}",
-                    prefix,
-                    PROGRESS_BAR_TEMPLATE
-                ))
+                .template(&format!("{}{}", prefix, PROGRESS_BAR_TEMPLATE))
                 .unwrap()
                 .progress_chars(PROGRESS_BAR_CHARS),
         );
@@ -133,8 +134,6 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     if let Some(pb) = overall_pb {
         pb.finish_and_clear();
     }
-    clear_current_op();
-    clear_active_multi();
 
     println!(
         "\n{} {} reinstalled [{}ms]",

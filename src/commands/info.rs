@@ -121,10 +121,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
             .collect();
 
         if dependents.is_empty() {
-            println!(
-                "{} installed explicitly",
-                style("installed:").dim()
-            );
+            println!("{} installed explicitly", style("installed:").dim());
         } else {
             println!("{} required by:", style("installed:").dim());
             for dep in &dependents {
