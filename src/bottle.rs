@@ -560,54 +560,32 @@ pub fn detect_platform() -> String {
     let arch = std::env::consts::ARCH;
 
     match (os, arch) {
-        ("macos", "aarch64") => {
-            let version_info = macos_version();
-            match version_info.as_str() {
-                "26" => "arm64_tahoe".to_string(),
-                "16" => "arm64_tahoe".to_string(),
-                "15" => "arm64_sequoia".to_string(),
-                "14" => "arm64_sonoma".to_string(),
-                "13" => "arm64_ventura".to_string(),
-                "12" => "arm64_monterey".to_string(),
-                v => {
-                    if let Ok(major) = v.parse::<u32>() {
-                        if major > 26 {
-                            "arm64_tahoe".to_string()
-                        } else {
-                            "arm64_sequoia".to_string()
-                        }
-                    } else {
-                        "arm64_sequoia".to_string()
-                    }
-                }
-            }
-        }
-        ("macos", "x86_64") => {
-            let version_info = macos_version();
-            match version_info.as_str() {
-                "26" => "tahoe".to_string(),
-                "16" => "tahoe".to_string(),
-                "15" => "sequoia".to_string(),
-                "14" => "sonoma".to_string(),
-                "13" => "ventura".to_string(),
-                "12" => "monterey".to_string(),
-                v => {
-                    if let Ok(major) = v.parse::<u32>() {
-                        if major > 26 {
-                            "tahoe".to_string()
-                        } else {
-                            "sequoia".to_string()
-                        }
-                    } else {
-                        "sequoia".to_string()
-                    }
-                }
-            }
+        ("macos", arch) => {
+            let prefix = if arch == "aarch64" { "arm64_" } else { "" };
+            let codename = macos_codename();
+            format!("{}{}", prefix, codename)
         }
         ("linux", "x86_64") => "x86_64_linux".to_string(),
-        ("linux", "aarch64") => "arm64_linux".to_string(),
-        ("linux", "arm") => "arm64_linux".to_string(),
+        ("linux", "aarch64" | "arm") => "arm64_linux".to_string(),
         _ => "unknown".to_string(),
+    }
+}
+
+fn macos_codename() -> &'static str {
+    let version = macos_version();
+    match version.as_str() {
+        "16" | "26" => "tahoe",
+        "15" => "sequoia",
+        "14" => "sonoma",
+        "13" => "ventura",
+        "12" => "monterey",
+        v => {
+            if let Ok(major) = v.parse::<u32>() {
+                if major > 26 { "tahoe" } else { "sequoia" }
+            } else {
+                "sequoia"
+            }
+        }
     }
 }
 
