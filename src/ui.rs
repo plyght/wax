@@ -7,9 +7,9 @@ use tracing::debug;
 
 pub const PROGRESS_BAR_CHARS: &str = "█▓▒░ ";
 pub const PROGRESS_BAR_TEMPLATE: &str =
-    "{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}";
+    "{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}  eta {eta}";
 pub const PROGRESS_BAR_PREFIX_TEMPLATE: &str =
-    "{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}";
+    "{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}  eta {eta}";
 
 pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
     match copy_dir_all_inner(src, dst) {

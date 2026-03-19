@@ -525,6 +525,7 @@ async fn install_impl(
 
         let task = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
+            crate::signal::set_current_op(format!("downloading {}", name));
 
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
@@ -579,6 +580,7 @@ async fn install_impl(
         println!();
     }
     for (name, version, extract_dir, bottle_sha) in extracted_packages {
+        crate::signal::set_current_op(format!("installing {}", name));
         let _critical = CriticalSection::new();
         let formula_cellar = cellar.join(&name).join(&version);
         if formula_cellar.exists() {

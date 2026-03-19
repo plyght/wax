@@ -1,5 +1,5 @@
 use crate::api::ApiClient;
-use crate::bottle::{detect_platform, homebrew_prefix, run_command_with_timeout};
+use crate::bottle::{detect_platform, homebrew_prefix, run_command_with_timeout, BottleDownloader};
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::Result;
@@ -67,6 +67,7 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
     check_broken_symlinks(&mut d).await;
     check_opt_symlinks(&mut d).await;
     check_state_consistency(&mut d).await;
+    check_unrelocated_bottles(&mut d).await;
     check_tools(&mut d);
     check_glibc_version(&mut d);
     check_metal_toolchain(&mut d);
@@ -688,6 +689,141 @@ fn check_metal_toolchain(d: &mut DiagResult) {
             d.warn("no GPU toolchain detected (vulkaninfo/glxinfo not found)");
         }
     }
+}
+
+async fn check_unrelocated_bottles(d: &mut DiagResult) {
+    #[cfg(target_os = "macos")]
+    {
+        let prefix = homebrew_prefix();
+        let cellar = prefix.join("Cellar");
+        if !cellar.exists() {
+            return;
+        }
+
+        let prefix_str = prefix.to_string_lossy().to_string();
+        let mut unrelocated: Vec<(String, String, std::path::PathBuf)> = Vec::new();
+
+        let entries = match std::fs::read_dir(&cellar) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for pkg_entry in entries.filter_map(|e| e.ok()) {
+            let pkg_dir = pkg_entry.path();
+            if !pkg_dir.is_dir() {
+                continue;
+            }
+            let name = pkg_entry.file_name().to_string_lossy().to_string();
+
+            let mut versions: Vec<String> = match std::fs::read_dir(&pkg_dir) {
+                Ok(e) => e
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect(),
+                Err(_) => continue,
+            };
+            crate::version::sort_versions(&mut versions);
+
+            if let Some(version) = versions.last() {
+                let ver_dir = pkg_dir.join(version);
+                if has_unrelocated_macho(&ver_dir) {
+                    unrelocated.push((name, version.clone(), ver_dir));
+                }
+            }
+        }
+
+        if unrelocated.is_empty() {
+            d.pass("all bottles properly relocated (no @@HOMEBREW_*@@ placeholders)");
+            return;
+        }
+
+        if d.fix {
+            d.warn(&format!(
+                "{} packages have unrelocated dylib paths — fixing with install_name_tool...",
+                unrelocated.len()
+            ));
+            for (name, version, ver_dir) in &unrelocated {
+                match BottleDownloader::relocate_bottle(ver_dir, &prefix_str) {
+                    Ok(_) => d.fixed(&format!("relocated {}@{}", name, version)),
+                    Err(e) => d.fail(&format!("failed to relocate {}@{}: {}", name, version, e)),
+                }
+            }
+        } else {
+            for (i, (name, version, _)) in unrelocated.iter().enumerate() {
+                if i < 5 {
+                    d.fail(&format!(
+                        "unrelocated bottle: {}@{} (causes dyld Symbol not found errors)",
+                        style(name).magenta(),
+                        version
+                    ));
+                }
+            }
+            if unrelocated.len() > 5 {
+                d.fail(&format!(
+                    "... and {} more unrelocated bottles",
+                    unrelocated.len() - 5
+                ));
+            }
+            d.warn(&format!(
+                "run {} to fix, or {} to reinstall affected packages",
+                style("wax doctor --fix").yellow(),
+                style("wax reinstall <name>").yellow()
+            ));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = d;
+    }
+}
+
+fn has_unrelocated_macho(dir: &Path) -> bool {
+    for subdir in &["bin", "lib"] {
+        let path = dir.join(subdir);
+        if path.is_dir() && scan_dir_for_placeholders(&path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn scan_dir_for_placeholders(dir: &Path) -> bool {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file() && is_mach_o_with_placeholders(&path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_mach_o_with_placeholders(path: &Path) -> bool {
+    let content = match std::fs::read(path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    if content.len() < 4 {
+        return false;
+    }
+    // Check Mach-O magic bytes
+    let magic = &content[0..4];
+    let is_macho = magic == b"\xCE\xFA\xED\xFE"
+        || magic == b"\xCF\xFA\xED\xFE"
+        || magic == b"\xBE\xBA\xFE\xCA"
+        || magic == b"\xCA\xFE\xBA\xBE";
+    if !is_macho {
+        return false;
+    }
+    // Fast byte scan for placeholder strings
+    let placeholder = b"@@HOMEBREW_";
+    content
+        .windows(placeholder.len())
+        .any(|w| w == placeholder)
 }
 
 fn check_tools(d: &mut DiagResult) {

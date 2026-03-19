@@ -2,6 +2,7 @@ use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
+use crate::signal::{clear_current_op, set_current_op};
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
@@ -34,9 +35,19 @@ pub async fn uninstall(
     let total = names.len();
     let start = Instant::now();
 
-    if total > 1 {
+    let overall_pb = if total > 1 {
         println!("uninstalling {} packages\n", style(total).bold());
-    }
+        let pb = ProgressBar::new(total as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("  overall  {bar:40.white/dim} {pos}/{len}  eta {eta}")
+                .unwrap()
+                .progress_chars("█▓▒░ "),
+        );
+        Some(pb)
+    } else {
+        None
+    };
 
     for (i, name) in names.iter().enumerate() {
         let prefix = if total > 1 {
@@ -45,7 +56,15 @@ pub async fn uninstall(
             String::new()
         };
         uninstall_impl(cache, name, dry_run, cask, yes, false, &prefix).await?;
+        if let Some(ref pb) = overall_pb {
+            pb.inc(1);
+        }
     }
+
+    if let Some(pb) = overall_pb {
+        pb.finish_and_clear();
+    }
+    clear_current_op();
 
     if total > 1 && !dry_run {
         println!(
@@ -159,6 +178,8 @@ async fn uninstall_package_direct(
         }
         return Ok(());
     }
+
+    set_current_op(format!("removing {}", formula_name));
 
     let spinner = if !quiet {
         let pb = ProgressBar::new_spinner();

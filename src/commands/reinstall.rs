@@ -2,6 +2,7 @@ use crate::cache::Cache;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
+use crate::signal::{clear_current_op, set_current_op};
 use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -29,12 +30,23 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     let start = Instant::now();
     let multi = MultiProgress::new();
 
-    if total > 1 {
+    // Overall progress bar for multi-package reinstalls
+    let overall_pb = if total > 1 {
         println!(
             "reinstalling {} packages\n",
             style(total).bold()
         );
-    }
+        let pb = multi.add(ProgressBar::new(total as u64));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("  overall  {bar:40.white/dim} {pos}/{len}  eta {eta}")
+                .unwrap()
+                .progress_chars("█▓▒░ "),
+        );
+        Some(pb)
+    } else {
+        None
+    };
 
     for (i, name) in resolved.iter().enumerate() {
         let install_mode = installed.get(name.as_str()).map(|p| p.install_mode);
@@ -59,6 +71,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+        set_current_op(format!("removing {}", name));
         spinner.set_message(format!(
             "{}removing {}...",
             prefix,
@@ -85,6 +98,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         pb.set_message(style(name).magenta().to_string());
 
         let pkg_start = Instant::now();
+        set_current_op(format!("downloading {}", name));
         install::install_quiet_with_progress(
             cache,
             std::slice::from_ref(name),
@@ -95,6 +109,9 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         )
         .await?;
         pb.finish_and_clear();
+        if let Some(ref opb) = overall_pb {
+            opb.inc(1);
+        }
 
         println!(
             "{} {}{}@{}  {}",
@@ -111,6 +128,11 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             style(format!("[{}ms]", pkg_start.elapsed().as_millis())).dim(),
         );
     }
+
+    if let Some(pb) = overall_pb {
+        pb.finish_and_clear();
+    }
+    clear_current_op();
 
     println!(
         "\n{} {} reinstalled [{}ms]",
