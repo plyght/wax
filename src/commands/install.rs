@@ -715,42 +715,26 @@ pub async fn install_extracted_bottle(
     platform: &str,
     state: &InstallState,
     quiet: bool,
-    multi: Option<&MultiProgress>,
+    _multi: Option<&MultiProgress>,
     existing_pb: Option<ProgressBar>,
 ) -> Result<()> {
     crate::signal::set_current_op(format!("installing {}", name));
     let _critical = CriticalSection::new();
 
-    // Resolve which progress bar to use for step messages:
-    // 1. existing_pb — caller already has a bar active (e.g. download bar transitioning)
-    // 2. new spinner added to multi — normal install/upgrade with MultiProgress
-    // 3. standalone spinner — single-package or fallback
-    // 4. None — quiet mode
-    let (spinner, owned) = if let Some(pb) = existing_pb {
-        (Some(pb), false) // caller manages finish_and_clear
-    } else if !quiet {
-        let s = ProgressBar::new_spinner();
-        s.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars(crate::ui::SPINNER_TICK_CHARS),
-        );
-        s.enable_steady_tick(std::time::Duration::from_millis(80));
-        let s = if let Some(m) = multi { m.add(s) } else { s };
-        (Some(s), true) // we own it, finish_and_clear when done
-    } else {
-        (None, false)
-    };
-
+    // Step messages are printed immediately (not via spinner) so they always
+    // show even when the operation completes in <80ms. When a MultiProgress
+    // is active we use multi.println() to avoid clobbering its render area;
+    // when an existing_pb is provided (reinstall path) we update its message
+    // so the single bar transitions from "downloading" to each install step.
     macro_rules! step {
         ($msg:expr) => {
-            if let Some(ref s) = spinner {
-                s.set_message(format!(
-                    "{} {}",
-                    style(name).magenta(),
-                    style($msg).dim()
-                ));
+            if !quiet {
+                if let Some(ref pb) = existing_pb {
+                    pb.set_message(format!("{} {}", style(name).magenta(), style($msg).dim()));
+                    pb.tick();
+                } else {
+                    println!("  {} {}", style(name).magenta(), style($msg).dim());
+                }
             }
         };
     }
@@ -838,12 +822,7 @@ pub async fn install_extracted_bottle(
     };
     state.add(package).await?;
 
-    if owned {
-        if let Some(ref s) = spinner {
-            s.finish_and_clear();
-        }
-    }
-    if !quiet && owned {
+    if !quiet && existing_pb.is_none() {
         println!("+ {}@{}", style(name).magenta(), style(&cellar_version).dim());
     }
 
