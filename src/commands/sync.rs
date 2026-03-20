@@ -143,7 +143,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     if sync_package_count > 0 {
         let multi = MultiProgress::new();
         let downloader = Arc::new(BottleDownloader::new());
-        let semaphore = Arc::new(Semaphore::new(8));
+        const SYNC_CONCURRENT_LIMIT: usize = 8;
+        let sync_concurrent = sync_package_count.min(SYNC_CONCURRENT_LIMIT).max(1);
+        let sync_connections_per_pkg =
+            (BottleDownloader::GLOBAL_CONNECTION_POOL / sync_concurrent).max(1);
+        let semaphore = Arc::new(Semaphore::new(SYNC_CONCURRENT_LIMIT));
         let temp_dir = Arc::new(TempDir::new()?);
         let mut tasks = Vec::new();
 
@@ -189,6 +193,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
             let downloader = Arc::clone(&downloader);
             let semaphore = Arc::clone(&semaphore);
             let temp_dir = Arc::clone(&temp_dir);
+            let conns = sync_connections_per_pkg;
 
             let pb = multi.add(ProgressBar::new(0));
             let style = ProgressStyle::default_bar()
@@ -206,7 +211,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
                     .path()
                     .join(format!("{}-{}.tar.gz", name_clone, version));
 
-                downloader.download(&url, &tarball_path, Some(&pb)).await?;
+                downloader.download(&url, &tarball_path, Some(&pb), conns).await?;
                 pb.finish_and_clear();
 
                 BottleDownloader::verify_checksum(&tarball_path, &sha256)?;

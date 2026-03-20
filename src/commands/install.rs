@@ -456,7 +456,28 @@ async fn install_impl(
         })
         .collect::<Result<_>>()?;
 
-    let semaphore = Arc::new(Semaphore::new(8));
+    // How many packages need bottle downloads (not source builds)?
+    let bottle_count = packages_to_install
+        .iter()
+        .filter(|pkg| {
+            !build_from_source
+                && pkg
+                    .bottle
+                    .as_ref()
+                    .and_then(|b| b.stable.as_ref())
+                    .and_then(|s| s.files.get(&platform).or_else(|| s.files.get("all")))
+                    .is_some()
+        })
+        .count();
+
+    // Divide the global HTTP connection pool across concurrently-downloading packages.
+    // Semaphore allows up to 8 simultaneous downloads; bigger packages get more of their share.
+    const CONCURRENT_LIMIT: usize = 8;
+    let concurrent = bottle_count.min(CONCURRENT_LIMIT).max(1);
+    let connections_per_pkg =
+        (crate::bottle::BottleDownloader::GLOBAL_CONNECTION_POOL / concurrent).max(1);
+
+    let semaphore = Arc::new(Semaphore::new(CONCURRENT_LIMIT));
     let mut tasks = Vec::new();
     let inline_extracted: Vec<(String, String, std::path::PathBuf, String, u32)> = Vec::new();
     let mut source_install_count = 0usize;
@@ -510,7 +531,7 @@ async fn install_impl(
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
             downloader
-                .download(&url, &tarball_path, Some(ext_pb))
+                .download(&url, &tarball_path, Some(ext_pb), connections_per_pkg)
                 .await?;
 
             BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
@@ -571,7 +592,7 @@ async fn install_impl(
 
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
-            downloader.download(&url, &tarball_path, Some(&pb)).await?;
+            downloader.download(&url, &tarball_path, Some(&pb), connections_per_pkg).await?;
             pb.finish_and_clear();
 
             BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
@@ -633,6 +654,10 @@ async fn install_impl(
     let extracted_packages_count = extracted_packages.len();
     check_cancelled()?;
 
+    // Drop MultiProgress before the install phase so its draw layer releases
+    // stdout and plain println! calls in install_extracted_bottle are visible.
+    drop(multi);
+
     if !quiet {
         println!();
     }
@@ -648,7 +673,7 @@ async fn install_impl(
             &platform,
             &state,
             quiet,
-            Some(&multi),
+            None,
             None,
         )
         .await?;

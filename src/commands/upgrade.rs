@@ -174,7 +174,15 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     }
 
     let downloader = Arc::new(BottleDownloader::new());
-    let semaphore = Arc::new(Semaphore::new(6));
+
+    // Count how many formula bottles need downloading (casks handled separately).
+    let formula_download_count = outdated.iter().filter(|p| !p.is_cask).count();
+    const UPGRADE_CONCURRENT_LIMIT: usize = 6;
+    let upgrade_concurrent = formula_download_count.min(UPGRADE_CONCURRENT_LIMIT).max(1);
+    let upgrade_connections_per_pkg =
+        (BottleDownloader::GLOBAL_CONNECTION_POOL / upgrade_concurrent).max(1);
+
+    let semaphore = Arc::new(Semaphore::new(UPGRADE_CONCURRENT_LIMIT));
     let temp_dir = Arc::new(TempDir::new()?);
 
     let download_tasks: Vec<_> = outdated
@@ -195,6 +203,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
             let sem = Arc::clone(&semaphore);
             let tmp = Arc::clone(&temp_dir);
             let multi_ref = multi.clone();
+            let conns = upgrade_connections_per_pkg;
 
             Some(tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
@@ -210,7 +219,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                 );
                 pb.set_message(name.clone());
 
-                dl.download(&url, &tarball, Some(&pb)).await?;
+                dl.download(&url, &tarball, Some(&pb), conns).await?;
                 pb.finish_and_clear();
 
                 BottleDownloader::verify_checksum(&tarball, &sha256)?;

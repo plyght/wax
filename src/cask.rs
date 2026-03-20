@@ -311,7 +311,9 @@ impl CaskInstaller {
         progress: Option<&ProgressBar>,
     ) -> Result<()> {
         debug!("Downloading cask from {}", url);
-        self.downloader.download(url, dest_path, progress).await
+        self.downloader
+            .download(url, dest_path, progress, BottleDownloader::GLOBAL_CONNECTION_POOL)
+            .await
     }
 
     pub fn verify_checksum(path: &Path, expected_sha256: &str) -> Result<()> {

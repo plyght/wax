@@ -278,7 +278,7 @@ pub async fn version_install(
     pb.set_message(format!("{}@{}", formula_name, version));
 
     downloader
-        .download(&blob_url, &tarball_path, Some(&pb))
+        .download(&blob_url, &tarball_path, Some(&pb), BottleDownloader::GLOBAL_CONNECTION_POOL)
         .await?;
     pb.finish_and_clear();
 
