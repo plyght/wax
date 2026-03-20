@@ -175,7 +175,15 @@ impl BottleDownloader {
             }
 
             let full_path = canonical_dest.join(&path);
-            entry.unpack(&full_path)?;
+
+            if entry.header().entry_type().is_dir() {
+                std::fs::create_dir_all(&full_path)?;
+            } else {
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                entry.unpack(&full_path)?;
+            }
         }
 
         debug!("Extraction complete");
