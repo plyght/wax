@@ -34,6 +34,20 @@ impl BottleDownloader {
     /// Global connection pool shared across all concurrent downloads.
     pub const GLOBAL_CONNECTION_POOL: usize = 16;
 
+    /// Probe a URL to get its download size. Used before starting downloads to
+    /// allocate connections proportionally across packages by file size.
+    pub async fn probe_size(&self, url: &str) -> u64 {
+        let auth_token: Option<String> = if url.contains("ghcr.io") {
+            self.get_ghcr_token(url).await.ok()
+        } else {
+            None
+        };
+        self.probe_url(url, &auth_token)
+            .await
+            .map(|(_, size, _)| size)
+            .unwrap_or(0)
+    }
+
     /// Returns how many connections to use for a file of the given size,
     /// capped by `max_connections` (the caller's share of the global pool).
     fn num_connections(size: u64, max_connections: usize) -> usize {
@@ -132,6 +146,11 @@ impl BottleDownloader {
 
         if let Some(pb) = progress {
             pb.set_length(total_size);
+            // Append "[Nx]" connection badge to whatever name the caller set.
+            if n > 1 {
+                let current = pb.message().to_string();
+                pb.set_message(format!("{} [{}x]", current, n));
+            }
         }
 
         let downloaded_so_far = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -180,12 +199,12 @@ impl BottleDownloader {
             }));
         }
 
-        // Update progress bar at ~50ms intervals while chunks download.
+        // Update progress bar at ~150ms intervals — smoother display, less jitter.
         let counter_poll = Arc::clone(&downloaded_so_far);
         let pb_poll = progress.cloned();
         let poll_handle = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                tokio::time::sleep(Duration::from_millis(150)).await;
                 if let Some(ref pb) = pb_poll {
                     pb.set_position(counter_poll.load(std::sync::atomic::Ordering::Relaxed));
                 }

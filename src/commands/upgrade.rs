@@ -175,12 +175,57 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
 
     let downloader = Arc::new(BottleDownloader::new());
 
-    // Count how many formula bottles need downloading (casks handled separately).
-    let formula_download_count = outdated.iter().filter(|p| !p.is_cask).count();
+    // Collect (name, url) for all formula bottles to be downloaded.
+    let formula_bottle_urls: Vec<(String, String)> = outdated
+        .iter()
+        .filter(|p| !p.is_cask)
+        .filter_map(|pkg| {
+            let formula = formula_by_name.get(pkg.name.as_str())?;
+            let bottle_info = formula.bottle.as_ref()?.stable.as_ref()?;
+            let bottle_file = bottle_info.files.get(&platform)
+                .or_else(|| bottle_info.files.get("all"))?;
+            Some((pkg.name.clone(), bottle_file.url.clone()))
+        })
+        .collect();
+
+    // Probe all bottle sizes concurrently, then allocate connections proportionally.
     const UPGRADE_CONCURRENT_LIMIT: usize = 6;
-    let upgrade_concurrent = formula_download_count.min(UPGRADE_CONCURRENT_LIMIT).max(1);
-    let upgrade_connections_per_pkg =
-        (BottleDownloader::GLOBAL_CONNECTION_POOL / upgrade_concurrent).max(1);
+    let upgrade_connections_map: HashMap<String, usize> = {
+        let probe_tasks: Vec<_> = formula_bottle_urls
+            .iter()
+            .map(|(name, url)| {
+                let dl = Arc::clone(&downloader);
+                let url = url.clone();
+                let name = name.clone();
+                tokio::spawn(async move { (name, dl.probe_size(&url).await) })
+            })
+            .collect();
+
+        let mut sizes: HashMap<String, u64> = HashMap::new();
+        for task in probe_tasks {
+            if let Ok((name, size)) = task.await {
+                sizes.insert(name, size);
+            }
+        }
+
+        let total_size: u64 = sizes.values().sum();
+        let n = formula_bottle_urls.len().max(1);
+        sizes
+            .iter()
+            .map(|(name, &size)| {
+                let conns = if total_size == 0 {
+                    (BottleDownloader::GLOBAL_CONNECTION_POOL / n).max(1)
+                } else {
+                    let proportional = (BottleDownloader::GLOBAL_CONNECTION_POOL as f64
+                        * size as f64
+                        / total_size as f64)
+                        .round() as usize;
+                    proportional.max(1)
+                };
+                (name.clone(), conns)
+            })
+            .collect()
+    };
 
     let semaphore = Arc::new(Semaphore::new(UPGRADE_CONCURRENT_LIMIT));
     let temp_dir = Arc::new(TempDir::new()?);
@@ -203,7 +248,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
             let sem = Arc::clone(&semaphore);
             let tmp = Arc::clone(&temp_dir);
             let multi_ref = multi.clone();
-            let conns = upgrade_connections_per_pkg;
+            let conns = upgrade_connections_map.get(&pkg.name).copied().unwrap_or(1);
 
             Some(tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();

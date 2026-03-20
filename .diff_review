@@ -1,0 +1,743 @@
+diff --git a/src/bottle.rs b/src/bottle.rs
+index 3b232cb..50e6d95 100644
+--- a/src/bottle.rs
++++ b/src/bottle.rs
+@@ -50,8 +50,14 @@ impl BottleDownloader {
+         debug!(
+             "Download response: status={}, content-type={:?}, content-encoding={:?}",
+             response.status(),
+-            response.headers().get("content-type").and_then(|v| v.to_str().ok()),
+-            response.headers().get("content-encoding").and_then(|v| v.to_str().ok()),
++            response
++                .headers()
++                .get("content-type")
++                .and_then(|v| v.to_str().ok()),
++            response
++                .headers()
++                .get("content-encoding")
++                .and_then(|v| v.to_str().ok()),
+         );
+ 
+         if !response.status().is_success() {
+@@ -166,16 +172,28 @@ impl BottleDownloader {
+             let mut entry = entry?;
+             let path = entry.path()?.into_owned();
+ 
+-            // Reject absolute paths and path traversal
+-            if path.is_absolute() || path.components().any(|c| c == std::path::Component::ParentDir) {
++            if path.is_absolute()
++                || path
++                    .components()
++                    .any(|c| c == std::path::Component::ParentDir)
++            {
+                 return Err(WaxError::InstallError(format!(
+                     "Tar entry contains unsafe path: {}",
+                     path.display()
+                 )));
+             }
+ 
+-            let full_path = canonical_dest.join(&path);
+-            entry.unpack(&full_path)?;
++            match entry.header().entry_type() {
++                t if t.is_symlink() || t.is_hard_link() => {
++                    return Err(WaxError::InstallError(format!(
++                        "Tar entry contains unsupported link type: {}",
++                        path.display()
++                    )));
++                }
++                _ => {}
++            }
++
++            entry.unpack_in(&canonical_dest)?;
+         }
+ 
+         debug!("Extraction complete");
+@@ -351,19 +369,55 @@ impl BottleDownloader {
+     fn relocate_macho(path: &Path, prefix: &str, cellar: &str) -> Result<()> {
+         use std::process::Command;
+ 
+-        // Make writable so install_name_tool can modify it
+         #[cfg(unix)]
+-        {
++        let _perm_guard = {
+             use std::os::unix::fs::PermissionsExt;
+-            if let Ok(metadata) = std::fs::metadata(path) {
+-                let mut perms = metadata.permissions();
+-                let mode = perms.mode();
+-                if mode & 0o200 == 0 {
+-                    perms.set_mode(mode | 0o200);
+-                    let _ = std::fs::set_permissions(path, perms);
++            struct PermissionGuard {
++                path: std::path::PathBuf,
++                original_mode: u32,
++                changed: bool,
++            }
++            impl PermissionGuard {
++                fn new(path: &Path) -> Option<Self> {
++                    if let Ok(metadata) = std::fs::metadata(path) {
++                        let perms = metadata.permissions();
++                        let mode = perms.mode();
++                        if mode & 0o200 == 0 {
++                            let mut new_perms = perms;
++                            new_perms.set_mode(mode | 0o200);
++                            if std::fs::set_permissions(path, new_perms).is_ok() {
++                                return Some(Self {
++                                    path: path.to_path_buf(),
++                                    original_mode: mode,
++                                    changed: true,
++                                });
++                            }
++                            return None;
++                        }
++                        Some(Self {
++                            path: path.to_path_buf(),
++                            original_mode: mode,
++                            changed: false,
++                        })
++                    } else {
++                        None
++                    }
+                 }
+             }
+-        }
++            impl Drop for PermissionGuard {
++                fn drop(&mut self) {
++                    if !self.changed {
++                        return;
++                    }
++                    if let Ok(metadata) = std::fs::metadata(&self.path) {
++                        let mut perms = metadata.permissions();
++                        perms.set_mode(self.original_mode);
++                        let _ = std::fs::set_permissions(&self.path, perms);
++                    }
++                }
++            }
++            PermissionGuard::new(path)
++        };
+ 
+         let path_str = match path.to_str() {
+             Some(s) => s,
+@@ -432,7 +486,10 @@ impl BottleDownloader {
+                                 String::from_utf8_lossy(&out.stderr)
+                             );
+                         } else {
+-                            debug!("Relocated Mach-O dep {} -> {} in {:?}", lib_path, new_path, path);
++                            debug!(
++                                "Relocated Mach-O dep {} -> {} in {:?}",
++                                lib_path, new_path, path
++                            );
+                             modified = true;
+                         }
+                     }
+@@ -472,7 +529,10 @@ impl BottleDownloader {
+                                 .output();
+                             if let Ok(out) = result {
+                                 if out.status.success() {
+-                                    debug!("Relocated rpath {} -> {} in {:?}", rpath, new_rpath, path);
++                                    debug!(
++                                        "Relocated rpath {} -> {} in {:?}",
++                                        rpath, new_rpath, path
++                                    );
+                                     modified = true;
+                                 } else {
+                                     debug!(
+@@ -508,10 +568,7 @@ pub fn is_mach_o(data: &[u8]) -> bool {
+     data.len() >= 4
+         && matches!(
+             &data[0..4],
+-            b"\xCE\xFA\xED\xFE"
+-                | b"\xCF\xFA\xED\xFE"
+-                | b"\xBE\xBA\xFE\xCA"
+-                | b"\xCA\xFE\xBA\xBE"
++            b"\xCE\xFA\xED\xFE" | b"\xCF\xFA\xED\xFE" | b"\xBE\xBA\xFE\xCA" | b"\xCA\xFE\xBA\xBE"
+         )
+ }
+ 
+@@ -581,7 +638,11 @@ fn macos_codename() -> &'static str {
+         "12" => "monterey",
+         v => {
+             if let Ok(major) = v.parse::<u32>() {
+-                if major > 26 { "tahoe" } else { "sequoia" }
++                if major > 26 {
++                    "tahoe"
++                } else {
++                    "sequoia"
++                }
+             } else {
+                 "sequoia"
+             }
+diff --git a/src/commands/audit.rs b/src/commands/audit.rs
+index ab6a640..41f3f3d 100644
+--- a/src/commands/audit.rs
++++ b/src/commands/audit.rs
+@@ -144,11 +144,7 @@ pub async fn audit(cache: &Cache) -> Result<()> {
+         }
+     }
+ 
+-    println!(
+-        "\n{} installed, {} issues",
+-        installed.len(),
+-        total_issues
+-    );
++    println!("\n{} installed, {} issues", installed.len(), total_issues);
+ 
+     Ok(())
+ }
+diff --git a/src/commands/completions.rs b/src/commands/completions.rs
+index 59d1ee1..fd527cc 100644
+--- a/src/commands/completions.rs
++++ b/src/commands/completions.rs
+@@ -35,8 +35,8 @@ fn detect_shell() -> Shell {
+ }
+ 
+ fn install_completions(shell: Shell) -> Result<()> {
+-    let home = std::env::var("HOME")
+-        .map_err(|_| WaxError::InstallError("$HOME not set".to_string()))?;
++    let home =
++        std::env::var("HOME").map_err(|_| WaxError::InstallError("$HOME not set".to_string()))?;
+ 
+     let (dest, content) = match shell {
+         Shell::Zsh => {
+@@ -93,11 +93,14 @@ fn install_completions(shell: Shell) -> Result<()> {
+                 .unwrap_or(false);
+ 
+             if already_configured {
+-                println!("completions are ready — run {} to activate", style("exec zsh").cyan());
++                println!(
++                    "completions are ready — run {} to activate",
++                    style("exec zsh").cyan()
++                );
+             } else {
+                 let prompt = inquire::Confirm::new("Add fpath to ~/.zshrc?")
+-                .with_default(true)
+-                .prompt();
++                    .with_default(true)
++                    .prompt();
+ 
+                 match prompt {
+                     Ok(true) => {
+diff --git a/src/commands/doctor.rs b/src/commands/doctor.rs
+index b3f8717..d381010 100644
+--- a/src/commands/doctor.rs
++++ b/src/commands/doctor.rs
+@@ -828,14 +828,23 @@ fn is_mach_o_with_placeholders(path: &Path) -> bool {
+     let magic = &header[0..4];
+     let is_fat = magic == b"\xBE\xBA\xFE\xCA" || magic == b"\xCA\xFE\xBA\xBE";
+ 
+-    let scan_len = if is_fat {
++    let mut scan_len = if is_fat {
+         65536usize
+     } else {
+-        // sizeofcmds is at offset 20 (LE u32); load commands follow the 32-byte header
+-        let sizeofcmds = u32::from_le_bytes([header[20], header[21], header[22], header[23]]) as usize;
++        let sizeofcmds =
++            u32::from_le_bytes([header[20], header[21], header[22], header[23]]) as usize;
+         32 + sizeofcmds
+     };
+ 
++    const MAX_SCAN: usize = 4 * 1024 * 1024;
++    if let Ok(meta) = std::fs::metadata(path) {
++        scan_len = std::cmp::min(scan_len, meta.len() as usize);
++    }
++    scan_len = std::cmp::min(scan_len, MAX_SCAN);
++    if scan_len == 0 {
++        return false;
++    }
++
+     // Re-read from the start, limiting to scan_len bytes
+     drop(f);
+     let mut f = match std::fs::File::open(path) {
+@@ -844,7 +853,9 @@ fn is_mach_o_with_placeholders(path: &Path) -> bool {
+     };
+     let mut buf = vec![0u8; scan_len];
+     let n = f.read(&mut buf).unwrap_or(0);
+-    buf[..n].windows(placeholder.len()).any(|w| w == placeholder)
++    buf[..n]
++        .windows(placeholder.len())
++        .any(|w| w == placeholder)
+ }
+ 
+ async fn check_invalid_signatures(d: &mut DiagResult) {
+@@ -952,7 +963,10 @@ async fn check_invalid_signatures(d: &mut DiagResult) {
+                 let ver_dir = cellar.join(name).join(version);
+                 let resigned = resign_macho_binaries(&ver_dir);
+                 if resigned > 0 {
+-                    d.fixed(&format!("re-signed {}@{} ({} binaries)", name, version, resigned));
++                    d.fixed(&format!(
++                        "re-signed {}@{} ({} binaries)",
++                        name, version, resigned
++                    ));
+                 } else {
+                     d.fail(&format!("failed to re-sign {}@{}", name, version));
+                 }
+@@ -968,7 +982,10 @@ async fn check_invalid_signatures(d: &mut DiagResult) {
+                 }
+             }
+             if invalid.len() > 5 {
+-                d.fail(&format!("... and {} more with invalid signatures", invalid.len() - 5));
++                d.fail(&format!(
++                    "... and {} more with invalid signatures",
++                    invalid.len() - 5
++                ));
+             }
+             d.warn(&format!(
+                 "run {} to re-sign affected packages",
+diff --git a/src/commands/info.rs b/src/commands/info.rs
+index 60ca925..10a0e0a 100644
+--- a/src/commands/info.rs
++++ b/src/commands/info.rs
+@@ -121,10 +121,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
+             .collect();
+ 
+         if dependents.is_empty() {
+-            println!(
+-                "{} installed explicitly",
+-                style("installed:").dim()
+-            );
++            println!("{} installed explicitly", style("installed:").dim());
+         } else {
+             println!("{} required by:", style("installed:").dim());
+             for dep in &dependents {
+diff --git a/src/commands/install.rs b/src/commands/install.rs
+index 46c4e2f..de0934f 100644
+--- a/src/commands/install.rs
++++ b/src/commands/install.rs
+@@ -119,7 +119,7 @@ async fn install_from_source_task(
+         from_source: true,
+         bottle_rebuild: 0,
+         bottle_sha256: None,
+-            pinned: false,
++        pinned: false,
+     };
+     state.add(package).await?;
+ 
+diff --git a/src/commands/link.rs b/src/commands/link.rs
+index 6b81689..f81b431 100644
+--- a/src/commands/link.rs
++++ b/src/commands/link.rs
+@@ -1,3 +1,4 @@
++use crate::error::validate_package_name;
+ use crate::error::{Result, WaxError};
+ use crate::install::{create_symlinks, remove_symlinks, InstallState};
+ use console::style;
+@@ -14,16 +15,22 @@ pub async fn link(packages: &[String]) -> Result<()> {
+     let installed = state.load().await?;
+ 
+     for name in packages {
++        validate_package_name(name)?;
+         let pkg = match installed.get(name.as_str()) {
+             Some(p) => p,
+             None => {
+-                eprintln!("{}: {} is not installed", style("warning").yellow(), style(name).magenta());
++                eprintln!(
++                    "{}: {} is not installed",
++                    style("warning").yellow(),
++                    style(name).magenta()
++                );
+                 continue;
+             }
+         };
+ 
+         let cellar = pkg.install_mode.cellar_path()?;
+-        let links = create_symlinks(&pkg.name, &pkg.version, &cellar, false, pkg.install_mode).await?;
++        let links =
++            create_symlinks(&pkg.name, &pkg.version, &cellar, false, pkg.install_mode).await?;
+         println!(
+             "{} {} ({} links)",
+             style("linked").green(),
+@@ -47,16 +54,22 @@ pub async fn unlink(packages: &[String]) -> Result<()> {
+     let installed = state.load().await?;
+ 
+     for name in packages {
++        validate_package_name(name)?;
+         let pkg = match installed.get(name.as_str()) {
+             Some(p) => p,
+             None => {
+-                eprintln!("{}: {} is not installed", style("warning").yellow(), style(name).magenta());
++                eprintln!(
++                    "{}: {} is not installed",
++                    style("warning").yellow(),
++                    style(name).magenta()
++                );
+                 continue;
+             }
+         };
+ 
+         let cellar = pkg.install_mode.cellar_path()?;
+-        let removed = remove_symlinks(&pkg.name, &pkg.version, &cellar, false, pkg.install_mode).await?;
++        let removed =
++            remove_symlinks(&pkg.name, &pkg.version, &cellar, false, pkg.install_mode).await?;
+         println!(
+             "{} {} ({} links removed)",
+             style("unlinked").green(),
+diff --git a/src/commands/mod.rs b/src/commands/mod.rs
+index 24e40d6..48a74b6 100644
+--- a/src/commands/mod.rs
++++ b/src/commands/mod.rs
+@@ -1,7 +1,7 @@
+ pub mod audit;
+ pub mod bundle;
+-pub mod completions;
+ pub mod cleanup;
++pub mod completions;
+ pub mod doctor;
+ pub mod info;
+ pub mod install;
+diff --git a/src/commands/pin.rs b/src/commands/pin.rs
+index 5daaa0b..beae015 100644
+--- a/src/commands/pin.rs
++++ b/src/commands/pin.rs
+@@ -1,3 +1,4 @@
++use crate::error::validate_package_name;
+ use crate::error::{Result, WaxError};
+ use crate::install::InstallState;
+ use console::style;
+@@ -12,6 +13,7 @@ pub async fn pin(packages: &[String]) -> Result<()> {
+     let installed = state.load().await?;
+ 
+     for name in packages {
++        validate_package_name(name)?;
+         if !installed.contains_key(name.as_str()) {
+             eprintln!(
+                 "{}: {} is not installed",
+@@ -21,7 +23,10 @@ pub async fn pin(packages: &[String]) -> Result<()> {
+             continue;
+         }
+         state.set_pinned(name, true).await?;
+-        let version = installed.get(name.as_str()).map(|p| p.version.as_str()).unwrap_or("?");
++        let version = installed
++            .get(name.as_str())
++            .map(|p| p.version.as_str())
++            .unwrap_or("?");
+         println!(
+             "{} {}@{} pinned",
+             style("✓").green(),
+@@ -43,6 +48,7 @@ pub async fn unpin(packages: &[String]) -> Result<()> {
+     let installed = state.load().await?;
+ 
+     for name in packages {
++        validate_package_name(name)?;
+         if !installed.contains_key(name.as_str()) {
+             eprintln!(
+                 "{}: {} is not installed",
+@@ -52,11 +58,7 @@ pub async fn unpin(packages: &[String]) -> Result<()> {
+             continue;
+         }
+         state.set_pinned(name, false).await?;
+-        println!(
+-            "{} {} unpinned",
+-            style("✓").green(),
+-            style(name).magenta()
+-        );
++        println!("{} {} unpinned", style("✓").green(), style(name).magenta());
+     }
+ 
+     Ok(())
+diff --git a/src/commands/reinstall.rs b/src/commands/reinstall.rs
+index 48b9a57..8ad8f4b 100644
+--- a/src/commands/reinstall.rs
++++ b/src/commands/reinstall.rs
+@@ -3,11 +3,22 @@ use crate::commands::{install, uninstall};
+ use crate::error::{Result, WaxError};
+ use crate::install::{InstallMode, InstallState};
+ use crate::signal::{clear_active_multi, clear_current_op, set_active_multi, set_current_op};
+-use crate::ui::{OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
++use crate::ui::{
++    OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS,
++};
+ use console::style;
+ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+ use std::time::Instant;
+ 
++struct ReinstallSignalGuard;
++
++impl Drop for ReinstallSignalGuard {
++    fn drop(&mut self) {
++        clear_current_op();
++        clear_active_multi();
++    }
++}
++
+ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool) -> Result<()> {
+     let state = InstallState::new()?;
+     state.sync_from_cellar().await.ok();
+@@ -30,13 +41,11 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
+     let start = Instant::now();
+     let multi = MultiProgress::new();
+     set_active_multi(multi.clone());
++    let _signal_guard = ReinstallSignalGuard;
+ 
+     // Overall progress bar for multi-package reinstalls, anchored to the bottom
+     let overall_pb = if total > 1 {
+-        println!(
+-            "reinstalling {} packages\n",
+-            style(total).bold()
+-        );
++        println!("reinstalling {} packages\n", style(total).bold());
+         let pb = multi.insert_from_back(0, ProgressBar::new(total as u64));
+         pb.set_style(
+             ProgressStyle::default_bar()
+@@ -73,11 +82,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
+         );
+         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+         set_current_op(format!("removing {}", name));
+-        spinner.set_message(format!(
+-            "{}removing {}...",
+-            prefix,
+-            style(name).magenta()
+-        ));
++        spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
+ 
+         if installed.contains_key(name.as_str()) {
+             uninstall::uninstall_quiet(cache, name, cask).await?;
+@@ -88,11 +93,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
+         let pb = multi.insert_from_back(1, ProgressBar::new(0));
+         pb.set_style(
+             ProgressStyle::default_bar()
+-                .template(&format!(
+-                    "{}{}",
+-                    prefix,
+-                    PROGRESS_BAR_TEMPLATE
+-                ))
++                .template(&format!("{}{}", prefix, PROGRESS_BAR_TEMPLATE))
+                 .unwrap()
+                 .progress_chars(PROGRESS_BAR_CHARS),
+         );
+@@ -133,8 +134,6 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
+     if let Some(pb) = overall_pb {
+         pb.finish_and_clear();
+     }
+-    clear_current_op();
+-    clear_active_multi();
+ 
+     println!(
+         "\n{} {} reinstalled [{}ms]",
+diff --git a/src/commands/sync.rs b/src/commands/sync.rs
+index 9f42a24..735481d 100644
+--- a/src/commands/sync.rs
++++ b/src/commands/sync.rs
+@@ -39,7 +39,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
+     for (name, lock_pkg) in &lockfile.packages {
+         match installed_packages.get(name) {
+             Some(installed) if installed.version != lock_pkg.version => {
+-                upgrades.push((name.clone(), installed.version.clone(), lock_pkg.version.clone()));
++                upgrades.push((
++                    name.clone(),
++                    installed.version.clone(),
++                    lock_pkg.version.clone(),
++                ));
+                 packages_to_install.push((name.clone(), lock_pkg.clone()));
+             }
+             Some(installed) if installed.platform != lock_pkg.bottle => {
+@@ -225,7 +229,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
+             from_source: false,
+             bottle_rebuild: 0,
+             bottle_sha256: None,
+-                pinned: false,
++            pinned: false,
+         };
+         state.add(package).await?;
+ 
+diff --git a/src/commands/uses.rs b/src/commands/uses.rs
+index e66459c..1aa0ef1 100644
+--- a/src/commands/uses.rs
++++ b/src/commands/uses.rs
+@@ -34,7 +34,10 @@ pub async fn uses(cache: &Cache, formula: &str, installed_only: bool) -> Result<
+ 
+     if dependents.is_empty() {
+         if installed_only {
+-            println!("no installed packages depend on {}", style(formula).magenta());
++            println!(
++                "no installed packages depend on {}",
++                style(formula).magenta()
++            );
+         } else {
+             println!("no packages depend on {}", style(formula).magenta());
+         }
+diff --git a/src/error.rs b/src/error.rs
+index e76f071..f1d9986 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -77,19 +77,47 @@ pub type Result<T> = std::result::Result<T, WaxError>;
+ 
+ /// Validate that a package/formula name doesn't contain path traversal or injection characters.
+ /// Allows alphanumeric, hyphens, underscores, periods, plus signs, and `@` (for versioned names).
+-/// Also allows forward slashes for tap-qualified names (e.g., `user/repo/formula`).
++/// Also allows forward slashes for tap-qualified names (e.g., `user/repo/formula`), but only in
++/// well-formed, relative-style paths (no leading/trailing '/', empty segments, or '.' segments).
+ pub fn validate_package_name(name: &str) -> Result<()> {
+     if name.is_empty() {
+-        return Err(WaxError::InvalidInput("Package name cannot be empty".to_string()));
++        return Err(WaxError::InvalidInput(
++            "Package name cannot be empty".to_string(),
++        ));
++    }
++    if name.starts_with('/') || name.ends_with('/') {
++        return Err(WaxError::InvalidInput(format!(
++            "Package name must not start or end with '/': {}",
++            name
++        )));
++    }
++    for segment in name.split('/') {
++        if segment.is_empty() {
++            return Err(WaxError::InvalidInput(format!(
++                "Package name contains empty path segment: {}",
++                name
++            )));
++        }
++        if segment == "." || segment == ".." {
++            return Err(WaxError::InvalidInput(format!(
++                "Package name contains invalid path segment '{}': {}",
++                segment, name
++            )));
++        }
+     }
+     if name.contains("..") {
+         return Err(WaxError::InvalidInput(format!(
+-            "Package name contains path traversal: {}", name
++            "Package name contains path traversal: {}",
++            name
+         )));
+     }
+-    if !name.chars().all(|c| c.is_alphanumeric() || "-_.+@/".contains(c)) {
++    if !name
++        .chars()
++        .all(|c| c.is_alphanumeric() || "-_.+@/".contains(c))
++    {
+         return Err(WaxError::InvalidInput(format!(
+-            "Package name contains invalid characters: {}", name
++            "Package name contains invalid characters: {}",
++            name
+         )));
+     }
+     Ok(())
+diff --git a/src/install.rs b/src/install.rs
+index 5e99aa3..d14ee86 100644
+--- a/src/install.rs
++++ b/src/install.rs
+@@ -257,7 +257,7 @@ impl InstallState {
+                                 from_source: false,
+                                 bottle_rebuild: 0,
+                                 bottle_sha256: None,
+-                pinned: false,
++                                pinned: false,
+                             },
+                         );
+                     }
+diff --git a/src/lockfile.rs b/src/lockfile.rs
+index d950242..e76f8a3 100644
+--- a/src/lockfile.rs
++++ b/src/lockfile.rs
+@@ -49,6 +49,10 @@ impl Lockfile {
+     pub async fn save(&self, path: &Path) -> Result<()> {
+         debug!("Saving lockfile to {:?}", path);
+ 
++        if let Some(parent) = path.parent() {
++            fs::create_dir_all(parent).await?;
++        }
++
+         let toml_string = toml::to_string_pretty(&self)
+             .map_err(|e| WaxError::LockfileError(format!("Failed to serialize lockfile: {}", e)))?;
+ 
+diff --git a/src/main.rs b/src/main.rs
+index dd2d3b8..0922cc1 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -113,7 +113,7 @@ enum Commands {
+     #[command(alias = "remove")]
+     #[command(alias = "delete")]
+     Uninstall {
+-        #[arg(conflicts_with = "all")]
++        #[arg(conflicts_with = "all", required_unless_present = "all", num_args = 1..)]
+         formulae: Vec<String>,
+         #[arg(long)]
+         dry_run: bool,
+@@ -126,7 +126,7 @@ enum Commands {
+     #[command(about = "Reinstall a formula or cask  [alias: ri]")]
+     #[command(visible_alias = "ri")]
+     Reinstall {
+-        #[arg(conflicts_with = "all")]
++        #[arg(conflicts_with = "all", required_unless_present = "all")]
+         packages: Vec<String>,
+         #[arg(long)]
+         cask: bool,
+@@ -241,7 +241,10 @@ enum Commands {
+ 
+     #[command(about = "Install shell completions (auto-detects shell)")]
+     Completions {
+-        #[arg(value_enum, help = "Shell to generate completions for (auto-detected if omitted)")]
++        #[arg(
++            value_enum,
++            help = "Shell to generate completions for (auto-detected if omitted)"
++        )]
+         shell: Option<Shell>,
+         #[arg(long, help = "Print completions to stdout instead of installing")]
+         print: bool,
+@@ -401,9 +404,11 @@ async fn main() -> Result<()> {
+             cask,
+             all,
+         } => commands::uninstall::uninstall(&cache, &formulae, dry_run, cask, cli.yes, all).await,
+-        Commands::Reinstall { packages, cask, all } => {
+-            commands::reinstall::reinstall(&cache, &packages, cask, all).await
+-        }
++        Commands::Reinstall {
++            packages,
++            cask,
++            all,
++        } => commands::reinstall::reinstall(&cache, &packages, cask, all).await,
+         Commands::Upgrade { packages, dry_run } => {
+             commands::upgrade::upgrade(&cache, &packages, dry_run).await
+         }
+@@ -447,9 +452,7 @@ async fn main() -> Result<()> {
+             }
+         },
+         Commands::Source { formula } => commands::source::source(&cache, &formula).await,
+-        Commands::Completions { shell, print } => {
+-            commands::completions::completions(shell, print)
+-        }
++        Commands::Completions { shell, print } => commands::completions::completions(shell, print),
+         Commands::Why { formula } => {
+             commands::info::info(&api_client, &cache, &formula, false).await
+         }
+diff --git a/src/signal.rs b/src/signal.rs
+index 3d438e7..32741ae 100644
+--- a/src/signal.rs
++++ b/src/signal.rs
+@@ -111,7 +111,10 @@ pub fn install_handler() {
+             if op.is_empty() {
+                 print_interrupt("\nfinishing current operation, please wait...");
+             } else {
+-                print_interrupt(&format!("\nfinishing {} — do not interrupt, cleaning up when done...", op));
++                print_interrupt(&format!(
++                    "\nfinishing {} — do not interrupt, cleaning up when done...",
++                    op
++                ));
+             }
+             request_shutdown();
+         } else if is_shutdown_requested() {
+@@ -121,7 +124,10 @@ pub fn install_handler() {
+             if op.is_empty() {
+                 print_interrupt("\ninterrupted, cleaning up temp files...");
+             } else {
+-                print_interrupt(&format!("\ninterrupted while {} — cleaning up temp files...", op));
++                print_interrupt(&format!(
++                    "\ninterrupted while {} — cleaning up temp files...",
++                    op
++                ));
+             }
+             request_shutdown();
+         }
+diff --git a/src/ui.rs b/src/ui.rs
+index 5fa6f8c..1ca4cfb 100644
+--- a/src/ui.rs
++++ b/src/ui.rs
+@@ -10,8 +10,7 @@ pub const PROGRESS_BAR_TEMPLATE: &str =
+     "{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}  eta {eta}";
+ pub const PROGRESS_BAR_PREFIX_TEMPLATE: &str =
+     "{prefix:.bold} {bar:40.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}  eta {eta}";
+-pub const OVERALL_PROGRESS_TEMPLATE: &str =
+-    "  overall  {bar:40.white/dim} {pos}/{len}  eta {eta}";
++pub const OVERALL_PROGRESS_TEMPLATE: &str = "  overall  {bar:40.white/dim} {pos}/{len}  eta {eta}";
+ pub const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+ 
+ pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {

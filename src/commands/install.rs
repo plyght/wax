@@ -456,26 +456,58 @@ async fn install_impl(
         })
         .collect::<Result<_>>()?;
 
-    // How many packages need bottle downloads (not source builds)?
-    let bottle_count = packages_to_install
+    // Collect (name, url) for every package that has a bottle on this platform.
+    let bottle_urls: Vec<(String, String)> = packages_to_install
         .iter()
-        .filter(|pkg| {
-            !build_from_source
-                && pkg
-                    .bottle
-                    .as_ref()
-                    .and_then(|b| b.stable.as_ref())
-                    .and_then(|s| s.files.get(&platform).or_else(|| s.files.get("all")))
-                    .is_some()
+        .filter(|_pkg| !build_from_source)
+        .filter_map(|pkg| {
+            let f = pkg.bottle.as_ref()?.stable.as_ref()?;
+            let file = f.files.get(&platform).or_else(|| f.files.get("all"))?;
+            Some((pkg.name.clone(), file.url.clone()))
         })
-        .count();
+        .collect();
 
-    // Divide the global HTTP connection pool across concurrently-downloading packages.
-    // Semaphore allows up to 8 simultaneous downloads; bigger packages get more of their share.
+    // Probe all bottle URLs concurrently to get file sizes, then allocate
+    // connections proportionally by size from the global pool.
     const CONCURRENT_LIMIT: usize = 8;
-    let concurrent = bottle_count.min(CONCURRENT_LIMIT).max(1);
-    let connections_per_pkg =
-        (crate::bottle::BottleDownloader::GLOBAL_CONNECTION_POOL / concurrent).max(1);
+    let connections_map: std::collections::HashMap<String, usize> = {
+        use std::sync::Arc;
+        let dl = Arc::clone(&downloader);
+        let probe_tasks: Vec<_> = bottle_urls
+            .iter()
+            .map(|(name, url)| {
+                let dl = Arc::clone(&dl);
+                let url = url.clone();
+                let name = name.clone();
+                tokio::spawn(async move { (name, dl.probe_size(&url).await) })
+            })
+            .collect();
+
+        let mut sizes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for task in probe_tasks {
+            if let Ok((name, size)) = task.await {
+                sizes.insert(name, size);
+            }
+        }
+
+        let total_size: u64 = sizes.values().sum();
+        let n = bottle_urls.len().max(1);
+        sizes
+            .iter()
+            .map(|(name, &size)| {
+                let conns = if total_size == 0 {
+                    (BottleDownloader::GLOBAL_CONNECTION_POOL / n).max(1)
+                } else {
+                    let proportional = (BottleDownloader::GLOBAL_CONNECTION_POOL as f64
+                        * size as f64
+                        / total_size as f64)
+                        .round() as usize;
+                    proportional.max(1)
+                };
+                (name.clone(), conns)
+            })
+            .collect()
+    };
 
     let semaphore = Arc::new(Semaphore::new(CONCURRENT_LIMIT));
     let mut tasks = Vec::new();
@@ -527,11 +559,13 @@ async fn install_impl(
         let version = pkg.versions.stable.clone();
         let rebuild = pkg.bottle_rebuild();
 
+        let pkg_connections = connections_map.get(&name).copied().unwrap_or(1);
+
         if let Some(ext_pb) = external_pb {
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
             downloader
-                .download(&url, &tarball_path, Some(ext_pb), connections_per_pkg)
+                .download(&url, &tarball_path, Some(ext_pb), pkg_connections)
                 .await?;
 
             BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
@@ -570,6 +604,7 @@ async fn install_impl(
         let downloader = Arc::clone(&downloader);
         let semaphore = Arc::clone(&semaphore);
         let temp_dir = Arc::clone(&temp_dir);
+        let conns = pkg_connections;
 
         let pb = if quiet {
             ProgressBar::hidden()
@@ -592,7 +627,7 @@ async fn install_impl(
 
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
-            downloader.download(&url, &tarball_path, Some(&pb), connections_per_pkg).await?;
+            downloader.download(&url, &tarball_path, Some(&pb), conns).await?;
             pb.finish_and_clear();
 
             BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
@@ -1012,6 +1047,9 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         }
     }
 
+    // Drop multi before the install phase so its draw layer releases stdout.
+    drop(multi);
+
     // --- Phase 3: verify checksums + install serially ---
     let mut installed_count = 0;
     let mut failed = Vec::new();
@@ -1078,6 +1116,17 @@ async fn install_from_downloaded(
     let installer = CaskInstaller::new();
     let display_name = cask.name.first().unwrap_or(&cask.token);
 
+    // Step feedback printed directly so it always shows regardless of any parent progress context.
+    macro_rules! step {
+        ($msg:expr) => {
+            println!(
+                "  {} {}",
+                style(&cask.token).magenta(),
+                style($msg).dim()
+            );
+        };
+    }
+
     let mut binary_paths: Vec<String> = Vec::new();
     let mut installed_app_name: Option<String> = None;
 
@@ -1089,17 +1138,25 @@ async fn install_from_downloaded(
                 format!("{}.app", display_name)
             };
             if artifact_type == "dmg" {
+                step!("mounting disk image...");
                 installer.install_dmg(download_path, &app_name).await?;
             } else {
+                step!("extracting...");
                 installer.install_zip(download_path, &app_name).await?;
             }
+            step!("copying to /Applications...");
             installed_app_name = Some(app_name);
         }
-        "pkg" => installer.install_pkg(download_path).await?,
+        "pkg" => {
+            step!("running installer...");
+            installer.install_pkg(download_path).await?;
+        }
         "tar.gz" => {
+            step!("extracting...");
             let binary_path = installer
                 .install_tarball(download_path, &cask.token)
                 .await?;
+            step!("linking binary...");
             binary_paths.push(binary_path.display().to_string());
         }
         _ => {
@@ -1109,6 +1166,8 @@ async fn install_from_downloaded(
             )));
         }
     }
+
+    step!("registering...");
 
     Ok(InstalledCask {
         name: cask.token.clone(),
