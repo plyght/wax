@@ -458,7 +458,7 @@ async fn install_impl(
 
     let semaphore = Arc::new(Semaphore::new(8));
     let mut tasks = Vec::new();
-    let mut inline_extracted: Vec<(String, String, std::path::PathBuf, String, u32)> = Vec::new();
+    let inline_extracted: Vec<(String, String, std::path::PathBuf, String, u32)> = Vec::new();
     let mut source_install_count = 0usize;
 
     let temp_dir = Arc::new(TempDir::new()?);
@@ -518,7 +518,31 @@ async fn install_impl(
             let extract_dir = temp_dir.path().join(&name);
             BottleDownloader::extract(&tarball_path, &extract_dir)?;
 
-            inline_extracted.push((name, version, extract_dir, sha256, rebuild));
+            // Transition download bar → install spinner in-place by cloning the handle
+            // (indicatif clones share the same underlying state).
+            ext_pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars(crate::ui::SPINNER_TICK_CHARS),
+            );
+            ext_pb.enable_steady_tick(std::time::Duration::from_millis(80));
+
+            install_extracted_bottle(
+                &name,
+                &version,
+                &extract_dir,
+                sha256,
+                rebuild,
+                &cellar,
+                install_mode,
+                &platform,
+                &state,
+                false,
+                None,
+                Some(ext_pb.clone()),
+            )
+            .await?;
             continue;
         }
 
@@ -624,6 +648,8 @@ async fn install_impl(
             &platform,
             &state,
             quiet,
+            Some(&multi),
+            None,
         )
         .await?;
     }
@@ -689,23 +715,20 @@ pub async fn install_extracted_bottle(
     platform: &str,
     state: &InstallState,
     quiet: bool,
+    multi: Option<&MultiProgress>,
+    existing_pb: Option<ProgressBar>,
 ) -> Result<()> {
     crate::signal::set_current_op(format!("installing {}", name));
     let _critical = CriticalSection::new();
 
-    macro_rules! step {
-        ($s:expr, $msg:expr) => {
-            if let Some(ref s) = $s {
-                s.set_message(format!(
-                    "{} {}",
-                    style(name).magenta(),
-                    style($msg).dim()
-                ));
-            }
-        };
-    }
-
-    let spinner = if !quiet {
+    // Resolve which progress bar to use for step messages:
+    // 1. existing_pb — caller already has a bar active (e.g. download bar transitioning)
+    // 2. new spinner added to multi — normal install/upgrade with MultiProgress
+    // 3. standalone spinner — single-package or fallback
+    // 4. None — quiet mode
+    let (spinner, owned) = if let Some(pb) = existing_pb {
+        (Some(pb), false) // caller manages finish_and_clear
+    } else if !quiet {
         let s = ProgressBar::new_spinner();
         s.set_style(
             ProgressStyle::default_spinner()
@@ -714,11 +737,24 @@ pub async fn install_extracted_bottle(
                 .tick_chars(crate::ui::SPINNER_TICK_CHARS),
         );
         s.enable_steady_tick(std::time::Duration::from_millis(80));
-        s.set_message(format!("{} {}", style(name).magenta(), style("resolving...").dim()));
-        Some(s)
+        let s = if let Some(m) = multi { m.add(s) } else { s };
+        (Some(s), true) // we own it, finish_and_clear when done
     } else {
-        None
+        (None, false)
     };
+
+    macro_rules! step {
+        ($msg:expr) => {
+            if let Some(ref s) = spinner {
+                s.set_message(format!(
+                    "{} {}",
+                    style(name).magenta(),
+                    style($msg).dim()
+                ));
+            }
+        };
+    }
+    step!("resolving...");
 
     // Detect the actual version directory from what's in the extracted bottle.
     // Homebrew bottles embed {version}_{rebuild} paths, but the API's rebuild
@@ -750,7 +786,7 @@ pub async fn install_extracted_bottle(
 
     let formula_cellar = cellar.join(name).join(&cellar_version);
     if formula_cellar.exists() {
-        step!(spinner, "cleaning old version...");
+        step!("cleaning old version...");
         tokio::fs::remove_dir_all(&formula_cellar)
             .await
             .or_else(|_| crate::sudo::sudo_remove(&formula_cellar).map(|_| ()))?;
@@ -759,7 +795,7 @@ pub async fn install_extracted_bottle(
         .await
         .or_else(|_| crate::sudo::sudo_mkdir(&formula_cellar))?;
 
-    step!(spinner, "copying to cellar...");
+    step!("copying to cellar...");
     let actual_content_dir = name_dir.join(&cellar_version);
     if actual_content_dir.exists() {
         copy_dir_all(&actual_content_dir, &formula_cellar)?;
@@ -769,7 +805,7 @@ pub async fn install_extracted_bottle(
         copy_dir_all(&extract_dir.to_path_buf(), &formula_cellar)?;
     }
 
-    step!(spinner, "relocating...");
+    step!("relocating...");
     {
         let prefix = install_mode.prefix()?;
         let default_prefix = if cfg!(target_os = "macos") {
@@ -783,7 +819,7 @@ pub async fn install_extracted_bottle(
         )?;
     }
 
-    step!(spinner, "symlinking...");
+    step!("symlinking...");
     create_symlinks(name, &cellar_version, cellar, false, install_mode).await?;
 
     let package = InstalledPackage {
@@ -802,10 +838,12 @@ pub async fn install_extracted_bottle(
     };
     state.add(package).await?;
 
-    if let Some(s) = spinner {
-        s.finish_and_clear();
+    if owned {
+        if let Some(ref s) = spinner {
+            s.finish_and_clear();
+        }
     }
-    if !quiet {
+    if !quiet && owned {
         println!("+ {}@{}", style(name).magenta(), style(&cellar_version).dim());
     }
 

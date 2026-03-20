@@ -317,7 +317,9 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                         pkg_install_mode,
                         &platform,
                         &install_state,
-                        true, /* quiet — status printed below */
+                        false,
+                        Some(&multi),
+                        None,
                     )
                     .await
                 } else {
