@@ -119,6 +119,7 @@ async fn install_from_source_task(
         from_source: true,
         bottle_rebuild: 0,
         bottle_sha256: None,
+        pinned: false,
     };
     state.add(package).await?;
 
@@ -242,6 +243,10 @@ async fn install_impl(
         return Err(WaxError::InvalidInput("No packages specified".to_string()));
     }
 
+    for name in package_names {
+        crate::error::validate_package_name(name)?;
+    }
+
     cache.ensure_fresh().await?;
 
     if cask {
@@ -266,6 +271,12 @@ async fn install_impl(
     let installed_packages = state.load().await?;
     let installed: HashSet<String> = installed_packages.keys().cloned().collect();
 
+    // Pre-build lookup maps for O(1) formula resolution instead of O(n) linear scans
+    let by_name: std::collections::HashMap<&str, &crate::api::Formula> =
+        formulae.iter().map(|f| (f.name.as_str(), f)).collect();
+    let by_full_name: std::collections::HashMap<&str, &crate::api::Formula> =
+        formulae.iter().map(|f| (f.full_name.as_str(), f)).collect();
+
     let mut all_to_install = Vec::new();
     let mut already_installed = Vec::new();
     let mut errors = Vec::new();
@@ -277,20 +288,20 @@ async fn install_impl(
         }
 
         let formula = if package_name.contains('/') {
-            formulae
-                .iter()
-                .find(|f| &f.full_name == package_name || &f.name == package_name)
+            by_full_name
+                .get(package_name.as_str())
+                .or_else(|| by_name.get(package_name.as_str()))
                 .or_else(|| {
                     let parts: Vec<&str> = package_name.split('/').collect();
                     if parts.len() >= 3 {
-                        let formula_name = parts[parts.len() - 1];
-                        formulae.iter().find(|f| f.name == formula_name)
+                        by_name.get(parts[parts.len() - 1])
                     } else {
                         None
                     }
                 })
+                .copied()
         } else {
-            formulae.iter().find(|f| f.name == *package_name)
+            by_name.get(package_name.as_str()).copied()
         };
 
         let formula = match formula {
@@ -433,9 +444,9 @@ async fn install_impl(
     let packages_to_install: Vec<_> = all_to_install
         .iter()
         .map(|name| {
-            formulae
-                .iter()
-                .find(|f| &f.name == name)
+            by_name
+                .get(name.as_str())
+                .copied()
                 .ok_or_else(|| WaxError::FormulaNotFound(name.clone()))
         })
         .collect::<Result<_>>()?;
@@ -524,6 +535,9 @@ async fn install_impl(
 
         let task = tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
+            // Don't even start if already cancelled
+            crate::signal::check_cancelled()?;
+            crate::signal::set_current_op(format!("downloading {}", name));
 
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
@@ -541,16 +555,27 @@ async fn install_impl(
         tasks.push(task);
     }
 
-    let results = futures::future::join_all(tasks).await;
-
+    // Collect results; abort remaining tasks immediately on cancellation
     let mut extracted_packages: Vec<(String, String, std::path::PathBuf, String)> = Vec::new();
     let mut failed_packages = Vec::new();
+    let mut cancelled = false;
 
-    for result in results {
-        match result {
+    for handle in tasks {
+        if cancelled || crate::signal::is_shutdown_requested() {
+            handle.abort();
+            cancelled = true;
+            continue;
+        }
+        match handle.await {
             Ok(Ok(data)) => extracted_packages.push(data),
+            Ok(Err(WaxError::Interrupted)) => {
+                cancelled = true;
+            }
             Ok(Err(e)) => {
                 failed_packages.push(format!("{}", e));
+            }
+            Err(e) if e.is_cancelled() => {
+                cancelled = true;
             }
             Err(e) => {
                 failed_packages.push(format!("Task error: {}", e));
@@ -559,6 +584,10 @@ async fn install_impl(
     }
 
     extracted_packages.extend(inline_extracted);
+
+    if cancelled {
+        return Err(WaxError::Interrupted);
+    }
 
     if !failed_packages.is_empty() && !quiet {
         for err in &failed_packages {
@@ -578,6 +607,7 @@ async fn install_impl(
         println!();
     }
     for (name, version, extract_dir, bottle_sha) in extracted_packages {
+        crate::signal::set_current_op(format!("installing {}", name));
         let _critical = CriticalSection::new();
         let formula_cellar = cellar.join(&name).join(&version);
         if formula_cellar.exists() {
@@ -615,11 +645,16 @@ async fn install_impl(
             }
         }
 
-        if cfg!(target_os = "linux") {
+        {
             let prefix = install_mode.prefix()?;
+            let default_prefix = if cfg!(target_os = "macos") {
+                "/opt/homebrew"
+            } else {
+                "/home/linuxbrew/.linuxbrew"
+            };
             BottleDownloader::relocate_bottle(
                 &formula_cellar,
-                prefix.to_str().unwrap_or("/home/linuxbrew/.linuxbrew"),
+                prefix.to_str().unwrap_or(default_prefix),
             )?;
         }
 
@@ -644,6 +679,7 @@ async fn install_impl(
             from_source: false,
             bottle_rebuild: 0,
             bottle_sha256: Some(bottle_sha),
+            pinned: false,
         };
         state.add(package).await?;
 
@@ -914,10 +950,42 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
         return Ok(());
     }
 
+    // Fetch all cask details concurrently
+    let api_client = Arc::new(crate::api::ApiClient::new());
+    let semaphore = Arc::new(Semaphore::new(8));
+
+    let detail_tasks: Vec<_> = to_install
+        .iter()
+        .map(|name| {
+            let api = Arc::clone(&api_client);
+            let sem = Arc::clone(&semaphore);
+            let name = name.clone();
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                let details = api.fetch_cask_details(&name).await?;
+                Ok::<_, WaxError>((name, details))
+            })
+        })
+        .collect();
+
+    let mut cask_details = Vec::new();
+    for task in detail_tasks {
+        match task.await {
+            Ok(Ok(data)) => cask_details.push(data),
+            Ok(Err(e)) => {
+                eprintln!("failed to fetch cask details: {}", e);
+            }
+            Err(e) => {
+                eprintln!("task failed: {}", e);
+            }
+        }
+    }
+
+    // Install sequentially (DMG mounting/copying requires serial FS access)
     let mut installed_count = 0;
     let mut failed = Vec::new();
 
-    for cask_name in &to_install {
+    for (cask_name, _cask) in &cask_details {
         check_cancelled()?;
         match install_cask(cache, cask_name, false).await {
             Ok(_) => installed_count += 1,

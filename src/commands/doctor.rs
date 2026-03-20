@@ -1,9 +1,9 @@
 use crate::api::ApiClient;
-use crate::bottle::{detect_platform, homebrew_prefix, run_command_with_timeout};
+use crate::bottle::{detect_platform, homebrew_prefix, run_command_with_timeout, BottleDownloader};
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::Result;
-use crate::install::{InstallMode, InstallState};
+use crate::install::{create_symlinks, InstallMode, InstallState};
 use console::style;
 use std::path::Path;
 
@@ -65,7 +65,10 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
     check_install_state(&mut d).await;
     check_cask_state(&mut d).await;
     check_broken_symlinks(&mut d).await;
+    check_opt_symlinks(&mut d).await;
     check_state_consistency(&mut d).await;
+    check_unrelocated_bottles(&mut d).await;
+    check_invalid_signatures(&mut d).await;
     check_tools(&mut d);
     check_glibc_version(&mut d);
     check_metal_toolchain(&mut d);
@@ -399,6 +402,112 @@ fn collect_broken_symlinks_recursive(dir: &Path) -> Vec<std::path::PathBuf> {
     broken
 }
 
+async fn check_opt_symlinks(d: &mut DiagResult) {
+    let mut missing_opt = Vec::new();
+    let mut relinked = 0usize;
+
+    for mode in &[InstallMode::Global, InstallMode::User] {
+        let cellar = match mode.cellar_path() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if !cellar.exists() {
+            continue;
+        }
+
+        let prefix = match mode.prefix() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let opt_dir = prefix.join("opt");
+
+        let entries = match std::fs::read_dir(&cellar) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let opt_link = opt_dir.join(&name);
+
+            // Check if opt symlink exists and is valid
+            let needs_fix = if let Ok(meta) = std::fs::symlink_metadata(&opt_link) {
+                if meta.is_symlink() {
+                    // Symlink exists - check if target is valid
+                    std::fs::metadata(&opt_link).is_err()
+                } else {
+                    false
+                }
+            } else {
+                // opt symlink doesn't exist at all
+                true
+            };
+
+            if needs_fix {
+                missing_opt.push((name, entry.path(), *mode));
+            }
+        }
+    }
+
+    if missing_opt.is_empty() {
+        d.pass("all cellar packages have opt/ symlinks");
+    } else if d.fix {
+        d.warn(&format!(
+            "{} packages missing opt/ symlinks — relinking...",
+            missing_opt.len()
+        ));
+        for (name, pkg_dir, mode) in &missing_opt {
+            // Find the latest version directory
+            let versions: Vec<String> = match std::fs::read_dir(pkg_dir) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect(),
+                Err(_) => continue,
+            };
+            if versions.is_empty() {
+                continue;
+            }
+            let mut sorted = versions;
+            crate::version::sort_versions(&mut sorted);
+            let version = sorted.last().unwrap().clone();
+
+            let cellar = match mode.cellar_path() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            match create_symlinks(name, &version, &cellar, false, *mode).await {
+                Ok(_) => {
+                    relinked += 1;
+                    if relinked <= 10 {
+                        d.fixed(&format!("relinked {}@{}", name, version));
+                    }
+                }
+                Err(e) => {
+                    d.fail(&format!("failed to relink {}: {}", name, e));
+                }
+            }
+        }
+        if relinked > 10 {
+            d.fixed(&format!("... and {} more packages relinked", relinked - 10));
+        }
+    } else {
+        for (i, (name, _, _)) in missing_opt.iter().enumerate() {
+            if i < 5 {
+                d.fail(&format!("missing opt/ symlink: {}", style(name).magenta()));
+            }
+        }
+        if missing_opt.len() > 5 {
+            d.fail(&format!(
+                "... and {} more missing opt/ symlinks",
+                missing_opt.len() - 5
+            ));
+        }
+    }
+}
+
 async fn check_state_consistency(d: &mut DiagResult) {
     let state = match InstallState::new() {
         Ok(s) => s,
@@ -581,6 +690,363 @@ fn check_metal_toolchain(d: &mut DiagResult) {
             d.warn("no GPU toolchain detected (vulkaninfo/glxinfo not found)");
         }
     }
+}
+
+async fn check_unrelocated_bottles(d: &mut DiagResult) {
+    #[cfg(target_os = "macos")]
+    {
+        let prefix = homebrew_prefix();
+        let cellar = prefix.join("Cellar");
+        if !cellar.exists() {
+            return;
+        }
+
+        let prefix_str = prefix.to_string_lossy().to_string();
+        let mut unrelocated: Vec<(String, String, std::path::PathBuf)> = Vec::new();
+
+        let entries = match std::fs::read_dir(&cellar) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for pkg_entry in entries.filter_map(|e| e.ok()) {
+            let pkg_dir = pkg_entry.path();
+            if !pkg_dir.is_dir() {
+                continue;
+            }
+            let name = pkg_entry.file_name().to_string_lossy().to_string();
+
+            let mut versions: Vec<String> = match std::fs::read_dir(&pkg_dir) {
+                Ok(e) => e
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect(),
+                Err(_) => continue,
+            };
+            crate::version::sort_versions(&mut versions);
+
+            if let Some(version) = versions.last() {
+                let ver_dir = pkg_dir.join(version);
+                if has_unrelocated_macho(&ver_dir) {
+                    unrelocated.push((name, version.clone(), ver_dir));
+                }
+            }
+        }
+
+        if unrelocated.is_empty() {
+            d.pass("all bottles properly relocated (no @@HOMEBREW_*@@ placeholders)");
+            return;
+        }
+
+        if d.fix {
+            d.warn(&format!(
+                "{} packages have unrelocated dylib paths — fixing with install_name_tool...",
+                unrelocated.len()
+            ));
+            for (name, version, ver_dir) in &unrelocated {
+                match BottleDownloader::relocate_bottle(ver_dir, &prefix_str) {
+                    Ok(_) => d.fixed(&format!("relocated {}@{}", name, version)),
+                    Err(e) => d.fail(&format!("failed to relocate {}@{}: {}", name, version, e)),
+                }
+            }
+        } else {
+            for (i, (name, version, _)) in unrelocated.iter().enumerate() {
+                if i < 5 {
+                    d.fail(&format!(
+                        "unrelocated bottle: {}@{} (causes dyld Symbol not found errors)",
+                        style(name).magenta(),
+                        version
+                    ));
+                }
+            }
+            if unrelocated.len() > 5 {
+                d.fail(&format!(
+                    "... and {} more unrelocated bottles",
+                    unrelocated.len() - 5
+                ));
+            }
+            d.warn(&format!(
+                "run {} to fix, or {} to reinstall affected packages",
+                style("wax doctor --fix").yellow(),
+                style("wax reinstall <name>").yellow()
+            ));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = d;
+    }
+}
+
+fn has_unrelocated_macho(dir: &Path) -> bool {
+    for subdir in &["bin", "lib"] {
+        let path = dir.join(subdir);
+        if path.is_dir() && scan_dir_for_placeholders(&path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn scan_dir_for_placeholders(dir: &Path) -> bool {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file() && is_mach_o_with_placeholders(&path) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_mach_o_with_placeholders(path: &Path) -> bool {
+    use std::io::Read;
+
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    // Read header: 4 (magic) + 4 (cputype) + 4 (cpusubtype) + 4 (filetype)
+    //              + 4 (ncmds) + 4 (sizeofcmds) + 4 (flags) [+ 4 reserved for 64-bit]
+    let mut header = [0u8; 32];
+    if f.read(&mut header).unwrap_or(0) < 8 {
+        return false;
+    }
+
+    if !crate::bottle::is_mach_o(&header) {
+        return false;
+    }
+
+    // Parse sizeofcmds (bytes 20-23, little-endian) for 64-bit Mach-O.
+    // For fat binaries we fall back to a generous 64KB scan of the file start.
+    let placeholder = b"@@HOMEBREW_";
+    let magic = &header[0..4];
+    let is_fat = magic == b"\xBE\xBA\xFE\xCA" || magic == b"\xCA\xFE\xBA\xBE";
+
+    let mut scan_len = if is_fat {
+        65536usize
+    } else {
+        let sizeofcmds =
+            u32::from_le_bytes([header[20], header[21], header[22], header[23]]) as usize;
+        32 + sizeofcmds
+    };
+
+    const MAX_SCAN: usize = 4 * 1024 * 1024;
+    if let Ok(meta) = std::fs::metadata(path) {
+        scan_len = std::cmp::min(scan_len, meta.len() as usize);
+    }
+    scan_len = std::cmp::min(scan_len, MAX_SCAN);
+    if scan_len == 0 {
+        return false;
+    }
+
+    // Re-read from the start, limiting to scan_len bytes
+    drop(f);
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut buf = vec![0u8; scan_len];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf[..n]
+        .windows(placeholder.len())
+        .any(|w| w == placeholder)
+}
+
+async fn check_invalid_signatures(d: &mut DiagResult) {
+    #[cfg(target_os = "macos")]
+    {
+        use std::io::Read;
+        use std::process::Command;
+
+        let prefix = homebrew_prefix();
+        let cellar = prefix.join("Cellar");
+        if !cellar.exists() {
+            return;
+        }
+
+        let mut invalid: Vec<(String, String)> = Vec::new();
+
+        let entries = match std::fs::read_dir(&cellar) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for pkg_entry in entries.filter_map(|e| e.ok()) {
+            let pkg_dir = pkg_entry.path();
+            if !pkg_dir.is_dir() {
+                continue;
+            }
+            let name = pkg_entry.file_name().to_string_lossy().to_string();
+
+            let mut versions: Vec<String> = match std::fs::read_dir(&pkg_dir) {
+                Ok(e) => e
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect(),
+                Err(_) => continue,
+            };
+            crate::version::sort_versions(&mut versions);
+
+            let Some(version) = versions.last() else {
+                continue;
+            };
+            let ver_dir = pkg_dir.join(version);
+            let mut pkg_invalid = false;
+
+            'outer: for subdir in &["bin", "lib"] {
+                let dir = ver_dir.join(subdir);
+                if !dir.is_dir() {
+                    continue;
+                }
+                let Ok(dir_entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in dir_entries.filter_map(|e| e.ok()) {
+                    let file = entry.path();
+                    // Follow symlinks: use metadata (not symlink_metadata)
+                    let Ok(meta) = std::fs::metadata(&file) else {
+                        continue;
+                    };
+                    if !meta.is_file() {
+                        continue;
+                    }
+                    // Read only 4 magic bytes to detect Mach-O
+                    let mut buf = [0u8; 4];
+                    let Ok(mut f) = std::fs::File::open(&file) else {
+                        continue;
+                    };
+                    if f.read(&mut buf).is_err() {
+                        continue;
+                    }
+                    if !crate::bottle::is_mach_o(&buf) {
+                        continue;
+                    }
+                    let Some(path_str) = file.to_str() else {
+                        continue;
+                    };
+                    // "invalid signature" = was signed but modified; "not signed" = fine to ignore
+                    if let Ok(out) = Command::new("codesign").args(["-v", path_str]).output() {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        if stderr.contains("invalid signature")
+                            || stderr.contains("code or signature have been modified")
+                        {
+                            pkg_invalid = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            if pkg_invalid {
+                invalid.push((name, version.clone()));
+            }
+        }
+
+        if invalid.is_empty() {
+            d.pass("all Mach-O binaries have valid code signatures");
+            return;
+        }
+
+        if d.fix {
+            d.warn(&format!(
+                "{} packages have invalid code signatures — re-signing...",
+                invalid.len()
+            ));
+            for (name, version) in &invalid {
+                let ver_dir = cellar.join(name).join(version);
+                let resigned = resign_macho_binaries(&ver_dir);
+                if resigned > 0 {
+                    d.fixed(&format!(
+                        "re-signed {}@{} ({} binaries)",
+                        name, version, resigned
+                    ));
+                } else {
+                    d.fail(&format!("failed to re-sign {}@{}", name, version));
+                }
+            }
+        } else {
+            for (i, (name, version)) in invalid.iter().enumerate() {
+                if i < 5 {
+                    d.fail(&format!(
+                        "invalid code signature: {}@{} (modified without re-signing — causes SIGKILL on Apple Silicon)",
+                        style(name).magenta(),
+                        version
+                    ));
+                }
+            }
+            if invalid.len() > 5 {
+                d.fail(&format!(
+                    "... and {} more with invalid signatures",
+                    invalid.len() - 5
+                ));
+            }
+            d.warn(&format!(
+                "run {} to re-sign affected packages",
+                style("wax doctor --fix").yellow()
+            ));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = d;
+    }
+}
+
+/// Re-sign all Mach-O binaries in bin/ and lib/ subdirs with an ad-hoc signature.
+/// Returns the number of successfully re-signed files.
+#[cfg(target_os = "macos")]
+fn resign_macho_binaries(ver_dir: &Path) -> usize {
+    use std::io::Read;
+    use std::process::Command;
+
+    let mut count = 0;
+    for subdir in &["bin", "lib"] {
+        let dir = ver_dir.join(subdir);
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let file = entry.path();
+            let Ok(meta) = std::fs::metadata(&file) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let mut buf = [0u8; 4];
+            let Ok(mut f) = std::fs::File::open(&file) else {
+                continue;
+            };
+            if f.read(&mut buf).is_err() {
+                continue;
+            }
+            if !crate::bottle::is_mach_o(&buf) {
+                continue;
+            }
+            let Some(path_str) = file.to_str() else {
+                continue;
+            };
+            if let Ok(out) = Command::new("codesign")
+                .args(["--force", "--sign", "-", path_str])
+                .output()
+            {
+                if out.status.success() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
 }
 
 fn check_tools(d: &mut DiagResult) {

@@ -325,11 +325,16 @@ pub async fn version_install(
         }
     }
 
-    if cfg!(target_os = "linux") {
+    {
         let prefix = install_mode.prefix()?;
+        let default_prefix = if cfg!(target_os = "macos") {
+            "/opt/homebrew"
+        } else {
+            "/home/linuxbrew/.linuxbrew"
+        };
         BottleDownloader::relocate_bottle(
             &formula_cellar,
-            prefix.to_str().unwrap_or("/home/linuxbrew/.linuxbrew"),
+            prefix.to_str().unwrap_or(default_prefix),
         )?;
     }
 
@@ -347,6 +352,7 @@ pub async fn version_install(
         from_source: false,
         bottle_rebuild: 0,
         bottle_sha256: Some(sha256),
+        pinned: false,
     };
     state.add(package).await?;
 

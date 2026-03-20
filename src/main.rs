@@ -18,6 +18,7 @@ mod version;
 use api::ApiClient;
 use cache::Cache;
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 use error::Result;
 use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -57,28 +58,28 @@ enum Commands {
         force: bool,
     },
 
-    #[command(about = "Search formulae and casks")]
+    #[command(about = "Search formulae and casks  [alias: s, find]")]
+    #[command(visible_alias = "s")]
     #[command(alias = "find")]
-    #[command(alias = "s")]
     Search { query: String },
 
-    #[command(about = "Show formula details")]
-    #[command(alias = "show")]
+    #[command(about = "Show formula details  [alias: show]")]
+    #[command(visible_alias = "show")]
     Info {
         formula: String,
         #[arg(long)]
         cask: bool,
     },
 
-    #[command(about = "List installed packages")]
-    #[command(alias = "ls")]
+    #[command(about = "List installed packages  [alias: ls]")]
+    #[command(visible_alias = "ls")]
     List,
 
-    #[command(about = "Install one or more formulae or casks")]
-    #[command(alias = "i")]
+    #[command(about = "Install one or more formulae or casks  [alias: i, add]")]
+    #[command(visible_alias = "i")]
     #[command(alias = "add")]
     Install {
-        #[arg(required = true, help = "Package name(s) to install")]
+        #[arg(help = "Package name(s) to install (syncs from lockfile if omitted)")]
         packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
@@ -92,9 +93,9 @@ enum Commands {
         build_from_source: bool,
     },
 
-    #[command(about = "Install casks (shorthand for install --cask)")]
+    #[command(about = "Install casks  [alias: c]")]
     #[command(name = "cask")]
-    #[command(alias = "c")]
+    #[command(visible_alias = "c")]
     InstallCask {
         #[arg(required = true, help = "Cask name(s) to install")]
         packages: Vec<String>,
@@ -106,20 +107,35 @@ enum Commands {
         global: bool,
     },
 
-    #[command(about = "Uninstall a formula or cask")]
+    #[command(about = "Uninstall a formula or cask  [alias: ui, rm, remove]")]
+    #[command(visible_alias = "ui")]
     #[command(alias = "rm")]
     #[command(alias = "remove")]
     #[command(alias = "delete")]
     Uninstall {
-        formula: String,
+        #[arg(conflicts_with = "all", required_unless_present = "all", num_args = 1..)]
+        formulae: Vec<String>,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
         cask: bool,
+        #[arg(long, help = "Uninstall all installed formulae")]
+        all: bool,
     },
 
-    #[command(about = "Upgrade formulae to the latest version")]
-    #[command(alias = "up")]
+    #[command(about = "Reinstall a formula or cask  [alias: ri]")]
+    #[command(visible_alias = "ri")]
+    Reinstall {
+        #[arg(conflicts_with = "all", required_unless_present = "all")]
+        packages: Vec<String>,
+        #[arg(long)]
+        cask: bool,
+        #[arg(long, help = "Reinstall all installed formulae")]
+        all: bool,
+    },
+
+    #[command(about = "Upgrade formulae to the latest version  [alias: up]")]
+    #[command(visible_alias = "up")]
     Upgrade {
         #[arg(help = "Package name(s) to upgrade (upgrades all if omitted)")]
         packages: Vec<String>,
@@ -129,6 +145,56 @@ enum Commands {
 
     #[command(about = "List packages with available updates")]
     Outdated,
+
+    #[command(about = "Re-create symlinks for installed packages  [alias: ln]")]
+    #[command(visible_alias = "ln")]
+    Link {
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+
+    #[command(about = "Remove symlinks for a package (keeps Cellar)")]
+    Unlink {
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+
+    #[command(about = "Remove old versions from the Cellar")]
+    Cleanup {
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    #[command(about = "Show installed packages not required by any other package")]
+    Leaves,
+
+    #[command(about = "Show formulae that depend on a given formula")]
+    Uses {
+        formula: String,
+        #[arg(long, help = "Only show installed dependents")]
+        installed: bool,
+    },
+
+    #[command(about = "Show dependencies for a formula")]
+    Deps {
+        formula: String,
+        #[arg(long, help = "Show as dependency tree")]
+        tree: bool,
+        #[arg(long, help = "Only show installed dependencies")]
+        installed: bool,
+    },
+
+    #[command(about = "Pin a formula to its current version")]
+    Pin {
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
+
+    #[command(about = "Unpin a formula to allow upgrades")]
+    Unpin {
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
 
     #[command(about = "Generate lockfile from installed packages")]
     Lock,
@@ -142,8 +208,8 @@ enum Commands {
         action: Option<TapAction>,
     },
 
-    #[command(about = "Check system for potential problems")]
-    #[command(alias = "dr")]
+    #[command(about = "Check system for potential problems  [alias: dr]")]
+    #[command(visible_alias = "dr")]
     Doctor {
         #[arg(long, help = "Automatically fix detected issues")]
         fix: bool,
@@ -172,6 +238,27 @@ enum Commands {
         #[arg(help = "Formula or cask name")]
         formula: String,
     },
+
+    #[command(about = "Install shell completions (auto-detects shell)")]
+    Completions {
+        #[arg(
+            value_enum,
+            help = "Shell to generate completions for (auto-detected if omitted)"
+        )]
+        shell: Option<Shell>,
+        #[arg(long, help = "Print completions to stdout instead of installing")]
+        print: bool,
+    },
+
+    #[command(about = "Show why a package is installed  [alias: explain]")]
+    #[command(alias = "explain")]
+    Why {
+        #[arg(help = "Package name")]
+        formula: String,
+    },
+
+    #[command(about = "Check installed packages for issues (deprecated, disabled, outdated)")]
+    Audit,
 }
 
 #[derive(Subcommand)]
@@ -227,11 +314,7 @@ enum TapAction {
 }
 
 fn init_logging(verbose: bool) -> Result<()> {
-    let log_dir = if let Some(base_dirs) = directories::BaseDirs::new() {
-        base_dirs.cache_dir().join("wax").join("logs")
-    } else {
-        ui::dirs::home_dir()?.join(".wax").join("logs")
-    };
+    let log_dir = ui::dirs::wax_logs_dir()?;
 
     std::fs::create_dir_all(&log_dir)?;
 
@@ -291,16 +374,21 @@ async fn main() -> Result<()> {
             global,
             build_from_source,
         } => {
-            commands::install::install(
-                &cache,
-                &packages,
-                dry_run,
-                cask,
-                user,
-                global,
-                build_from_source,
-            )
-            .await
+            if packages.is_empty() && !cask {
+                // No packages specified — sync from lockfile like `npm install`
+                commands::sync::sync(&cache).await
+            } else {
+                commands::install::install(
+                    &cache,
+                    &packages,
+                    dry_run,
+                    cask,
+                    user,
+                    global,
+                    build_from_source,
+                )
+                .await
+            }
         }
         Commands::InstallCask {
             packages,
@@ -311,14 +399,34 @@ async fn main() -> Result<()> {
             commands::install::install(&cache, &packages, dry_run, true, user, global, false).await
         }
         Commands::Uninstall {
-            formula,
+            formulae,
             dry_run,
             cask,
-        } => commands::uninstall::uninstall(&cache, &formula, dry_run, cask, cli.yes).await,
+            all,
+        } => commands::uninstall::uninstall(&cache, &formulae, dry_run, cask, cli.yes, all).await,
+        Commands::Reinstall {
+            packages,
+            cask,
+            all,
+        } => commands::reinstall::reinstall(&cache, &packages, cask, all).await,
         Commands::Upgrade { packages, dry_run } => {
             commands::upgrade::upgrade(&cache, &packages, dry_run).await
         }
         Commands::Outdated => commands::outdated::outdated(&cache).await,
+        Commands::Link { packages } => commands::link::link(&packages).await,
+        Commands::Unlink { packages } => commands::link::unlink(&packages).await,
+        Commands::Cleanup { dry_run } => commands::cleanup::cleanup(dry_run).await,
+        Commands::Leaves => commands::leaves::leaves(&cache).await,
+        Commands::Uses { formula, installed } => {
+            commands::uses::uses(&cache, &formula, installed).await
+        }
+        Commands::Deps {
+            formula,
+            tree,
+            installed,
+        } => commands::show_deps::deps(&cache, &formula, tree, installed).await,
+        Commands::Pin { packages } => commands::pin::pin(&packages).await,
+        Commands::Unpin { packages } => commands::pin::unpin(&packages).await,
         Commands::Lock => commands::lock::lock().await,
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action } => commands::tap::tap(action, Some(&cache)).await,
@@ -344,6 +452,11 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Source { formula } => commands::source::source(&cache, &formula).await,
+        Commands::Completions { shell, print } => commands::completions::completions(shell, print),
+        Commands::Why { formula } => {
+            commands::info::info(&api_client, &cache, &formula, false).await
+        }
+        Commands::Audit => commands::audit::audit(&cache).await,
     };
 
     if let Err(e) = result {

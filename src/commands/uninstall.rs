@@ -2,23 +2,88 @@ use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
+use crate::signal::{clear_current_op, set_current_op};
+use crate::ui::{OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, SPINNER_TICK_CHARS};
 use console::style;
+use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
-use tracing::instrument;
+use std::time::Instant;
 
-#[instrument(skip(cache))]
 pub async fn uninstall(
     cache: &Cache,
-    formula_name: &str,
+    formulae: &[String],
     dry_run: bool,
     cask: bool,
     yes: bool,
+    all: bool,
 ) -> Result<()> {
-    uninstall_impl(cache, formula_name, dry_run, cask, yes, false).await
+    let names: Vec<String> = if all {
+        let state = InstallState::new()?;
+        state.sync_from_cellar().await.ok();
+        let installed = state.load().await?;
+        let mut names: Vec<String> = installed.keys().cloned().collect();
+        names.sort();
+        names
+    } else {
+        if formulae.is_empty() {
+            return Err(WaxError::InvalidInput(
+                "Specify package name(s) or use --all to uninstall everything".to_string(),
+            ));
+        }
+        for name in formulae {
+            crate::error::validate_package_name(name)?;
+        }
+        formulae.to_vec()
+    };
+
+    let total = names.len();
+    let start = Instant::now();
+
+    let overall_pb = if total > 1 {
+        println!("uninstalling {} packages\n", style(total).bold());
+        let pb = ProgressBar::new(total as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(OVERALL_PROGRESS_TEMPLATE)
+                .unwrap()
+                .progress_chars(PROGRESS_BAR_CHARS),
+        );
+        Some(pb)
+    } else {
+        None
+    };
+
+    for (i, name) in names.iter().enumerate() {
+        let prefix = if total > 1 {
+            format!("[{}/{}] ", i + 1, total)
+        } else {
+            String::new()
+        };
+        uninstall_impl(cache, name, dry_run, cask, yes, false, &prefix).await?;
+        if let Some(ref pb) = overall_pb {
+            pb.inc(1);
+        }
+    }
+
+    if let Some(pb) = overall_pb {
+        pb.finish_and_clear();
+    }
+    clear_current_op();
+
+    if total > 1 && !dry_run {
+        println!(
+            "\n{} {} removed [{}ms]",
+            style(total).bold(),
+            if total == 1 { "package" } else { "packages" },
+            start.elapsed().as_millis()
+        );
+    }
+
+    Ok(())
 }
 
 pub async fn uninstall_quiet(cache: &Cache, formula_name: &str, cask: bool) -> Result<()> {
-    uninstall_impl(cache, formula_name, false, cask, true, true).await
+    uninstall_impl(cache, formula_name, false, cask, true, true, "").await
 }
 
 async fn uninstall_impl(
@@ -28,6 +93,7 @@ async fn uninstall_impl(
     cask: bool,
     yes: bool,
     quiet: bool,
+    prefix: &str,
 ) -> Result<()> {
     let start = std::time::Instant::now();
 
@@ -93,7 +159,7 @@ async fn uninstall_impl(
         }
     }
 
-    uninstall_package_direct(formula_name, &package, state, dry_run, start, quiet).await
+    uninstall_package_direct(formula_name, &package, state, dry_run, start, quiet, prefix).await
 }
 
 async fn uninstall_package_direct(
@@ -103,15 +169,41 @@ async fn uninstall_package_direct(
     dry_run: bool,
     start: std::time::Instant,
     quiet: bool,
+    prefix: &str,
 ) -> Result<()> {
     if dry_run {
         if !quiet {
-            println!("- {}", formula_name);
-            let elapsed = start.elapsed();
-            println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+            println!(
+                "{}would remove {}@{}",
+                prefix,
+                style(formula_name).magenta(),
+                style(&package.version).dim()
+            );
         }
         return Ok(());
     }
+
+    set_current_op(format!("removing {}", formula_name));
+
+    let spinner = if !quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.red} {msg}")
+                .unwrap()
+                .tick_chars(SPINNER_TICK_CHARS),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        pb.set_message(format!(
+            "{}removing {}@{}...",
+            prefix,
+            style(formula_name).magenta(),
+            style(&package.version).dim()
+        ));
+        Some(pb)
+    } else {
+        None
+    };
 
     let install_mode = package.install_mode;
     let cellar = install_mode.cellar_path()?;
@@ -132,14 +224,19 @@ async fn uninstall_package_direct(
 
     state.remove(formula_name).await?;
 
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+
     if !quiet {
-        let elapsed = start.elapsed();
         println!(
-            "- {}@{}",
+            "{} {}{}{} {}",
+            style("✗").red().bold(),
+            prefix,
             style(formula_name).magenta(),
-            style(&package.version).dim()
+            style(format!("@{}", package.version)).dim(),
+            style(format!("[{}ms]", start.elapsed().as_millis())).dim(),
         );
-        println!("1 package removed [{}ms]", elapsed.as_millis());
     }
 
     Ok(())
@@ -214,14 +311,13 @@ async fn uninstall_cask(
     state.remove(cask_name).await?;
 
     if !quiet {
-        let elapsed = start.elapsed();
         println!(
-            "- {}@{} {}",
+            "{} {}{}  {}",
+            style("✗").red().bold(),
             style(cask_name).magenta(),
-            style(&cask.version).dim(),
-            style("(cask)").yellow()
+            style(format!("@{} (cask)", cask.version)).dim(),
+            style(format!("[{}ms]", start.elapsed().as_millis())).dim(),
         );
-        println!("1 package removed [{}ms]", elapsed.as_millis());
     }
 
     Ok(())
