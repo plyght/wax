@@ -10,9 +10,10 @@ pub async fn lock() -> Result<()> {
 
     let lockfile = Lockfile::generate().await?;
     let package_count = lockfile.packages.len();
+    let cask_count = lockfile.casks.len();
 
-    if package_count == 0 {
-        println!("no packages installed");
+    if package_count == 0 && cask_count == 0 {
+        println!("no packages or casks installed");
         return Ok(());
     }
 
@@ -20,12 +21,18 @@ pub async fn lock() -> Result<()> {
     lockfile.save(&lockfile_path).await?;
 
     println!(
-        "locked {} {} in wax.lock",
+        "locked {} {} and {} {} in wax.lock",
         package_count,
         if package_count == 1 {
             "package"
         } else {
             "packages"
+        },
+        cask_count,
+        if cask_count == 1 {
+            "cask"
+        } else {
+            "casks"
         }
     );
 
