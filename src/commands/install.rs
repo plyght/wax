@@ -250,7 +250,7 @@ async fn install_impl(
     cache.ensure_fresh().await?;
 
     if cask {
-        return install_multiple_casks(cache, package_names, dry_run).await;
+        return install_casks(cache, package_names, dry_run).await;
     }
 
     let install_mode = match InstallMode::from_flags(user, global)? {
@@ -280,6 +280,7 @@ async fn install_impl(
     let mut all_to_install = Vec::new();
     let mut already_installed = Vec::new();
     let mut errors = Vec::new();
+    let mut detected_casks: Vec<String> = Vec::new();
 
     for package_name in package_names {
         if installed.contains(package_name) {
@@ -313,9 +314,8 @@ async fn install_impl(
                     .any(|c| &c.token == package_name || &c.full_token == package_name);
 
                 if cask_exists {
-                    if let Err(e) = install_cask(cache, package_name, dry_run).await {
-                        errors.push((package_name.clone(), format!("cask install failed: {}", e)));
-                    }
+                    // Collect for batch install — all casks will be downloaded concurrently below
+                    detected_casks.push(package_name.clone());
                     continue;
                 }
 
@@ -389,11 +389,16 @@ async fn install_impl(
         for (pkg, err) in &errors {
             eprintln!("{}: {}", pkg, err);
         }
-        if all_to_install.is_empty() {
+        if all_to_install.is_empty() && detected_casks.is_empty() {
             return Err(WaxError::InstallError(
                 "Cannot install any packages (all failed validation)".to_string(),
             ));
         }
+    }
+
+    // Install all auto-detected casks concurrently (batch download + serial install)
+    if !detected_casks.is_empty() {
+        install_casks(cache, &detected_casks, dry_run).await?;
     }
 
     if all_to_install.is_empty() {
@@ -738,141 +743,6 @@ async fn install_impl(
     Ok(())
 }
 
-#[instrument(skip(cache))]
-async fn install_cask(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
-    let start = std::time::Instant::now();
-
-    let casks = cache.load_casks().await?;
-    let _cask_summary = casks
-        .iter()
-        .find(|c| c.token == cask_name)
-        .ok_or_else(|| WaxError::CaskNotFound(cask_name.to_string()))?;
-
-    let state = CaskState::new()?;
-    let installed_casks = state.load().await?;
-
-    if installed_casks.contains_key(cask_name) {
-        println!("{} is already installed", style(cask_name).magenta());
-        return Ok(());
-    }
-
-    let api_client = crate::api::ApiClient::new();
-    let cask = api_client.fetch_cask_details(cask_name).await?;
-
-    let display_name = cask.name.first().unwrap_or(&cask.token);
-
-    if dry_run {
-        println!();
-        println!("+ {} (cask)", cask_name);
-        println!("\ndry run - no changes made");
-        return Ok(());
-    }
-
-    let installer = CaskInstaller::new();
-    let artifact_type = if let Some(t) = detect_artifact_type(&cask.url) {
-        t
-    } else {
-        installer
-            .probe_artifact_type(&cask.url)
-            .await
-            .ok_or_else(|| {
-                WaxError::InstallError(format!(
-                    "Unsupported artifact type for URL: {}",
-                    cask.url
-                ))
-            })?
-    };
-
-    let temp_dir = TempDir::new()?;
-    let download_path = temp_dir
-        .path()
-        .join(format!("{}.{}", cask_name, artifact_type));
-
-    let pb = ProgressBar::new(0);
-    let pb_style = ProgressStyle::default_bar()
-        .template(PROGRESS_BAR_PREFIX_TEMPLATE)
-        .unwrap()
-        .progress_chars(PROGRESS_BAR_CHARS);
-    pb.set_style(pb_style);
-    pb.set_prefix(display_name.to_string());
-
-    installer
-        .download_cask(&cask.url, &download_path, Some(&pb))
-        .await?;
-    pb.finish_and_clear();
-
-    CaskInstaller::verify_checksum(&download_path, &cask.sha256)?;
-
-    let mut installed_binaries: Vec<String> = Vec::new();
-    let mut binary_paths: Vec<String> = Vec::new();
-    let mut installed_app_name: Option<String> = None;
-
-    match artifact_type {
-        "dmg" | "zip" => {
-            let app_name = if let Some(artifacts) = &cask.artifacts {
-                extract_app_name(artifacts).unwrap_or_else(|| format!("{}.app", display_name))
-            } else {
-                format!("{}.app", display_name)
-            };
-
-            if artifact_type == "dmg" {
-                installer.install_dmg(&download_path, &app_name).await?
-            } else {
-                installer.install_zip(&download_path, &app_name).await?
-            }
-            installed_app_name = Some(app_name);
-        }
-        "pkg" => installer.install_pkg(&download_path).await?,
-        "tar.gz" => {
-            let binary_name = cask_name;
-            let binary_path = installer
-                .install_tarball(&download_path, binary_name)
-                .await?;
-            installed_binaries.push(binary_name.to_string());
-            binary_paths.push(binary_path.display().to_string());
-        }
-        _ => {
-            return Err(WaxError::InstallError(format!(
-                "Unsupported artifact type: {}",
-                artifact_type
-            )))
-        }
-    }
-
-    let installed_cask = InstalledCask {
-        name: cask_name.to_string(),
-        version: cask.version.clone(),
-        install_date: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64,
-        artifact_type: Some(artifact_type.to_string()),
-        binary_paths: if binary_paths.is_empty() {
-            None
-        } else {
-            Some(binary_paths)
-        },
-        app_name: installed_app_name,
-    };
-    state.add(installed_cask).await?;
-
-    let elapsed = start.elapsed();
-
-    println!(
-        "\n+ {}@{} {}",
-        style(cask_name).magenta(),
-        style(&cask.version).dim(),
-        style("(cask)").yellow()
-    );
-    if !installed_binaries.is_empty() {
-        for binary in installed_binaries {
-            println!("  {}", binary);
-        }
-    }
-    println!("1 cask installed [{}ms]", elapsed.as_millis());
-
-    Ok(())
-}
 
 fn extract_app_name(artifacts: &[crate::api::CaskArtifact]) -> Option<String> {
     use crate::api::CaskArtifact;
@@ -890,12 +760,17 @@ fn extract_app_name(artifacts: &[crate::api::CaskArtifact]) -> Option<String> {
     None
 }
 
-#[instrument(skip(cache))]
-async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> Result<()> {
-    if cask_names.len() == 1 {
-        return install_cask(cache, &cask_names[0], dry_run).await;
-    }
+struct DownloadedCask {
+    name: String,
+    details: crate::api::CaskDetails,
+    artifact_type: &'static str,
+    download_path: std::path::PathBuf,
+    // keep temp dir alive until install is done
+    _temp_dir: TempDir,
+}
 
+#[instrument(skip(cache))]
+async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> Result<()> {
     let start = std::time::Instant::now();
     let casks = cache.load_casks().await?;
     let state = CaskState::new()?;
@@ -903,128 +778,177 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
 
     let mut to_install = Vec::new();
     let mut already_installed = Vec::new();
-    let mut errors = Vec::new();
 
     for cask_name in cask_names {
         if installed_casks.contains_key(cask_name) {
             already_installed.push(cask_name.clone());
-            continue;
-        }
-
-        if casks.iter().any(|c| &c.token == cask_name) {
+        } else if casks.iter().any(|c| &c.token == cask_name || &c.full_token == cask_name) {
             to_install.push(cask_name.clone());
         } else {
-            errors.push((cask_name.clone(), "Cask not found".to_string()));
+            eprintln!("{}: cask not found", style(cask_name).magenta());
         }
     }
 
     if !already_installed.is_empty() {
-        println!(
-            "already installed: {}",
-            style(already_installed.join(", ")).magenta()
-        );
-    }
-
-    if !errors.is_empty() {
-        for (cask, err) in &errors {
-            eprintln!("{}: {}", style(cask).magenta(), err);
+        for name in &already_installed {
+            println!("{} is already installed", style(name).magenta());
         }
     }
 
     if to_install.is_empty() {
-        if errors.is_empty() {
-            println!("no packages to install");
-        }
-        return if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(WaxError::CaskNotFound(
-                "No valid casks to install".to_string(),
-            ))
-        };
-    }
-
-    println!(
-        "installing {} {}",
-        to_install.len(),
-        if to_install.len() == 1 {
-            "cask"
-        } else {
-            "casks"
-        }
-    );
-    println!("  casks: {}", to_install.join(", "));
-
-    if dry_run {
-        println!("\ndry run - no changes made");
         return Ok(());
     }
 
-    // Fetch all cask details concurrently
+    println!(
+        "installing {}\n",
+        to_install
+            .iter()
+            .map(|n| format!("{} (cask)", style(n).magenta()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    if dry_run {
+        println!("dry run - no changes made");
+        return Ok(());
+    }
+
+    // --- Phase 1: fetch all details + probe artifact types concurrently ---
     let api_client = Arc::new(crate::api::ApiClient::new());
+    let installer = Arc::new(CaskInstaller::new());
     let semaphore = Arc::new(Semaphore::new(8));
 
     let detail_tasks: Vec<_> = to_install
         .iter()
         .map(|name| {
             let api = Arc::clone(&api_client);
+            let inst = Arc::clone(&installer);
             let sem = Arc::clone(&semaphore);
             let name = name.clone();
             tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 let details = api.fetch_cask_details(&name).await?;
-                Ok::<_, WaxError>((name, details))
+                let artifact_type = if let Some(t) = detect_artifact_type(&details.url) {
+                    t
+                } else {
+                    inst.probe_artifact_type(&details.url).await.ok_or_else(|| {
+                        WaxError::InstallError(format!(
+                            "Unsupported artifact type for URL: {}",
+                            details.url
+                        ))
+                    })?
+                };
+                Ok::<_, WaxError>((name, details, artifact_type))
             })
         })
         .collect();
 
-    let mut cask_details = Vec::new();
+    let mut resolved = Vec::new();
     for task in detail_tasks {
         match task.await {
-            Ok(Ok(data)) => cask_details.push(data),
-            Ok(Err(e)) => {
-                eprintln!("failed to fetch cask details: {}", e);
-            }
-            Err(e) => {
-                eprintln!("task failed: {}", e);
-            }
+            Ok(Ok(data)) => resolved.push(data),
+            Ok(Err(e)) => eprintln!("{} {}", style("✗").red(), e),
+            Err(e) => eprintln!("{} task error: {}", style("✗").red(), e),
         }
     }
 
-    // Install sequentially (DMG mounting/copying requires serial FS access)
+    if resolved.is_empty() {
+        return Err(WaxError::InstallError("No casks could be resolved".to_string()));
+    }
+
+    // --- Phase 2: download all concurrently with shared MultiProgress ---
+    let multi = Arc::new(MultiProgress::new());
+
+    let download_tasks: Vec<_> = resolved
+        .into_iter()
+        .map(|(name, details, artifact_type)| {
+            let inst = Arc::clone(&installer);
+            let multi = Arc::clone(&multi);
+            tokio::spawn(async move {
+                let temp_dir = TempDir::new()?;
+                let download_path = temp_dir
+                    .path()
+                    .join(format!("{}.{}", name, artifact_type));
+
+                let pb = multi.add(ProgressBar::new(0));
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(PROGRESS_BAR_PREFIX_TEMPLATE)
+                        .unwrap()
+                        .progress_chars(PROGRESS_BAR_CHARS),
+                );
+                pb.set_prefix(name.clone());
+
+                inst.download_cask(&details.url, &download_path, Some(&pb)).await?;
+                pb.finish_and_clear();
+
+                Ok::<_, WaxError>(DownloadedCask {
+                    name,
+                    details,
+                    artifact_type,
+                    download_path,
+                    _temp_dir: temp_dir,
+                })
+            })
+        })
+        .collect();
+
+    let mut downloaded = Vec::new();
+    for task in download_tasks {
+        match task.await {
+            Ok(Ok(d)) => downloaded.push(d),
+            Ok(Err(e)) => eprintln!("{} download failed: {}", style("✗").red(), e),
+            Err(e) => eprintln!("{} task error: {}", style("✗").red(), e),
+        }
+    }
+
+    // --- Phase 3: verify checksums + install serially ---
     let mut installed_count = 0;
     let mut failed = Vec::new();
 
-    for (cask_name, _cask) in &cask_details {
+    for d in &downloaded {
         check_cancelled()?;
-        match install_cask(cache, cask_name, false).await {
-            Ok(_) => installed_count += 1,
+
+        if let Err(e) = CaskInstaller::verify_checksum(&d.download_path, &d.details.sha256) {
+            eprintln!("{} {} checksum failed: {}", style("✗").red(), style(&d.name).magenta(), e);
+            failed.push(d.name.clone());
+            continue;
+        }
+
+        let result = install_from_downloaded(&d.details, d.artifact_type, &d.download_path).await;
+        match result {
+            Ok(installed_cask) => {
+                let state = CaskState::new()?;
+                state.add(installed_cask).await?;
+                println!(
+                    "{} {} (cask) {}",
+                    style("✓").green().bold(),
+                    style(&d.name).magenta(),
+                    style(&d.details.version).dim()
+                );
+                installed_count += 1;
+            }
             Err(e) => {
-                eprintln!("failed to install {}: {}", style(cask_name).magenta(), e);
-                failed.push(cask_name.clone());
+                eprintln!("{} {} failed: {}", style("✗").red(), style(&d.name).magenta(), e);
+                failed.push(d.name.clone());
             }
         }
     }
 
     let elapsed = start.elapsed();
-
     if failed.is_empty() {
         println!(
-            "{} {} installed [{}ms]",
+            "\n{} {} installed [{}ms]",
             installed_count,
-            if installed_count == 1 {
-                "cask"
-            } else {
-                "casks"
-            },
+            if installed_count == 1 { "cask" } else { "casks" },
             elapsed.as_millis()
         );
         Ok(())
     } else {
         println!(
-            "{}/{} casks installed ({} failed) [{}ms]",
+            "\n{}/{} casks installed ({} failed) [{}ms]",
             installed_count,
-            to_install.len(),
+            downloaded.len(),
             failed.len(),
             elapsed.as_millis()
         );
@@ -1033,4 +957,58 @@ async fn install_multiple_casks(cache: &Cache, cask_names: &[String], dry_run: b
             failed.join(", ")
         )))
     }
+}
+
+/// Install a cask from an already-downloaded file (skips download).
+async fn install_from_downloaded(
+    cask: &crate::api::CaskDetails,
+    artifact_type: &'static str,
+    download_path: &std::path::Path,
+) -> Result<InstalledCask> {
+    let installer = CaskInstaller::new();
+    let display_name = cask.name.first().unwrap_or(&cask.token);
+
+    let mut binary_paths: Vec<String> = Vec::new();
+    let mut installed_app_name: Option<String> = None;
+
+    match artifact_type {
+        "dmg" | "zip" => {
+            let app_name = if let Some(artifacts) = &cask.artifacts {
+                extract_app_name(artifacts).unwrap_or_else(|| format!("{}.app", display_name))
+            } else {
+                format!("{}.app", display_name)
+            };
+            if artifact_type == "dmg" {
+                installer.install_dmg(download_path, &app_name).await?;
+            } else {
+                installer.install_zip(download_path, &app_name).await?;
+            }
+            installed_app_name = Some(app_name);
+        }
+        "pkg" => installer.install_pkg(download_path).await?,
+        "tar.gz" => {
+            let binary_path = installer
+                .install_tarball(download_path, &cask.token)
+                .await?;
+            binary_paths.push(binary_path.display().to_string());
+        }
+        _ => {
+            return Err(WaxError::InstallError(format!(
+                "Unsupported artifact type: {}",
+                artifact_type
+            )));
+        }
+    }
+
+    Ok(InstalledCask {
+        name: cask.token.clone(),
+        version: cask.version.clone(),
+        install_date: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+        artifact_type: Some(artifact_type.to_string()),
+        binary_paths: if binary_paths.is_empty() { None } else { Some(binary_paths) },
+        app_name: installed_app_name,
+    })
 }
