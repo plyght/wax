@@ -134,7 +134,20 @@ impl BottleDownloader {
         let decoder = GzDecoder::new(file);
         let mut archive = Archive::new(decoder);
 
-        archive.unpack(dest_dir)?;
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.into_owned();
+            let full_path = dest_dir.join(&path);
+
+            if entry.header().entry_type().is_dir() {
+                std::fs::create_dir_all(&full_path)?;
+            } else {
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                entry.unpack(&full_path)?;
+            }
+        }
 
         debug!("Extraction complete");
         Ok(())
