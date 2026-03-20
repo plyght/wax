@@ -1,5 +1,5 @@
 use crate::api::ApiClient;
-use crate::bottle::detect_platform;
+use crate::bottle::{detect_platform, BottleDownloader};
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::commands::{install, uninstall};
@@ -10,11 +10,14 @@ use crate::signal::{
     check_cancelled, clear_active_multi, clear_current_op, set_active_multi, set_current_op,
     CriticalSection,
 };
-use crate::ui::{PROGRESS_BAR_CHARS, SPINNER_TICK_CHARS};
+use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
 use crate::version::is_same_or_newer;
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tempfile::TempDir;
+use tokio::sync::Semaphore;
 use tracing::instrument;
 
 #[derive(Debug)]
@@ -156,6 +159,90 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     set_active_multi(multi.clone());
     let _guard = UpgradeMultiGuard;
 
+    // --- Phase 0: pre-download all formula bottles concurrently ---
+    let platform = detect_platform();
+    let formula_by_name: HashMap<&str, &crate::api::Formula> =
+        formulae.iter().map(|f| (f.name.as_str(), f)).collect();
+
+    struct PreDownloaded {
+        name: String,
+        version: String,
+        extract_dir: std::path::PathBuf,
+        bottle_sha: String,
+        bottle_rebuild: u32,
+        _temp_dir: Arc<TempDir>,
+    }
+
+    let downloader = Arc::new(BottleDownloader::new());
+    let semaphore = Arc::new(Semaphore::new(6));
+    let temp_dir = Arc::new(TempDir::new()?);
+
+    let download_tasks: Vec<_> = outdated
+        .iter()
+        .filter(|pkg| !pkg.is_cask)
+        .filter_map(|pkg| {
+            let formula = formula_by_name.get(pkg.name.as_str())?;
+            let bottle_info = formula.bottle.as_ref()?.stable.as_ref()?;
+            let bottle_file = bottle_info.files.get(&platform)
+                .or_else(|| bottle_info.files.get("all"))?;
+
+            let url = bottle_file.url.clone();
+            let sha256 = bottle_file.sha256.clone();
+            let name = pkg.name.clone();
+            let version = formula.versions.stable.clone();
+            let rebuild = formula.bottle_rebuild();
+            let dl = Arc::clone(&downloader);
+            let sem = Arc::clone(&semaphore);
+            let tmp = Arc::clone(&temp_dir);
+            let multi_ref = multi.clone();
+
+            Some(tokio::spawn(async move {
+                let _permit = sem.acquire().await.unwrap();
+                crate::signal::check_cancelled()?;
+
+                let tarball = tmp.path().join(format!("{}-{}.tar.gz", name, version));
+                let pb = multi_ref.add(ProgressBar::new(0));
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(PROGRESS_BAR_TEMPLATE)
+                        .unwrap()
+                        .progress_chars(PROGRESS_BAR_CHARS),
+                );
+                pb.set_message(name.clone());
+
+                dl.download(&url, &tarball, Some(&pb)).await?;
+                pb.finish_and_clear();
+
+                BottleDownloader::verify_checksum(&tarball, &sha256)?;
+
+                let extract_dir = tmp.path().join(&name);
+                BottleDownloader::extract(&tarball, &extract_dir)?;
+
+                Ok::<_, WaxError>(PreDownloaded {
+                    name,
+                    version,
+                    extract_dir,
+                    bottle_sha: sha256,
+                    bottle_rebuild: rebuild,
+                    _temp_dir: tmp,
+                })
+            }))
+        })
+        .collect();
+
+    let mut pre_downloaded: HashMap<String, PreDownloaded> = HashMap::new();
+    for task in download_tasks {
+        match task.await {
+            Ok(Ok(d)) => { pre_downloaded.insert(d.name.clone(), d); }
+            Ok(Err(e)) => { let _ = multi.println(format!("{} download failed: {}", style("✗").red(), e)); }
+            Err(e) => { let _ = multi.println(format!("{} task error: {}", style("✗").red(), e)); }
+        }
+    }
+
+    // --- Phase 1: serial uninstall + install using pre-downloaded bottles ---
+    let install_state = InstallState::new()?;
+    let install_mode_global = InstallMode::detect();
+
     let mut success_count = 0;
     let mut fail_count = 0;
     let mut failed_names: Vec<String> = Vec::new();
@@ -190,21 +277,22 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
 
         let result = match uninstall_result {
             Ok(()) => {
-                let pb = multi.add(ProgressBar::new(0));
-                pb.set_style(
-                    ProgressStyle::default_bar()
-                        .template(&format!(
-                            "{{spinner:.green}} {} {{bar:30.cyan/blue}} {{bytes}}/{{total_bytes}} {{bytes_per_sec}}",
-                            label
-                        ))
-                        .unwrap()
-                        .progress_chars(PROGRESS_BAR_CHARS),
-                );
-                pb.enable_steady_tick(std::time::Duration::from_millis(80));
                 set_current_op(format!("installing {}", pkg.name));
 
-                let install_result = if pkg.is_cask {
-                    install::install_quiet_with_progress(
+                if pkg.is_cask {
+                    // Casks: use the normal install path
+                    let pb = multi.add(ProgressBar::new(0));
+                    pb.set_style(
+                        ProgressStyle::default_bar()
+                            .template(&format!(
+                                "{{spinner:.green}} {} {{bar:30.cyan/blue}} {{bytes}}/{{total_bytes}} {{bytes_per_sec}}",
+                                label
+                            ))
+                            .unwrap()
+                            .progress_chars(PROGRESS_BAR_CHARS),
+                    );
+                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                    let r = install::install_quiet_with_progress(
                         cache,
                         std::slice::from_ref(&pkg.name),
                         true,
@@ -212,14 +300,45 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                         false,
                         &pb,
                     )
+                    .await;
+                    pb.finish_and_clear();
+                    r
+                } else if let Some(dl) = pre_downloaded.remove(&pkg.name) {
+                    // Formula: use pre-downloaded bottle
+                    let pkg_install_mode = pkg.install_mode.unwrap_or(install_mode_global);
+                    let pkg_cellar = pkg_install_mode.cellar_path()?;
+                    install::install_extracted_bottle(
+                        &dl.name,
+                        &dl.version,
+                        &dl.extract_dir,
+                        dl.bottle_sha,
+                        dl.bottle_rebuild,
+                        &pkg_cellar,
+                        pkg_install_mode,
+                        &platform,
+                        &install_state,
+                        true, /* quiet — status printed below */
+                    )
                     .await
                 } else {
+                    // Fallback: bottle wasn't pre-downloaded (e.g. source-only)
                     let (user_flag, global_flag) = match pkg.install_mode {
                         Some(InstallMode::User) => (true, false),
                         Some(InstallMode::Global) => (false, true),
                         _ => (false, false),
                     };
-                    install::install_quiet_with_progress(
+                    let pb = multi.add(ProgressBar::new(0));
+                    pb.set_style(
+                        ProgressStyle::default_bar()
+                            .template(&format!(
+                                "{{spinner:.green}} {} {{bar:30.cyan/blue}} {{bytes}}/{{total_bytes}} {{bytes_per_sec}}",
+                                label
+                            ))
+                            .unwrap()
+                            .progress_chars(PROGRESS_BAR_CHARS),
+                    );
+                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                    let r = install::install_quiet_with_progress(
                         cache,
                         std::slice::from_ref(&pkg.name),
                         false,
@@ -227,10 +346,10 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                         global_flag,
                         &pb,
                     )
-                    .await
-                };
-                pb.finish_and_clear();
-                install_result
+                    .await;
+                    pb.finish_and_clear();
+                    r
+                }
             }
             Err(e) => Err(e),
         };
