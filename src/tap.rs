@@ -465,6 +465,7 @@ impl TapManager {
                             disable_reason: None,
                             keg_only: None,
                             keg_only_reason: None,
+                            post_install_defined: false,
                         };
                         Ok(vec![formula])
                     }
@@ -516,6 +517,7 @@ impl TapManager {
                                     disable_reason: None,
                                     keg_only: None,
                                     keg_only_reason: None,
+                                    post_install_defined: false,
                                 };
                                 formulae.push(formula);
                             }

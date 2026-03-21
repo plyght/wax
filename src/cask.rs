@@ -185,6 +185,111 @@ impl Default for CaskState {
     }
 }
 
+pub struct StagingContext {
+    pub staging_root: PathBuf,
+    mount_point: Option<PathBuf>,
+    _temp_dir: tempfile::TempDir,
+}
+
+impl StagingContext {
+    pub async fn new(download_path: &Path, artifact_type: &str) -> Result<Self> {
+        let temp_dir = tempfile::tempdir()?;
+        let staging_root = temp_dir.path().to_path_buf();
+        let mut mount_point = None;
+
+        match artifact_type {
+            "dmg" => {
+                let mp = staging_root.join("mount");
+                tokio::fs::create_dir_all(&mp).await?;
+
+                let attach_output = tokio::process::Command::new("hdiutil")
+                    .arg("attach")
+                    .arg("-nobrowse")
+                    .arg("-quiet")
+                    .arg("-mountpoint")
+                    .arg(&mp)
+                    .arg(download_path)
+                    .output()
+                    .await?;
+
+                if !attach_output.status.success() {
+                    return Err(WaxError::InstallError(format!(
+                        "Failed to mount DMG: {}",
+                        String::from_utf8_lossy(&attach_output.stderr)
+                    )));
+                }
+                mount_point = Some(mp);
+            }
+            "zip" => {
+                let unzip_output = tokio::process::Command::new("unzip")
+                    .arg("-q")
+                    .arg("-o")
+                    .arg(download_path)
+                    .arg("-d")
+                    .arg(&staging_root)
+                    .output()
+                    .await?;
+
+                if !unzip_output.status.success() {
+                    return Err(WaxError::InstallError(format!(
+                        "Failed to extract ZIP: {}",
+                        String::from_utf8_lossy(&unzip_output.stderr)
+                    )));
+                }
+            }
+            "tar.gz" | "tar" | "tgz" | "tar.bz2" | "tbz" | "tar.xz" | "txz" => {
+                let tar_output = tokio::process::Command::new("tar")
+                    .arg("-xf")
+                    .arg(download_path)
+                    .arg("-C")
+                    .arg(&staging_root)
+                    .output()
+                    .await?;
+
+                if !tar_output.status.success() {
+                    return Err(WaxError::InstallError(format!(
+                        "Failed to extract tarball: {}",
+                        String::from_utf8_lossy(&tar_output.stderr)
+                    )));
+                }
+            }
+            _ => {
+                // For "pkg" or "binary", copy the file to the staging root to be consistent
+                let dest = staging_root.join(
+                    download_path
+                        .file_name()
+                        .ok_or_else(|| WaxError::InstallError("Invalid download path".into()))?,
+                );
+                tokio::fs::copy(download_path, &dest).await?;
+            }
+        }
+
+        let actual_staging_root = if let Some(ref mp) = mount_point {
+            mp.clone()
+        } else {
+            staging_root
+        };
+
+        Ok(Self {
+            staging_root: actual_staging_root,
+            mount_point,
+            _temp_dir: temp_dir,
+        })
+    }
+}
+
+impl Drop for StagingContext {
+    fn drop(&mut self) {
+        if let Some(ref mp) = self.mount_point {
+            let _ = std::process::Command::new("hdiutil")
+                .arg("detach")
+                .arg(mp)
+                .arg("-quiet")
+                .status();
+        }
+    }
+}
+
 pub struct CaskInstaller {
     downloader: BottleDownloader,
 }
@@ -210,7 +315,7 @@ impl CaskInstaller {
         }
     }
 
-    fn applications_dir() -> Result<PathBuf> {
+    pub fn applications_dir() -> Result<PathBuf> {
         #[cfg(target_os = "macos")]
         {
             Ok(PathBuf::from("/Applications"))
@@ -223,7 +328,7 @@ impl CaskInstaller {
         }
     }
 
-    async fn detect_writable_bin_dir() -> Result<PathBuf> {
+    pub async fn detect_writable_bin_dir() -> Result<PathBuf> {
         let candidates = vec![
             crate::bottle::homebrew_prefix().join("bin"),
             PathBuf::from("/usr/local/bin"),
@@ -350,65 +455,24 @@ impl CaskInstaller {
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    pub async fn install_dmg(&self, dmg_path: &Path, app_name: &str) -> Result<()> {
+    #[instrument(skip(self, staging))]
+    pub async fn install_app(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
         Self::check_platform_support()?;
-        info!("Installing DMG: {:?}", dmg_path);
+        let source = staging.staging_root.join(source_rel);
+        let app_name = Path::new(source_rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| WaxError::InstallError(format!("Invalid app source: {}", source_rel)))?;
 
-        // Use a temp dir as mountpoint — /Volumes is root-owned on modern macOS
-        let mount_dir = tempfile::tempdir()?;
-        let mount_point = mount_dir.path().to_path_buf();
+        info!("Installing app: {}", app_name);
 
-        let attach_output = tokio::process::Command::new("hdiutil")
-            .arg("attach")
-            .arg("-nobrowse")
-            .arg("-quiet")
-            .arg("-mountpoint")
-            .arg(&mount_point)
-            .arg(dmg_path)
-            .output()
-            .await?;
-
-        if !attach_output.status.success() {
+        if !source.exists() {
             return Err(WaxError::InstallError(format!(
-                "Failed to mount DMG: {}",
-                String::from_utf8_lossy(&attach_output.stderr)
+                "App source does not exist: {:?}",
+                source
             )));
         }
 
-        let app_source = mount_point.join(app_name);
-        if !app_source.exists() {
-            let mut found_app = None;
-            let mut entries = tokio::fs::read_dir(&mount_point).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("app") {
-                    found_app = Some(path);
-                    break;
-                }
-            }
-
-            if let Some(found) = found_app {
-                self.copy_app(&found, app_name).await?;
-            } else {
-                let _ = self.unmount_dmg(&mount_point).await;
-                return Err(WaxError::InstallError(format!(
-                    "Could not find {} in DMG",
-                    app_name
-                )));
-            }
-        } else {
-            self.copy_app(&app_source, app_name).await?;
-        }
-
-        self.unmount_dmg(&mount_point).await?;
-        // mount_dir (tempdir) is cleaned up automatically on drop
-
-        info!("Successfully installed {}", app_name);
-        Ok(())
-    }
-
-    async fn copy_app(&self, source: &Path, app_name: &str) -> Result<()> {
         let app_dest = Self::applications_dir()?.join(app_name);
 
         // Remove existing app bundle before copying (upgrade path)
@@ -418,7 +482,7 @@ impl CaskInstaller {
 
         let cp_output = tokio::process::Command::new("cp")
             .arg("-R")
-            .arg(source)
+            .arg(&source)
             .arg(&app_dest)
             .output()
             .await?;
@@ -433,37 +497,25 @@ impl CaskInstaller {
         Ok(())
     }
 
-    async fn unmount_dmg(&self, mount_point: &Path) -> Result<()> {
-        debug!("Unmounting DMG at {:?}", mount_point);
-
-        let detach_output = tokio::process::Command::new("hdiutil")
-            .arg("detach")
-            .arg(mount_point)
-            .arg("-quiet")
-            .output()
-            .await?;
-
-        if !detach_output.status.success() {
-            debug!(
-                "Warning: Failed to unmount DMG: {}",
-                String::from_utf8_lossy(&detach_output.stderr)
-            );
-        }
-
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    pub async fn install_pkg(&self, pkg_path: &Path) -> Result<()> {
+    #[instrument(skip(self, staging))]
+    pub async fn install_pkg(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
         Self::check_platform_support()?;
-        info!("Installing PKG: {:?}", pkg_path);
+        let source = staging.staging_root.join(source_rel);
+        info!("Installing PKG: {:?}", source);
+
+        if !source.exists() {
+            return Err(WaxError::InstallError(format!(
+                "PKG source does not exist: {:?}",
+                source
+            )));
+        }
 
         println!("\n⚠️  PKG installer requires administrator privileges");
 
         let install_output = tokio::process::Command::new("sudo")
             .arg("installer")
             .arg("-pkg")
-            .arg(pkg_path)
+            .arg(&source)
             .arg("-target")
             .arg("/")
             .output()
@@ -480,134 +532,39 @@ impl CaskInstaller {
         Ok(())
     }
 
-    #[instrument(skip(self))]
-    pub async fn install_zip(&self, zip_path: &Path, app_name: &str) -> Result<()> {
+    #[instrument(skip(self, staging))]
+    pub async fn install_binary(
+        &self,
+        staging: &StagingContext,
+        source_rel: &str,
+        target_name: Option<&str>,
+    ) -> Result<PathBuf> {
         Self::check_platform_support()?;
-        info!("Installing ZIP: {:?}", zip_path);
+        let source = staging.staging_root.join(source_rel);
+        let name = target_name.unwrap_or_else(|| {
+            Path::new(source_rel)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(source_rel)
+        });
 
-        let temp_dir = tempfile::tempdir()?;
+        info!("Installing binary: {} from {:?}", name, source);
 
-        let unzip_output = tokio::process::Command::new("unzip")
-            .arg("-q")
-            .arg(zip_path)
-            .arg("-d")
-            .arg(temp_dir.path())
-            .output()
-            .await?;
-
-        if !unzip_output.status.success() {
+        if !source.exists() {
             return Err(WaxError::InstallError(format!(
-                "Failed to extract ZIP: {}",
-                String::from_utf8_lossy(&unzip_output.stderr)
+                "Binary source does not exist: {:?}",
+                source
             )));
         }
 
-        let app_source = temp_dir.path().join(app_name);
-        if !app_source.exists() {
-            let mut found_app = None;
-            let mut entries = tokio::fs::read_dir(temp_dir.path()).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("app") {
-                    found_app = Some(path);
-                    break;
-                }
-            }
-
-            if let Some(found) = found_app {
-                self.copy_app(&found, app_name).await?;
-            } else {
-                return Err(WaxError::InstallError(format!(
-                    "Could not find {} in ZIP",
-                    app_name
-                )));
-            }
-        } else {
-            self.copy_app(&app_source, app_name).await?;
-        }
-
-        info!("Successfully installed {}", app_name);
-        Ok(())
-    }
-
-    fn find_binary_recursive<'a>(
-        dir: &'a std::path::Path,
-        binary_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<PathBuf>> + Send + 'a>> {
-        Box::pin(async move {
-            let mut entries = match tokio::fs::read_dir(dir).await {
-                Ok(e) => e,
-                Err(_) => return None,
-            };
-            let mut fallback_executable: Option<PathBuf> = None;
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                let Ok(metadata) = tokio::fs::metadata(&path).await else {
-                    continue;
-                };
-                if metadata.is_dir() {
-                    if let Some(found) =
-                        Self::find_binary_recursive(&path, binary_name).await
-                    {
-                        return Some(found);
-                    }
-                } else if metadata.is_file() {
-                    if path.file_name().and_then(|s| s.to_str()) == Some(binary_name) {
-                        return Some(path);
-                    }
-                    #[cfg(unix)]
-                    if fallback_executable.is_none() {
-                        use std::os::unix::fs::PermissionsExt;
-                        if metadata.permissions().mode() & 0o111 != 0 {
-                            fallback_executable = Some(path);
-                        }
-                    }
-                }
-            }
-            fallback_executable
-        })
-    }
-
-    #[instrument(skip(self))]
-    pub async fn install_tarball(&self, tarball_path: &Path, binary_name: &str) -> Result<PathBuf> {
-        info!("Installing tarball: {:?}", tarball_path);
-
-        let temp_dir = tempfile::tempdir()?;
-
-        let tar_output = tokio::process::Command::new("tar")
-            .arg("-xzf")
-            .arg(tarball_path)
-            .arg("-C")
-            .arg(temp_dir.path())
-            .output()
-            .await?;
-
-        if !tar_output.status.success() {
-            return Err(WaxError::InstallError(format!(
-                "Failed to extract tarball: {}",
-                String::from_utf8_lossy(&tar_output.stderr)
-            )));
-        }
-
-        let bin_dest = Self::detect_writable_bin_dir().await?;
-
-        let found_binary = Self::find_binary_recursive(temp_dir.path(), binary_name).await;
-
-        let binary_source = found_binary.ok_or_else(|| {
-            WaxError::InstallError("Could not find executable binary in tarball".to_string())
-        })?;
-
-        let binary_dest_path = bin_dest.join(binary_name);
+        let bin_dest_dir = Self::detect_writable_bin_dir().await?;
+        let binary_dest_path = bin_dest_dir.join(name);
 
         if binary_dest_path.exists() {
-            return Err(WaxError::InstallError(format!(
-                "{} already exists in {}",
-                binary_name,
-                bin_dest.display()
-            )));
+            tokio::fs::remove_file(&binary_dest_path).await.ok();
         }
 
-        tokio::fs::copy(&binary_source, &binary_dest_path).await?;
+        tokio::fs::copy(&source, &binary_dest_path).await?;
 
         #[cfg(unix)]
         {
@@ -617,13 +574,189 @@ impl CaskInstaller {
             tokio::fs::set_permissions(&binary_dest_path, perms).await?;
         }
 
-        info!(
-            "Successfully installed {} to {}",
-            binary_name,
-            bin_dest.display()
-        );
+        info!("Successfully installed {} to {}", name, bin_dest_dir.display());
 
         Ok(binary_dest_path)
+    }
+
+    #[instrument(skip(self, staging))]
+    pub async fn install_font(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
+        Self::check_platform_support()?;
+        let source = staging.staging_root.join(source_rel);
+        let font_name = Path::new(source_rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| WaxError::InstallError(format!("Invalid font source: {}", source_rel)))?;
+
+        let user_fonts = dirs::home_dir()?.join("Library/Fonts");
+        tokio::fs::create_dir_all(&user_fonts).await?;
+        let dest = user_fonts.join(font_name);
+
+        if dest.exists() {
+            tokio::fs::remove_file(&dest).await.ok();
+        }
+
+        tokio::fs::copy(&source, &dest).await?;
+        Ok(())
+    }
+
+    #[instrument(skip(self, staging))]
+    pub async fn install_manpage(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
+        Self::check_platform_support()?;
+        let source = staging.staging_root.join(source_rel);
+        let man_name = Path::new(source_rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                WaxError::InstallError(format!("Invalid manpage source: {}", source_rel))
+            })?;
+
+        let man_prefix = crate::bottle::homebrew_prefix().join("share/man");
+        // Determine man section (e.g. man1, man8) from extension
+        let section = Path::new(man_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("man1");
+        let dest_dir = man_prefix.join(format!("man{}", section));
+        tokio::fs::create_dir_all(&dest_dir).await?;
+        let dest = dest_dir.join(man_name);
+
+        if dest.exists() {
+            tokio::fs::remove_file(&dest).await.ok();
+        }
+
+        tokio::fs::copy(&source, &dest).await?;
+        Ok(())
+    }
+
+    #[instrument(skip(self, staging))]
+    pub async fn install_artifact(
+        &self,
+        staging: &StagingContext,
+        source_rel: &str,
+        target_path: &str,
+    ) -> Result<()> {
+        Self::check_platform_support()?;
+        let source = staging.staging_root.join(source_rel);
+        let dest = PathBuf::from(target_path);
+
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        if dest.exists() {
+            if dest.is_dir() {
+                tokio::fs::remove_dir_all(&dest).await?;
+            } else {
+                tokio::fs::remove_file(&dest).await?;
+            }
+        }
+
+        let cp_output = tokio::process::Command::new("cp")
+            .arg("-R")
+            .arg(&source)
+            .arg(&dest)
+            .output()
+            .await?;
+
+        if !cp_output.status.success() {
+            return Err(WaxError::InstallError(format!(
+                "Failed to copy artifact: {}",
+                String::from_utf8_lossy(&cp_output.stderr)
+            )));
+        }
+
+        Ok(())
+    }
+
+    pub async fn install_generic_directory(
+        &self,
+        staging: &StagingContext,
+        source_rel: &str,
+        dest_parent: &Path,
+    ) -> Result<()> {
+        Self::check_platform_support()?;
+        let source = staging.staging_root.join(source_rel);
+        let name = Path::new(source_rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| WaxError::InstallError(format!("Invalid source: {}", source_rel)))?;
+
+        tokio::fs::create_dir_all(dest_parent).await?;
+        let dest = dest_parent.join(name);
+
+        if dest.exists() {
+            tokio::fs::remove_dir_all(&dest).await?;
+        }
+
+        let cp_output = tokio::process::Command::new("cp")
+            .arg("-R")
+            .arg(&source)
+            .arg(&dest)
+            .output()
+            .await?;
+
+        if !cp_output.status.success() {
+            return Err(WaxError::InstallError(format!(
+                "Failed to copy to {:?}: {}",
+                dest_parent,
+                String::from_utf8_lossy(&cp_output.stderr)
+            )));
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self, staging))]
+    pub async fn install_completion(
+        &self,
+        staging: &StagingContext,
+        source_rel: &str,
+        shell: &str,
+        token: &str,
+    ) -> Result<()> {
+        Self::check_platform_support()?;
+        
+        // Handle $APPDIR placeholder which is common in Homebrew completion artifacts
+        let path = source_rel.replace("$APPDIR", staging.staging_root.to_str().unwrap_or(""));
+        let source = if path.starts_with('/') {
+            PathBuf::from(path)
+        } else {
+            staging.staging_root.join(path)
+        };
+
+        if !source.exists() {
+            debug!("Completion source not found at {:?}, skipping", source);
+            return Ok(());
+        }
+
+        let prefix = crate::bottle::homebrew_prefix();
+        let dest_dir = match shell {
+            "bash" => prefix.join("etc/bash_completion.d"),
+            "zsh" => prefix.join("share/zsh/site-functions"),
+            "fish" => prefix.join("share/fish/vendor_completions.d"),
+            _ => return Err(WaxError::InstallError(format!("Unsupported shell: {}", shell))),
+        };
+
+        tokio::fs::create_dir_all(&dest_dir).await?;
+        let filename = Path::new(source_rel)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(token);
+        
+        let dest = dest_dir.join(filename);
+
+        if dest.exists() {
+            tokio::fs::remove_file(&dest).await.ok();
+        }
+
+        if source.is_dir() {
+            crate::ui::copy_dir_all(&source, &dest)?;
+        } else {
+            tokio::fs::copy(&source, &dest).await?;
+        }
+
+        Ok(())
     }
 }
 
@@ -643,7 +776,7 @@ pub fn detect_artifact_type(url: &str) -> Option<&'static str> {
         Some("pkg")
     } else if path.ends_with(".zip") {
         Some("zip")
-    } else if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
+    } else if path.ends_with(".tar.gz") || path.ends_with(".tgz") || path.ends_with(".tar.bz2") || path.ends_with(".tbz") || path.ends_with(".tar.xz") || path.ends_with(".txz") {
         Some("tar.gz")
     } else {
         None
@@ -653,7 +786,8 @@ pub fn detect_artifact_type(url: &str) -> Option<&'static str> {
 pub fn detect_artifact_type_from_content_type(content_type: &str) -> Option<&'static str> {
     let ct = content_type.split(';').next().unwrap_or(content_type).trim();
     match ct {
-        "application/x-apple-diskimage" | "application/octet-stream" => None, // ambiguous
+        "application/x-apple-diskimage" => Some("dmg"),
+        "application/octet-stream" => Some("binary"),
         "application/zip" | "application/x-zip-compressed" => Some("zip"),
         "application/x-tar" | "application/gzip" | "application/x-gzip" => Some("tar.gz"),
         "application/x-pkg" | "application/vnd.apple.installer+xml" => Some("pkg"),
@@ -679,4 +813,3 @@ pub fn detect_artifact_type_from_disposition(disposition: &str) -> Option<&'stat
     }
     None
 }
-

@@ -284,7 +284,7 @@ async fn uninstall_cask(
     let artifact_type = cask.artifact_type.as_deref().unwrap_or("dmg");
 
     match artifact_type {
-        "tar.gz" => {
+        "tar.gz" | "binary" => {
             if let Some(binary_paths) = &cask.binary_paths {
                 for binary_path in binary_paths {
                     let path = std::path::PathBuf::from(binary_path);

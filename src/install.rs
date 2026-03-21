@@ -162,6 +162,11 @@ impl InstallState {
         Ok(())
     }
 
+    pub async fn load_formulae_from_cache(&self) -> Result<Vec<crate::api::Formula>> {
+        let cache = crate::cache::Cache::new()?;
+        cache.load_all_formulae().await
+    }
+
     fn detect_install_mode(&self, cellar: &Path) -> InstallMode {
         if cellar.starts_with("/opt/homebrew") || cellar.starts_with("/usr/local") {
             InstallMode::Global

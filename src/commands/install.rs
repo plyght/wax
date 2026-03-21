@@ -1,8 +1,8 @@
-use crate::api::Formula;
+use crate::api::{Formula, CaskArtifact};
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::builder::Builder;
 use crate::cache::Cache;
-use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask};
+use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask, StagingContext};
 use crate::commands::version_install;
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
@@ -11,7 +11,7 @@ use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackag
 use crate::signal::{check_cancelled, CriticalSection};
 use crate::tap::TapManager;
 use crate::ui::{
-    copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
+    copy_dir_all, dirs, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
 };
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -866,6 +866,17 @@ pub async fn install_extracted_bottle(
     step!("symlinking...");
     create_symlinks(name, &cellar_version, cellar, false, install_mode).await?;
 
+    if let Some(_formula) = state.load().await?.get(name) {
+         // Auto-run postinstall if possible
+         if let Ok(formulae) = state.load_formulae_from_cache().await {
+             if let Some(f) = formulae.iter().find(|f| f.name == name) {
+                 if f.post_install_defined {
+                     let _ = postinstall_impl(name, install_mode, true).await;
+                 }
+             }
+         }
+    }
+
     let package = InstalledPackage {
         name: name.to_string(),
         version: cellar_version.clone(),
@@ -887,22 +898,6 @@ pub async fn install_extracted_bottle(
     }
 
     Ok(())
-}
-
-fn extract_app_name(artifacts: &[crate::api::CaskArtifact]) -> Option<String> {
-    use crate::api::CaskArtifact;
-
-    for artifact in artifacts {
-        match artifact {
-            CaskArtifact::App { app } => {
-                if let Some(app_name) = app.first() {
-                    return Some(app_name.clone());
-                }
-            }
-            _ => continue,
-        }
-    }
-    None
 }
 
 struct DownloadedCask {
@@ -927,7 +922,10 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
     for cask_name in cask_names {
         if installed_casks.contains_key(cask_name) {
             already_installed.push(cask_name.clone());
-        } else if casks.iter().any(|c| &c.token == cask_name || &c.full_token == cask_name) {
+        } else if casks
+            .iter()
+            .any(|c| &c.token == cask_name || &c.full_token == cask_name)
+        {
             to_install.push(cask_name.clone());
         } else {
             eprintln!("{}: cask not found", style(cask_name).magenta());
@@ -975,13 +973,23 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
                 let details = api.fetch_cask_details(&name).await?;
                 let artifact_type = if let Some(t) = detect_artifact_type(&details.url) {
                     t
+                } else if let Some(t) = inst.probe_artifact_type(&details.url).await {
+                    t
+                } else if details
+                    .artifacts
+                    .as_ref()
+                    .map(|a| {
+                        a.iter()
+                            .any(|art| matches!(art, crate::api::CaskArtifact::Binary { .. }))
+                    })
+                    .unwrap_or(false)
+                {
+                    "binary"
                 } else {
-                    inst.probe_artifact_type(&details.url).await.ok_or_else(|| {
-                        WaxError::InstallError(format!(
-                            "Unsupported artifact type for URL: {}",
-                            details.url
-                        ))
-                    })?
+                    return Err(WaxError::InstallError(format!(
+                        "Unsupported artifact type for URL: {}",
+                        details.url
+                    )));
                 };
                 Ok::<_, WaxError>((name, details, artifact_type))
             })
@@ -998,7 +1006,9 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
     }
 
     if resolved.is_empty() {
-        return Err(WaxError::InstallError("No casks could be resolved".to_string()));
+        return Err(WaxError::InstallError(
+            "No casks could be resolved".to_string(),
+        ));
     }
 
     // --- Phase 2: download all concurrently with shared MultiProgress ---
@@ -1011,9 +1021,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
             let multi = Arc::clone(&multi);
             tokio::spawn(async move {
                 let temp_dir = TempDir::new()?;
-                let download_path = temp_dir
-                    .path()
-                    .join(format!("{}.{}", name, artifact_type));
+                let download_path = temp_dir.path().join(format!("{}.{}", name, artifact_type));
 
                 let pb = multi.add(ProgressBar::new(0));
                 pb.set_style(
@@ -1024,7 +1032,8 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
                 );
                 pb.set_prefix(name.clone());
 
-                inst.download_cask(&details.url, &download_path, Some(&pb)).await?;
+                inst.download_cask(&details.url, &download_path, Some(&pb))
+                    .await?;
                 pb.finish_and_clear();
 
                 Ok::<_, WaxError>(DownloadedCask {
@@ -1058,7 +1067,12 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         check_cancelled()?;
 
         if let Err(e) = CaskInstaller::verify_checksum(&d.download_path, &d.details.sha256) {
-            eprintln!("{} {} checksum failed: {}", style("✗").red(), style(&d.name).magenta(), e);
+            eprintln!(
+                "{} {} checksum failed: {}",
+                style("✗").red(),
+                style(&d.name).magenta(),
+                e
+            );
             failed.push(d.name.clone());
             continue;
         }
@@ -1077,7 +1091,12 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
                 installed_count += 1;
             }
             Err(e) => {
-                eprintln!("{} {} failed: {}", style("✗").red(), style(&d.name).magenta(), e);
+                eprintln!(
+                    "{} {} failed: {}",
+                    style("✗").red(),
+                    style(&d.name).magenta(),
+                    e
+                );
                 failed.push(d.name.clone());
             }
         }
@@ -1088,7 +1107,11 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         println!(
             "\n{} {} installed [{}ms]",
             installed_count,
-            if installed_count == 1 { "cask" } else { "casks" },
+            if installed_count == 1 {
+                "cask"
+            } else {
+                "casks"
+            },
             elapsed.as_millis()
         );
         Ok(())
@@ -1107,6 +1130,65 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
     }
 }
 
+pub async fn postinstall(
+    _cache: &Cache,
+    package_names: &[String],
+    user: bool,
+    global: bool,
+) -> Result<()> {
+    let install_mode = match InstallMode::from_flags(user, global)? {
+        Some(mode) => mode,
+        None => InstallMode::detect(),
+    };
+
+    for name in package_names {
+        postinstall_impl(name, install_mode, false).await?;
+    }
+
+    Ok(())
+}
+
+async fn postinstall_impl(
+    name: &str,
+    _install_mode: InstallMode,
+    quiet: bool,
+) -> Result<()> {
+    if !quiet {
+        println!("  {} {}", style(name).magenta(), style("running postinstall...").dim());
+    }
+
+    // Try to run Homebrew's postinstall if brew is installed
+    let brew_path = match tokio::process::Command::new("which").arg("brew").output().await {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        }
+        _ => String::new(),
+    };
+
+    if !brew_path.is_empty() {
+        let mut cmd = tokio::process::Command::new(&brew_path);
+        cmd.arg("postinstall").arg(name);
+        
+        // We might need to set HOMEBREW_PREFIX or similar if wax's prefix is different
+        // but for now let's assume standard prefix
+        match cmd.status().await {
+            Ok(status) if status.success() => return Ok(()),
+            _ => {
+                if !quiet {
+                    debug!("'brew postinstall' failed or was not relevant for {}", name);
+                }
+            }
+        }
+    }
+
+    // Fallback: Acknowledge that native post-install is a gap in parity
+    if !quiet {
+        debug!("Postinstall for {} is defined but native execution is not yet supported in wax without Homebrew.", name);
+    }
+
+    Ok(())
+}
+
 /// Install a cask from an already-downloaded file (skips download).
 async fn install_from_downloaded(
     cask: &crate::api::CaskDetails,
@@ -1114,7 +1196,6 @@ async fn install_from_downloaded(
     download_path: &std::path::Path,
 ) -> Result<InstalledCask> {
     let installer = CaskInstaller::new();
-    let display_name = cask.name.first().unwrap_or(&cask.token);
 
     // Step feedback printed directly so it always shows regardless of any parent progress context.
     macro_rules! step {
@@ -1127,43 +1208,200 @@ async fn install_from_downloaded(
         };
     }
 
+    step!("staging...");
+    let staging = StagingContext::new(download_path, artifact_type).await?;
+
     let mut binary_paths: Vec<String> = Vec::new();
     let mut installed_app_name: Option<String> = None;
 
-    match artifact_type {
-        "dmg" | "zip" => {
-            let app_name = if let Some(artifacts) = &cask.artifacts {
-                extract_app_name(artifacts).unwrap_or_else(|| format!("{}.app", display_name))
-            } else {
-                format!("{}.app", display_name)
-            };
-            if artifact_type == "dmg" {
-                step!("mounting disk image...");
-                installer.install_dmg(download_path, &app_name).await?;
-            } else {
-                step!("extracting...");
-                installer.install_zip(download_path, &app_name).await?;
+    if let Some(artifacts) = &cask.artifacts {
+        for artifact in artifacts {
+            match artifact {
+                CaskArtifact::App { app } => {
+                    if let Some(source) = app.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing app: {}", source));
+                        installer.install_app(&staging, source).await?;
+                        installed_app_name = Some(source.to_string());
+                    }
+                }
+                CaskArtifact::Pkg { pkg } => {
+                    if let Some(source) = pkg.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing pkg: {}", source));
+                        installer.install_pkg(&staging, source).await?;
+                    }
+                }
+                CaskArtifact::Binary { binary } => {
+                    if let Some(source) = binary.first().and_then(|v| v.as_str()) {
+                        let target = if binary.len() > 1 {
+                            binary
+                                .get(1)
+                                .and_then(|v| v.as_object())
+                                .and_then(|obj| obj.get("target"))
+                                .and_then(|v| v.as_str())
+                        } else {
+                            None
+                        };
+                        step!(format!("installing binary: {}", source));
+                        let path = installer.install_binary(&staging, source, target).await?;
+                        binary_paths.push(path.display().to_string());
+                    }
+                }
+                CaskArtifact::Font { font } => {
+                    if let Some(source) = font.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing font: {}", source));
+                        installer.install_font(&staging, source).await?;
+                    }
+                }
+                CaskArtifact::Manpage { manpage } => {
+                    if let Some(source) = manpage.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing manpage: {}", source));
+                        installer.install_manpage(&staging, source).await?;
+                    }
+                }
+                CaskArtifact::Artifact { artifact } => {
+                    if let (Some(source), Some(target)) = (
+                        artifact.first().and_then(|v| v.as_str()),
+                        artifact
+                            .get(1)
+                            .and_then(|v| v.as_object())
+                            .and_then(|o| o.get("target"))
+                            .and_then(|v| v.as_str()),
+                    ) {
+                        step!(format!("installing artifact: {} to {}", source, target));
+                        installer.install_artifact(&staging, source, target).await?;
+                    }
+                }
+                CaskArtifact::Dictionary { dictionary } => {
+                    if let Some(source) = dictionary.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing dictionary: {}", source));
+                        installer
+                            .install_generic_directory(
+                                &staging,
+                                source,
+                                &dirs::home_dir()?.join("Library/Dictionaries"),
+                            )
+                            .await?;
+                    }
+                }
+                CaskArtifact::Colorpicker { colorpicker } => {
+                    if let Some(source) = colorpicker.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing colorpicker: {}", source));
+                        installer
+                            .install_generic_directory(
+                                &staging,
+                                source,
+                                &dirs::home_dir()?.join("Library/ColorPickers"),
+                            )
+                            .await?;
+                    }
+                }
+                CaskArtifact::Prefpane { prefpane } => {
+                    if let Some(source) = prefpane.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing prefpane: {}", source));
+                        installer
+                            .install_generic_directory(
+                                &staging,
+                                source,
+                                &dirs::home_dir()?.join("Library/PreferencePanes"),
+                            )
+                            .await?;
+                    }
+                }
+                CaskArtifact::Qlplugin { qlplugin } => {
+                    if let Some(source) = qlplugin.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing qlplugin: {}", source));
+                        installer
+                            .install_generic_directory(
+                                &staging,
+                                source,
+                                &dirs::home_dir()?.join("Library/QuickLook"),
+                            )
+                            .await?;
+                    }
+                }
+                CaskArtifact::ScreenSaver { screen_saver } => {
+                    if let Some(source) = screen_saver.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing screen saver: {}", source));
+                        installer
+                            .install_generic_directory(
+                                &staging,
+                                source,
+                                &dirs::home_dir()?.join("Library/Screen Savers"),
+                            )
+                            .await?;
+                    }
+                }
+                CaskArtifact::Service { service } => {
+                    if let Some(source) = service.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing service: {}", source));
+                        installer
+                            .install_generic_directory(
+                                &staging,
+                                source,
+                                &dirs::home_dir()?.join("Library/Services"),
+                            )
+                            .await?;
+                    }
+                }
+                CaskArtifact::Suite { suite } => {
+                    if let Some(source) = suite.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing suite: {}", source));
+                        installer
+                            .install_generic_directory(
+                                &staging,
+                                source,
+                                &CaskInstaller::applications_dir()?,
+                            )
+                            .await?;
+                    }
+                }
+                CaskArtifact::BashCompletion { bash_completion } => {
+                    if let Some(source) = bash_completion.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing bash completion: {}", source));
+                        installer.install_completion(&staging, source, "bash", &cask.token).await?;
+                    }
+                }
+                CaskArtifact::ZshCompletion { zsh_completion } => {
+                    if let Some(source) = zsh_completion.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing zsh completion: {}", source));
+                        installer.install_completion(&staging, source, "zsh", &cask.token).await?;
+                    }
+                }
+                CaskArtifact::FishCompletion { fish_completion } => {
+                    if let Some(source) = fish_completion.first().and_then(|v| v.as_str()) {
+                        step!(format!("installing fish completion: {}", source));
+                        installer.install_completion(&staging, source, "fish", &cask.token).await?;
+                    }
+                }
+                CaskArtifact::Preflight { preflight } => {
+                    if let Some(script) = preflight {
+                        step!("skipping preflight script (not supported yet)");
+                        debug!("Preflight script: {}", script);
+                    }
+                }
+                CaskArtifact::Postflight { postflight } => {
+                    if let Some(script) = postflight {
+                        step!("skipping postflight script (not supported yet)");
+                        debug!("Postflight script: {}", script);
+                    }
+                }
+                _ => {}
             }
-            step!("copying to /Applications...");
-            installed_app_name = Some(app_name);
         }
-        "pkg" => {
-            step!("running installer...");
-            installer.install_pkg(download_path).await?;
-        }
-        "tar.gz" => {
-            step!("extracting...");
-            let binary_path = installer
-                .install_tarball(download_path, &cask.token)
-                .await?;
-            step!("linking binary...");
-            binary_paths.push(binary_path.display().to_string());
-        }
-        _ => {
-            return Err(WaxError::InstallError(format!(
-                "Unsupported artifact type: {}",
-                artifact_type
-            )));
+    } else {
+        // Fallback if no artifacts are explicitly defined (try to guess .app)
+        if artifact_type == "dmg" || artifact_type == "zip" {
+            let mut entries = tokio::fs::read_dir(&staging.staging_root).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("app") {
+                    let app_name = path.file_name().unwrap().to_str().unwrap();
+                    step!(format!("installing guessed app: {}", app_name));
+                    installer.install_app(&staging, app_name).await?;
+                    installed_app_name = Some(app_name.to_string());
+                    break;
+                }
+            }
         }
     }
 
@@ -1177,7 +1415,11 @@ async fn install_from_downloaded(
             .unwrap()
             .as_secs() as i64,
         artifact_type: Some(artifact_type.to_string()),
-        binary_paths: if binary_paths.is_empty() { None } else { Some(binary_paths) },
+        binary_paths: if binary_paths.is_empty() {
+            None
+        } else {
+            Some(binary_paths)
+        },
         app_name: installed_app_name,
     })
 }
