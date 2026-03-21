@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 
+pub const WAX_VERSION: &str = "0.12";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrewVersion {
     pub base: String,

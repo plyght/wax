@@ -43,6 +43,8 @@ tar = "0.4"
 flate2 = "1"
 sha2 = "0.10"
 tempfile = "3"
+regex = "1"
+libc = "0.2"
 
 dunce = "1"
 ctrlc = "3"

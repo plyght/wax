@@ -2,7 +2,9 @@ use crate::api::{Formula, CaskArtifact};
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::builder::Builder;
 use crate::cache::Cache;
-use crate::cask::{detect_artifact_type, CaskInstaller, CaskState, InstalledCask, StagingContext};
+use crate::cask::{
+    detect_artifact_type, CaskInstaller, CaskState, InstalledCask, RollbackContext, StagingContext,
+};
 use crate::commands::version_install;
 use crate::deps::resolve_dependencies;
 use crate::error::{Result, WaxError};
@@ -1210,6 +1212,7 @@ async fn install_from_downloaded(
 
     step!("staging...");
     let staging = StagingContext::new(download_path, artifact_type).await?;
+    let mut rollback = RollbackContext::new();
 
     let mut binary_paths: Vec<String> = Vec::new();
     let mut installed_app_name: Option<String> = None;
@@ -1220,14 +1223,14 @@ async fn install_from_downloaded(
                 CaskArtifact::App { app } => {
                     if let Some(source) = app.first().and_then(|v| v.as_str()) {
                         step!(format!("installing app: {}", source));
-                        installer.install_app(&staging, source).await?;
+                        installer.install_app(&staging, &mut rollback, source).await?;
                         installed_app_name = Some(source.to_string());
                     }
                 }
                 CaskArtifact::Pkg { pkg } => {
                     if let Some(source) = pkg.first().and_then(|v| v.as_str()) {
                         step!(format!("installing pkg: {}", source));
-                        installer.install_pkg(&staging, source).await?;
+                        installer.install_pkg(&staging, &mut rollback, source).await?;
                     }
                 }
                 CaskArtifact::Binary { binary } => {
@@ -1242,20 +1245,20 @@ async fn install_from_downloaded(
                             None
                         };
                         step!(format!("installing binary: {}", source));
-                        let path = installer.install_binary(&staging, source, target).await?;
+                        let path = installer.install_binary(&staging, &mut rollback, source, target).await?;
                         binary_paths.push(path.display().to_string());
                     }
                 }
                 CaskArtifact::Font { font } => {
                     if let Some(source) = font.first().and_then(|v| v.as_str()) {
                         step!(format!("installing font: {}", source));
-                        installer.install_font(&staging, source).await?;
+                        installer.install_font(&staging, &mut rollback, source).await?;
                     }
                 }
                 CaskArtifact::Manpage { manpage } => {
                     if let Some(source) = manpage.first().and_then(|v| v.as_str()) {
                         step!(format!("installing manpage: {}", source));
-                        installer.install_manpage(&staging, source).await?;
+                        installer.install_manpage(&staging, &mut rollback, source).await?;
                     }
                 }
                 CaskArtifact::Artifact { artifact } => {
@@ -1268,7 +1271,7 @@ async fn install_from_downloaded(
                             .and_then(|v| v.as_str()),
                     ) {
                         step!(format!("installing artifact: {} to {}", source, target));
-                        installer.install_artifact(&staging, source, target).await?;
+                        installer.install_artifact(&staging, &mut rollback, source, target).await?;
                     }
                 }
                 CaskArtifact::Dictionary { dictionary } => {
@@ -1277,6 +1280,7 @@ async fn install_from_downloaded(
                         installer
                             .install_generic_directory(
                                 &staging,
+                                &mut rollback,
                                 source,
                                 &dirs::home_dir()?.join("Library/Dictionaries"),
                             )
@@ -1289,6 +1293,7 @@ async fn install_from_downloaded(
                         installer
                             .install_generic_directory(
                                 &staging,
+                                &mut rollback,
                                 source,
                                 &dirs::home_dir()?.join("Library/ColorPickers"),
                             )
@@ -1301,6 +1306,7 @@ async fn install_from_downloaded(
                         installer
                             .install_generic_directory(
                                 &staging,
+                                &mut rollback,
                                 source,
                                 &dirs::home_dir()?.join("Library/PreferencePanes"),
                             )
@@ -1313,6 +1319,7 @@ async fn install_from_downloaded(
                         installer
                             .install_generic_directory(
                                 &staging,
+                                &mut rollback,
                                 source,
                                 &dirs::home_dir()?.join("Library/QuickLook"),
                             )
@@ -1325,6 +1332,7 @@ async fn install_from_downloaded(
                         installer
                             .install_generic_directory(
                                 &staging,
+                                &mut rollback,
                                 source,
                                 &dirs::home_dir()?.join("Library/Screen Savers"),
                             )
@@ -1337,6 +1345,7 @@ async fn install_from_downloaded(
                         installer
                             .install_generic_directory(
                                 &staging,
+                                &mut rollback,
                                 source,
                                 &dirs::home_dir()?.join("Library/Services"),
                             )
@@ -1349,6 +1358,7 @@ async fn install_from_downloaded(
                         installer
                             .install_generic_directory(
                                 &staging,
+                                &mut rollback,
                                 source,
                                 &CaskInstaller::applications_dir()?,
                             )
@@ -1358,19 +1368,19 @@ async fn install_from_downloaded(
                 CaskArtifact::BashCompletion { bash_completion } => {
                     if let Some(source) = bash_completion.first().and_then(|v| v.as_str()) {
                         step!(format!("installing bash completion: {}", source));
-                        installer.install_completion(&staging, source, "bash", &cask.token).await?;
+                        installer.install_completion(&staging, &mut rollback, source, "bash", &cask.token).await?;
                     }
                 }
                 CaskArtifact::ZshCompletion { zsh_completion } => {
                     if let Some(source) = zsh_completion.first().and_then(|v| v.as_str()) {
                         step!(format!("installing zsh completion: {}", source));
-                        installer.install_completion(&staging, source, "zsh", &cask.token).await?;
+                        installer.install_completion(&staging, &mut rollback, source, "zsh", &cask.token).await?;
                     }
                 }
                 CaskArtifact::FishCompletion { fish_completion } => {
                     if let Some(source) = fish_completion.first().and_then(|v| v.as_str()) {
                         step!(format!("installing fish completion: {}", source));
-                        installer.install_completion(&staging, source, "fish", &cask.token).await?;
+                        installer.install_completion(&staging, &mut rollback, source, "fish", &cask.token).await?;
                     }
                 }
                 CaskArtifact::Preflight { preflight } => {
@@ -1397,7 +1407,7 @@ async fn install_from_downloaded(
                 if path.extension().and_then(|s| s.to_str()) == Some("app") {
                     let app_name = path.file_name().unwrap().to_str().unwrap();
                     step!(format!("installing guessed app: {}", app_name));
-                    installer.install_app(&staging, app_name).await?;
+                    installer.install_app(&staging, &mut rollback, app_name).await?;
                     installed_app_name = Some(app_name.to_string());
                     break;
                 }
@@ -1406,6 +1416,7 @@ async fn install_from_downloaded(
     }
 
     step!("registering...");
+    rollback.commit();
 
     Ok(InstalledCask {
         name: cask.token.clone(),

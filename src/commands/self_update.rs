@@ -5,10 +5,10 @@ use serde::Deserialize;
 use std::process::Command;
 use tracing::{info, instrument};
 
+use crate::version::WAX_VERSION as CURRENT_VERSION;
 const CRATE_NAME: &str = "waxpkg";
 const GITHUB_REPO: &str = "https://github.com/plyght/wax";
 const CRATES_IO_API: &str = "https://crates.io/api/v1/crates";
-const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Channel {

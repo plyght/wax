@@ -49,9 +49,7 @@ impl CaskState {
         if self.legacy_state_path.exists() {
             if let Ok(json) = fs::read_to_string(&self.legacy_state_path).await {
                 if let Ok(legacy_casks) = serde_json::from_str::<HashMap<String, InstalledCask>>(&json) {
-                    for (name, cask) in legacy_casks {
-                        casks.insert(name, cask);
-                    }
+                    casks.extend(legacy_casks);
                 }
             }
         }
@@ -67,58 +65,60 @@ impl CaskState {
                 continue;
             }
 
-            if let Ok(mut entries) = tokio::fs::read_dir(&caskroom).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    if let Ok(file_type) = entry.file_type().await {
-                        if file_type.is_dir() {
-                            let cask_name = entry.file_name().to_string_lossy().to_string();
-                            if cask_name.starts_with('.') {
-                                continue;
-                            }
-
-                            // Find version
-                            let mut version = "unknown".to_string();
-                            let mut install_date = 0;
-                            
-                            // Check for versions inside the cask directory
-                            if let Ok(mut ver_entries) = tokio::fs::read_dir(entry.path()).await {
-                                while let Ok(Some(ver_entry)) = ver_entries.next_entry().await {
-                                    let ver_name = ver_entry.file_name().to_string_lossy().to_string();
-                                    if !ver_name.starts_with('.') {
-                                        if let Ok(t) = ver_entry.file_type().await {
-                                            if t.is_dir() {
-                                                version = ver_name;
-                                                if let Ok(metadata) = ver_entry.metadata().await {
-                                                    if let Ok(modified) = metadata.modified() {
-                                                        if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                                                            install_date = duration.as_secs() as i64;
-                                                        }
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Do not overwrite legacy metadata if we already have it for the same cask,
-                            // unless we want to update the version
-                            casks.entry(cask_name.clone()).or_insert_with(|| InstalledCask {
-                                name: cask_name.clone(),
-                                version,
-                                install_date,
-                                artifact_type: None,
-                                binary_paths: None,
-                                app_name: None,
-                            });
-                        }
-                    }
+            let mut entries = tokio::fs::read_dir(&caskroom).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let file_type = entry.file_type().await?;
+                if !file_type.is_dir() {
+                    continue;
                 }
+
+                let cask_name = entry.file_name().to_string_lossy().to_string();
+                if cask_name.starts_with('.') {
+                    continue;
+                }
+
+                // Find version and install date
+                let (version, install_date) = self.scan_cask_version_dir(&entry.path()).await?;
+
+                casks.entry(cask_name.clone()).or_insert_with(|| InstalledCask {
+                    name: cask_name,
+                    version,
+                    install_date,
+                    artifact_type: None,
+                    binary_paths: None,
+                    app_name: None,
+                });
             }
         }
 
         Ok(casks)
+    }
+
+    async fn scan_cask_version_dir(&self, cask_path: &Path) -> Result<(String, i64)> {
+        let mut version = "unknown".to_string();
+        let mut install_date = 0;
+
+        let mut ver_entries = tokio::fs::read_dir(cask_path).await?;
+        while let Some(ver_entry) = ver_entries.next_entry().await? {
+            let ver_name = ver_entry.file_name().to_string_lossy().to_string();
+            if ver_name.starts_with('.') {
+                continue;
+            }
+
+            let t = ver_entry.file_type().await?;
+            if t.is_dir() {
+                version = ver_name;
+                if let Ok(metadata) = ver_entry.metadata().await {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                            install_date = duration.as_secs() as i64;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        Ok((version, install_date))
     }
 
     pub async fn save(&self, casks: &HashMap<String, InstalledCask>) -> Result<()> {
@@ -189,6 +189,45 @@ pub struct StagingContext {
     pub staging_root: PathBuf,
     mount_point: Option<PathBuf>,
     _temp_dir: tempfile::TempDir,
+}
+
+pub struct RollbackContext {
+    installed_paths: Vec<PathBuf>,
+    committed: bool,
+}
+
+impl RollbackContext {
+    pub fn new() -> Self {
+        Self {
+            installed_paths: Vec::new(),
+            committed: false,
+        }
+    }
+
+    pub fn add(&mut self, path: PathBuf) {
+        self.installed_paths.push(path);
+    }
+
+    pub fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for RollbackContext {
+    fn drop(&mut self) {
+        if !self.committed && !self.installed_paths.is_empty() {
+            debug!("Rolling back installation: removing partially installed artifacts");
+            for path in &self.installed_paths {
+                if path.exists() {
+                    if path.is_dir() {
+                        let _ = std::fs::remove_dir_all(path);
+                    } else {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl StagingContext {
@@ -359,6 +398,21 @@ impl CaskInstaller {
         }
     }
 
+    fn resolve_source_path(&self, staging: &StagingContext, source_rel: &str) -> PathBuf {
+        let prefix = crate::bottle::homebrew_prefix().to_string_lossy().to_string();
+        let path = source_rel
+            .replace("$HOMEBREW_PREFIX", &prefix)
+            .replace("#{HOMEBREW_PREFIX}", &prefix)
+            .replace("$APPDIR", staging.staging_root.to_str().unwrap_or(""));
+
+        let p = Path::new(&path);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            staging.staging_root.join(path)
+        }
+    }
+
     fn _is_in_path(dir: &Path) -> bool {
         if let Ok(path_env) = std::env::var("PATH") {
             path_env.split(':').any(|p| Path::new(p) == dir)
@@ -455,10 +509,15 @@ impl CaskInstaller {
         Ok(())
     }
 
-    #[instrument(skip(self, staging))]
-    pub async fn install_app(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
+    #[instrument(skip(self, staging, rollback))]
+    pub async fn install_app(
+        &self,
+        staging: &StagingContext,
+        rollback: &mut RollbackContext,
+        source_rel: &str,
+    ) -> Result<()> {
         Self::check_platform_support()?;
-        let source = staging.staging_root.join(source_rel);
+        let source = self.resolve_source_path(staging, source_rel);
         let app_name = Path::new(source_rel)
             .file_name()
             .and_then(|n| n.to_str())
@@ -480,6 +539,8 @@ impl CaskInstaller {
             tokio::fs::remove_dir_all(&app_dest).await?;
         }
 
+        rollback.add(app_dest.clone());
+
         let cp_output = tokio::process::Command::new("cp")
             .arg("-R")
             .arg(&source)
@@ -497,10 +558,15 @@ impl CaskInstaller {
         Ok(())
     }
 
-    #[instrument(skip(self, staging))]
-    pub async fn install_pkg(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
+    #[instrument(skip(self, staging, _rollback))]
+    pub async fn install_pkg(
+        &self,
+        staging: &StagingContext,
+        _rollback: &mut RollbackContext,
+        source_rel: &str,
+    ) -> Result<()> {
         Self::check_platform_support()?;
-        let source = staging.staging_root.join(source_rel);
+        let source = self.resolve_source_path(staging, source_rel);
         info!("Installing PKG: {:?}", source);
 
         if !source.exists() {
@@ -532,15 +598,16 @@ impl CaskInstaller {
         Ok(())
     }
 
-    #[instrument(skip(self, staging))]
+    #[instrument(skip(self, staging, rollback))]
     pub async fn install_binary(
         &self,
         staging: &StagingContext,
+        rollback: &mut RollbackContext,
         source_rel: &str,
         target_name: Option<&str>,
     ) -> Result<PathBuf> {
         Self::check_platform_support()?;
-        let source = staging.staging_root.join(source_rel);
+        let source = self.resolve_source_path(staging, source_rel);
         let name = target_name.unwrap_or_else(|| {
             Path::new(source_rel)
                 .file_name()
@@ -564,6 +631,8 @@ impl CaskInstaller {
             tokio::fs::remove_file(&binary_dest_path).await.ok();
         }
 
+        rollback.add(binary_dest_path.clone());
+
         tokio::fs::copy(&source, &binary_dest_path).await?;
 
         #[cfg(unix)]
@@ -579,10 +648,15 @@ impl CaskInstaller {
         Ok(binary_dest_path)
     }
 
-    #[instrument(skip(self, staging))]
-    pub async fn install_font(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
+    #[instrument(skip(self, staging, rollback))]
+    pub async fn install_font(
+        &self,
+        staging: &StagingContext,
+        rollback: &mut RollbackContext,
+        source_rel: &str,
+    ) -> Result<()> {
         Self::check_platform_support()?;
-        let source = staging.staging_root.join(source_rel);
+        let source = self.resolve_source_path(staging, source_rel);
         let font_name = Path::new(source_rel)
             .file_name()
             .and_then(|n| n.to_str())
@@ -596,14 +670,21 @@ impl CaskInstaller {
             tokio::fs::remove_file(&dest).await.ok();
         }
 
+        rollback.add(dest.clone());
+
         tokio::fs::copy(&source, &dest).await?;
         Ok(())
     }
 
-    #[instrument(skip(self, staging))]
-    pub async fn install_manpage(&self, staging: &StagingContext, source_rel: &str) -> Result<()> {
+    #[instrument(skip(self, staging, rollback))]
+    pub async fn install_manpage(
+        &self,
+        staging: &StagingContext,
+        rollback: &mut RollbackContext,
+        source_rel: &str,
+    ) -> Result<()> {
         Self::check_platform_support()?;
-        let source = staging.staging_root.join(source_rel);
+        let source = self.resolve_source_path(staging, source_rel);
         let man_name = Path::new(source_rel)
             .file_name()
             .and_then(|n| n.to_str())
@@ -625,19 +706,22 @@ impl CaskInstaller {
             tokio::fs::remove_file(&dest).await.ok();
         }
 
+        rollback.add(dest.clone());
+
         tokio::fs::copy(&source, &dest).await?;
         Ok(())
     }
 
-    #[instrument(skip(self, staging))]
+    #[instrument(skip(self, staging, rollback))]
     pub async fn install_artifact(
         &self,
         staging: &StagingContext,
+        rollback: &mut RollbackContext,
         source_rel: &str,
         target_path: &str,
     ) -> Result<()> {
         Self::check_platform_support()?;
-        let source = staging.staging_root.join(source_rel);
+        let source = self.resolve_source_path(staging, source_rel);
         let dest = PathBuf::from(target_path);
 
         if let Some(parent) = dest.parent() {
@@ -651,6 +735,8 @@ impl CaskInstaller {
                 tokio::fs::remove_file(&dest).await?;
             }
         }
+
+        rollback.add(dest.clone());
 
         let cp_output = tokio::process::Command::new("cp")
             .arg("-R")
@@ -672,11 +758,12 @@ impl CaskInstaller {
     pub async fn install_generic_directory(
         &self,
         staging: &StagingContext,
+        rollback: &mut RollbackContext,
         source_rel: &str,
         dest_parent: &Path,
     ) -> Result<()> {
         Self::check_platform_support()?;
-        let source = staging.staging_root.join(source_rel);
+        let source = self.resolve_source_path(staging, source_rel);
         let name = Path::new(source_rel)
             .file_name()
             .and_then(|n| n.to_str())
@@ -688,6 +775,8 @@ impl CaskInstaller {
         if dest.exists() {
             tokio::fs::remove_dir_all(&dest).await?;
         }
+
+        rollback.add(dest.clone());
 
         let cp_output = tokio::process::Command::new("cp")
             .arg("-R")
@@ -707,23 +796,18 @@ impl CaskInstaller {
         Ok(())
     }
 
-    #[instrument(skip(self, staging))]
+    #[instrument(skip(self, staging, rollback))]
     pub async fn install_completion(
         &self,
         staging: &StagingContext,
+        rollback: &mut RollbackContext,
         source_rel: &str,
         shell: &str,
         token: &str,
     ) -> Result<()> {
         Self::check_platform_support()?;
         
-        // Handle $APPDIR placeholder which is common in Homebrew completion artifacts
-        let path = source_rel.replace("$APPDIR", staging.staging_root.to_str().unwrap_or(""));
-        let source = if path.starts_with('/') {
-            PathBuf::from(path)
-        } else {
-            staging.staging_root.join(path)
-        };
+        let source = self.resolve_source_path(staging, source_rel);
 
         if !source.exists() {
             debug!("Completion source not found at {:?}, skipping", source);
@@ -749,6 +833,8 @@ impl CaskInstaller {
         if dest.exists() {
             tokio::fs::remove_file(&dest).await.ok();
         }
+
+        rollback.add(dest.clone());
 
         if source.is_dir() {
             crate::ui::copy_dir_all(&source, &dest)?;
@@ -812,4 +898,45 @@ pub fn detect_artifact_type_from_disposition(disposition: &str) -> Option<&'stat
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_resolve_source_path() {
+        let installer = CaskInstaller::new();
+        let temp = tempdir().unwrap();
+        let staging_root = temp.path().to_path_buf();
+        
+        let staging = StagingContext {
+            staging_root: staging_root.clone(),
+            mount_point: None,
+            _temp_dir: temp,
+        };
+
+        let prefix = crate::bottle::homebrew_prefix().to_string_lossy().to_string();
+
+        // Test $HOMEBREW_PREFIX
+        let res = installer.resolve_source_path(&staging, "$HOMEBREW_PREFIX/bin/foo");
+        assert_eq!(res, PathBuf::from(format!("{}/bin/foo", prefix)));
+
+        // Test #{HOMEBREW_PREFIX}
+        let res = installer.resolve_source_path(&staging, "#{HOMEBREW_PREFIX}/bin/bar");
+        assert_eq!(res, PathBuf::from(format!("{}/bin/bar", prefix)));
+
+        // Test $APPDIR
+        let res = installer.resolve_source_path(&staging, "$APPDIR/Contents/MacOS/qux");
+        assert_eq!(res, staging_root.join("Contents/MacOS/qux"));
+
+        // Test absolute path
+        let res = installer.resolve_source_path(&staging, "/usr/bin/true");
+        assert_eq!(res, PathBuf::from("/usr/bin/true"));
+
+        // Test relative path
+        let res = installer.resolve_source_path(&staging, "relative/path");
+        assert_eq!(res, staging_root.join("relative/path"));
+    }
 }

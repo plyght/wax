@@ -22,11 +22,12 @@ use clap_complete::Shell;
 use error::Result;
 use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
+use version::WAX_VERSION;
 
 #[derive(Parser)]
 #[command(name = "wax")]
-#[command(about = "Fast Homebrew-compatible package manager", long_about = None)]
-#[command(version)]
+#[command(version = WAX_VERSION)]
+#[command(about = format!("wax v{} - the fast homebrew-compat package manager", WAX_VERSION), long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
