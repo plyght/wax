@@ -1245,7 +1245,7 @@ async fn install_from_downloaded(
                             None
                         };
                         step!(format!("installing binary: {}", source));
-                        if let Some(path) = installer.install_binary(&staging, &mut rollback, source, target).await? {
+                        if let Some(path) = installer.install_binary(&staging, &mut rollback, source, target, Some(&cask.token)).await? {
                             binary_paths.push(path.display().to_string());
                         }
                     }

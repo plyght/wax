@@ -605,6 +605,7 @@ impl CaskInstaller {
         rollback: &mut RollbackContext,
         source_rel: &str,
         target_name: Option<&str>,
+        cask_name: Option<&str>,
     ) -> Result<Option<PathBuf>> {
         Self::check_platform_support()?;
         let source = self.resolve_source_path(staging, source_rel);
@@ -616,6 +617,23 @@ impl CaskInstaller {
         });
 
         info!("Installing binary: {} from {:?}", name, source);
+
+        if !source.exists() {
+            if let Some(cask) = cask_name {
+                debug!("Binary missing, attempting to fetch and extract preflight shimscript for {}", cask);
+                if let Ok(ruby_content) = crate::formula_parser::FormulaParser::fetch_cask_rb(cask).await {
+                    if let Some(script_content) = crate::formula_parser::FormulaParser::extract_shimscript(&ruby_content) {
+                        // Write the script to the expected source location
+                        if let Some(parent) = source.parent() {
+                            tokio::fs::create_dir_all(parent).await.ok();
+                        }
+                        if tokio::fs::write(&source, script_content).await.is_ok() {
+                            println!("  {} generated wrapper script via preflight", console::style("✓").green());
+                        }
+                    }
+                }
+            }
+        }
 
         if !source.exists() {
             println!("  ⚠️  skipping binary: source not found (possibly requires preflight script)");

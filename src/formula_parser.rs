@@ -232,6 +232,58 @@ impl FormulaParser {
         let content = response.text().await?;
         Ok(content)
     }
+
+    pub async fn fetch_cask_rb(cask_name: &str) -> Result<String> {
+        let first_letter = cask_name
+            .chars()
+            .next()
+            .ok_or_else(|| WaxError::ParseError("Empty cask name".to_string()))?
+            .to_lowercase();
+
+        let url = format!(
+            "https://raw.githubusercontent.com/Homebrew/homebrew-cask/master/Casks/{}/{}.rb",
+            first_letter, cask_name
+        );
+
+        debug!("Fetching cask from: {}", url);
+
+        let client = reqwest::Client::new();
+        let response = client.get(&url).send().await?;
+
+        if !response.status().is_success() {
+            return Err(WaxError::ParseError(format!(
+                "Failed to fetch cask: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let content = response.text().await?;
+        Ok(content)
+    }
+
+    pub fn extract_shimscript(content: &str) -> Option<String> {
+        let re = Regex::new(r"(?m)File\.write\s+(?:shimscript|\w+),\s*<<~([A-Z_]+)\n").ok()?;
+        
+        if let Some(cap) = re.captures(content) {
+            let delim = &cap[1];
+            let start = cap.get(0).unwrap().end();
+            let rest = &content[start..];
+            
+            // Find the delimiter on a line by itself (ignoring leading whitespace)
+            let end_re_str = format!(r"(?m)^\s*{}$", delim);
+            if let Ok(end_re) = Regex::new(&end_re_str) {
+                if let Some(end_match) = end_re.find(rest) {
+                    let mut script = rest[..end_match.start()].to_string();
+                    
+                    // Basic interpolations
+                    script = script.replace("#{appdir}", "/Applications");
+                    return Some(script);
+                }
+            }
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]
@@ -261,5 +313,19 @@ mod tests {
 
         let make = r#"system "make", "install""#;
         assert_eq!(FormulaParser::detect_build_system(make), BuildSystem::Make);
+    }
+
+    #[test]
+    fn test_extract_shimscript() {
+        let ruby = r#"
+  preflight do
+    File.write shimscript, <<~EOS
+      #!/bin/bash
+      exec '#{appdir}/Firefox.app/Contents/MacOS/firefox' "$@"
+    EOS
+  end
+        "#;
+        let expected = "#!/bin/bash\n      exec '/Applications/Firefox.app/Contents/MacOS/firefox' \"$@\"";
+        assert_eq!(FormulaParser::extract_shimscript(ruby).unwrap().trim(), expected);
     }
 }
