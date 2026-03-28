@@ -701,7 +701,13 @@ impl CaskInstaller {
 
         #[cfg(unix)]
         {
+            use std::os::unix::fs::PermissionsExt;
+
             tokio::fs::symlink(&source, &binary_dest_path).await?;
+
+            let mut perms = tokio::fs::metadata(&source).await?.permissions();
+            perms.set_mode(0o755);
+            tokio::fs::set_permissions(&source, perms).await?;
         }
         #[cfg(not(unix))]
         {
