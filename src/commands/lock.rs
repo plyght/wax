@@ -1,5 +1,4 @@
 use crate::cache::Cache;
-use crate::cask::CaskState;
 use crate::discovery::{discover_linux_system_packages, discover_manually_installed_casks};
 use crate::error::Result;
 use crate::install::InstallState;
@@ -14,47 +13,24 @@ pub async fn lock(cache: &Cache) -> Result<()> {
     let state = InstallState::new()?;
     state.sync_from_cellar().await?;
 
-    let mut installed_packages = state.load().await?;
-    let cask_state = CaskState::new()?;
-    let mut installed_casks = cask_state.load().await?;
+    let mut lockfile = Lockfile::generate().await?;
 
     if cfg!(target_os = "linux") {
         for (name, package) in discover_linux_system_packages(&formulae).await? {
-            installed_packages.entry(name).or_insert(package);
+            lockfile.packages.entry(name).or_insert(LockfilePackage {
+                version: package.version,
+                bottle: package.platform,
+            });
         }
     }
 
     if cfg!(target_os = "macos") {
         for (name, cask) in discover_manually_installed_casks(&casks).await? {
-            installed_casks.entry(name).or_insert(cask);
+            lockfile.casks.entry(name).or_insert(LockfileCask {
+                version: cask.version,
+            });
         }
     }
-
-    let lockfile = Lockfile {
-        packages: installed_packages
-            .into_iter()
-            .map(|(name, pkg)| {
-                (
-                    name,
-                    LockfilePackage {
-                        version: pkg.version,
-                        bottle: pkg.platform,
-                    },
-                )
-            })
-            .collect(),
-        casks: installed_casks
-            .into_iter()
-            .map(|(name, cask)| {
-                (
-                    name,
-                    LockfileCask {
-                        version: cask.version,
-                    },
-                )
-            })
-            .collect(),
-    };
 
     let package_count = lockfile.packages.len();
     let cask_count = lockfile.casks.len();

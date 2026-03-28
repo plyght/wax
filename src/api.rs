@@ -88,26 +88,66 @@ pub struct CaskDetails {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CaskArtifact {
-    App { app: Vec<serde_json::Value> },
-    Pkg { pkg: Vec<serde_json::Value> },
-    Binary { binary: Vec<serde_json::Value> },
-    Font { font: Vec<serde_json::Value> },
-    Manpage { manpage: Vec<serde_json::Value> },
-    Dictionary { dictionary: Vec<serde_json::Value> },
-    Colorpicker { colorpicker: Vec<serde_json::Value> },
-    Prefpane { prefpane: Vec<serde_json::Value> },
-    Qlplugin { qlplugin: Vec<serde_json::Value> },
-    ScreenSaver { screen_saver: Vec<serde_json::Value> },
-    Service { service: Vec<serde_json::Value> },
-    Suite { suite: Vec<serde_json::Value> },
-    Artifact { artifact: Vec<serde_json::Value> },
-    BashCompletion { bash_completion: Vec<serde_json::Value> },
-    ZshCompletion { zsh_completion: Vec<serde_json::Value> },
-    FishCompletion { fish_completion: Vec<serde_json::Value> },
-    Uninstall { uninstall: Vec<serde_json::Value> },
-    Zap { zap: Vec<serde_json::Value> },
-    Preflight { preflight: Option<String> },
-    Postflight { postflight: Option<String> },
+    App {
+        app: Vec<serde_json::Value>,
+    },
+    Pkg {
+        pkg: Vec<serde_json::Value>,
+    },
+    Binary {
+        binary: Vec<serde_json::Value>,
+    },
+    Font {
+        font: Vec<serde_json::Value>,
+    },
+    Manpage {
+        manpage: Vec<serde_json::Value>,
+    },
+    Dictionary {
+        dictionary: Vec<serde_json::Value>,
+    },
+    Colorpicker {
+        colorpicker: Vec<serde_json::Value>,
+    },
+    Prefpane {
+        prefpane: Vec<serde_json::Value>,
+    },
+    Qlplugin {
+        qlplugin: Vec<serde_json::Value>,
+    },
+    ScreenSaver {
+        screen_saver: Vec<serde_json::Value>,
+    },
+    Service {
+        service: Vec<serde_json::Value>,
+    },
+    Suite {
+        suite: Vec<serde_json::Value>,
+    },
+    Artifact {
+        artifact: Vec<serde_json::Value>,
+    },
+    BashCompletion {
+        bash_completion: Vec<serde_json::Value>,
+    },
+    ZshCompletion {
+        zsh_completion: Vec<serde_json::Value>,
+    },
+    FishCompletion {
+        fish_completion: Vec<serde_json::Value>,
+    },
+    Uninstall {
+        uninstall: Vec<serde_json::Value>,
+    },
+    Zap {
+        zap: Vec<serde_json::Value>,
+    },
+    Preflight {
+        preflight: Option<String>,
+    },
+    Postflight {
+        postflight: Option<String>,
+    },
     Other(serde_json::Value),
 }
 

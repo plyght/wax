@@ -105,7 +105,6 @@ pub fn sudo_remove(path: &Path) -> Result<()> {
     let path = normalize_path(path);
 
     let status = Command::new("sudo")
-        .arg("--")
         .args(["rm", "-rf", "--"])
         .arg(&path)
         .stdout(std::process::Stdio::null())
@@ -128,7 +127,6 @@ pub fn sudo_copy(src: &Path, dst: &Path) -> Result<()> {
     let dst = normalize_path(dst);
 
     let status = Command::new("sudo")
-        .arg("--")
         .args(["cp", "-Rf", "--"])
         .arg(&src)
         .arg(&dst)
@@ -152,7 +150,6 @@ pub fn sudo_mkdir(path: &Path) -> Result<()> {
     let path = normalize_path(path);
 
     let status = Command::new("sudo")
-        .arg("--")
         .args(["mkdir", "-p", "--"])
         .arg(&path)
         .stdout(std::process::Stdio::null())
@@ -176,7 +173,6 @@ pub fn sudo_symlink(src: &Path, dst: &Path) -> Result<()> {
 
     // Remove target if it exists, using sudo to be sure
     let _ = Command::new("sudo")
-        .arg("--")
         .args(["rm", "-f", "--"])
         .arg(&dst)
         .stdout(std::process::Stdio::null())
@@ -184,7 +180,6 @@ pub fn sudo_symlink(src: &Path, dst: &Path) -> Result<()> {
         .status();
 
     let status = Command::new("sudo")
-        .arg("--")
         .args(["ln", "-sf", "--"])
         .arg(&src)
         .arg(&dst)
@@ -224,7 +219,6 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
     let user = get_current_user();
 
     let status = Command::new("sudo")
-        .arg("--")
         .args(["chown", "-R", &format!("{}:admin", user), "--"])
         .arg(&path)
         .stdout(std::process::Stdio::null())

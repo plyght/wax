@@ -494,22 +494,33 @@ async fn install_impl(
         }
 
         let total_size: u64 = sizes.values().sum();
+        let pool = BottleDownloader::GLOBAL_CONNECTION_POOL;
         let n = bottle_urls.len().max(1);
-        sizes
+        let mut allocs: Vec<(String, usize, f64)> = sizes
             .iter()
             .map(|(name, &size)| {
-                let conns = if total_size == 0 {
-                    (BottleDownloader::GLOBAL_CONNECTION_POOL / n).max(1)
+                if total_size == 0 {
+                    let base = pool / n;
+                    (name.clone(), base.max(1), 0.0)
                 } else {
-                    let proportional = (BottleDownloader::GLOBAL_CONNECTION_POOL as f64
-                        * size as f64
-                        / total_size as f64)
-                        .round() as usize;
-                    proportional.max(1)
-                };
-                (name.clone(), conns)
+                    let exact = pool as f64 * size as f64 / total_size as f64;
+                    let base = (exact.floor() as usize).max(1);
+                    (name.clone(), base, exact - base as f64)
+                }
             })
-            .collect()
+            .collect();
+        // Distribute remaining connections by largest fractional part
+        let used: usize = allocs.iter().map(|(_, c, _)| *c).sum();
+        let mut remaining = pool.saturating_sub(used);
+        allocs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (_, c, _) in allocs.iter_mut() {
+            if remaining == 0 {
+                break;
+            }
+            *c += 1;
+            remaining -= 1;
+        }
+        allocs.into_iter().map(|(name, c, _)| (name, c)).collect()
     };
 
     let semaphore = Arc::new(Semaphore::new(CONCURRENT_LIMIT));
@@ -781,7 +792,7 @@ pub async fn install_extracted_bottle(
     platform: &str,
     state: &InstallState,
     quiet: bool,
-    _multi: Option<&MultiProgress>,
+    multi: Option<&MultiProgress>,
     existing_pb: Option<ProgressBar>,
 ) -> Result<()> {
     crate::signal::set_current_op(format!("installing {}", name));
@@ -799,7 +810,12 @@ pub async fn install_extracted_bottle(
                     pb.set_message(format!("{} {}", style(name).magenta(), style($msg).dim()));
                     pb.tick();
                 } else {
-                    println!("  {} {}", style(name).magenta(), style($msg).dim());
+                    let line = format!("  {} {}", style(name).magenta(), style($msg).dim());
+                    if let Some(ref m) = multi {
+                        let _ = m.println(&line);
+                    } else {
+                        println!("{}", line);
+                    }
                 }
             }
         };
@@ -1228,7 +1244,7 @@ async fn install_from_downloaded(
 
     // Clean up if version_dir already exists to ensure a fresh extraction
     if version_dir.exists() {
-        tokio::fs::remove_dir_all(&version_dir).await.ok();
+        tokio::fs::remove_dir_all(&version_dir).await?;
     }
 
     let staging =

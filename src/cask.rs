@@ -155,7 +155,14 @@ impl CaskState {
             let link_path = version_dir.join(app_name);
             if app_path.exists() && !link_path.exists() {
                 #[cfg(unix)]
-                tokio::fs::symlink(&app_path, &link_path).await.ok();
+                if let Err(e) = tokio::fs::symlink(&app_path, &link_path).await {
+                    tracing::warn!(
+                        "Failed to create Caskroom symlink {:?} -> {:?}: {}",
+                        link_path,
+                        app_path,
+                        e
+                    );
+                }
             }
         }
 
@@ -324,7 +331,12 @@ impl StagingContext {
                     .unwrap_or(url)
                     .split('/')
                     .next_back()
-                    .unwrap_or_else(|| download_path.file_name().unwrap().to_str().unwrap());
+                    .unwrap_or_else(|| {
+                        download_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("download")
+                    });
 
                 let decoded_filename = urlencoding::decode(original_filename)
                     .unwrap_or(std::borrow::Cow::Borrowed(original_filename));
@@ -433,36 +445,60 @@ impl CaskInstaller {
         let prefix = crate::bottle::homebrew_prefix()
             .to_string_lossy()
             .to_string();
+        let staging_str = staging.staging_root.to_str().unwrap_or("");
         let path = source_rel
             .replace("$HOMEBREW_PREFIX", &prefix)
             .replace("#{HOMEBREW_PREFIX}", &prefix)
-            .replace("$APPDIR", staging.staging_root.to_str().unwrap_or(""));
+            .replace("$APPDIR", staging_str);
 
         let p = Path::new(&path);
-        if p.is_absolute() {
+        let resolved = if p.is_absolute() {
             p.to_path_buf()
         } else {
-            staging.staging_root.join(path)
-        }
-    }
+            staging.staging_root.join(&path)
+        };
 
-    fn _is_in_path(dir: &Path) -> bool {
-        if let Ok(path_env) = std::env::var("PATH") {
-            path_env.split(':').any(|p| Path::new(p) == dir)
-        } else {
-            false
+        // Reject path traversal attempts (e.g. "../../etc/passwd")
+        if resolved
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            tracing::warn!(
+                "Rejecting source path with traversal: {} (resolved: {:?})",
+                source_rel,
+                resolved
+            );
+            return staging.staging_root.join(
+                Path::new(source_rel)
+                    .file_name()
+                    .unwrap_or(std::ffi::OsStr::new("unknown")),
+            );
         }
+
+        resolved
     }
 
     /// Probe a URL via HEAD request to detect artifact type from response headers.
-    /// Falls back to GET if HEAD is not supported. Returns None if type cannot be determined.
+    /// Falls back to a ranged GET if HEAD is not supported (e.g. 405).
+    /// Returns None if type cannot be determined.
     pub async fn probe_artifact_type(&self, url: &str) -> Option<&'static str> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .ok()?;
 
-        let response = client.head(url).send().await.ok()?;
+        let response = match client.head(url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            _ => {
+                // HEAD rejected — fall back to a tiny ranged GET.
+                client
+                    .get(url)
+                    .header(reqwest::header::RANGE, "bytes=0-0")
+                    .send()
+                    .await
+                    .ok()?
+            }
+        };
         let final_url = response.url().to_string();
 
         // Check final URL after redirects
@@ -693,8 +729,13 @@ impl CaskInstaller {
         let bin_dest_dir = Self::detect_writable_bin_dir().await?;
         let binary_dest_path = bin_dest_dir.join(name);
 
-        if tokio::fs::symlink_metadata(&binary_dest_path).await.is_ok() {
-            tokio::fs::remove_file(&binary_dest_path).await.ok();
+        if let Ok(metadata) = tokio::fs::symlink_metadata(&binary_dest_path).await {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || file_type.is_file() {
+                tokio::fs::remove_file(&binary_dest_path).await.ok();
+            } else if file_type.is_dir() {
+                tokio::fs::remove_dir_all(&binary_dest_path).await.ok();
+            }
         }
 
         rollback.add(binary_dest_path.clone());
@@ -850,7 +891,12 @@ impl CaskInstaller {
         let dest = dest_parent.join(name);
 
         if dest.exists() {
-            tokio::fs::remove_dir_all(&dest).await?;
+            let meta = tokio::fs::symlink_metadata(&dest).await?;
+            if meta.is_dir() {
+                tokio::fs::remove_dir_all(&dest).await?;
+            } else {
+                tokio::fs::remove_file(&dest).await?;
+            }
         }
 
         rollback.add(dest.clone());
@@ -915,11 +961,12 @@ impl CaskInstaller {
 
         let dest = dest_dir.join(filename);
 
-        if tokio::fs::symlink_metadata(&dest).await.is_ok() {
-            if dest.is_dir() {
-                tokio::fs::remove_dir_all(&dest).await.ok();
-            } else {
+        if let Ok(metadata) = tokio::fs::symlink_metadata(&dest).await {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || file_type.is_file() {
                 tokio::fs::remove_file(&dest).await.ok();
+            } else if file_type.is_dir() {
+                tokio::fs::remove_dir_all(&dest).await.ok();
             }
         }
 

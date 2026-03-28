@@ -1,6 +1,6 @@
+use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
 use crate::install::InstallState;
-use crate::cask::CaskState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,7 +34,6 @@ impl Lockfile {
         }
     }
 
-    #[allow(dead_code)]
     #[instrument]
     pub async fn generate() -> Result<Self> {
         debug!("Generating lockfile from installed packages");
@@ -100,7 +99,11 @@ impl Lockfile {
         let lockfile: Lockfile = toml::from_str(&contents)
             .map_err(|e| WaxError::LockfileError(format!("Failed to parse lockfile: {}", e)))?;
 
-        debug!("Loaded {} packages and {} casks from lockfile", lockfile.packages.len(), lockfile.casks.len());
+        debug!(
+            "Loaded {} packages and {} casks from lockfile",
+            lockfile.packages.len(),
+            lockfile.casks.len()
+        );
         Ok(lockfile)
     }
 

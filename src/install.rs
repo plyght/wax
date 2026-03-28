@@ -74,25 +74,40 @@ fn is_writable(path: &Path) -> bool {
         if let Ok(metadata) = std::fs::metadata(path) {
             let mode = metadata.mode();
             let uid = unsafe { libc::getuid() };
-            let gid = unsafe { libc::getgid() };
 
             if uid == 0 {
                 return true;
             }
 
+            // Owner write
             if metadata.uid() == uid {
                 return mode & 0o200 != 0;
             }
 
-            if metadata.gid() == gid {
-                return mode & 0o020 != 0;
+            // Check primary and supplementary groups
+            if mode & 0o020 != 0 {
+                let file_gid = metadata.gid();
+                let primary_gid = unsafe { libc::getgid() };
+                if file_gid == primary_gid {
+                    return true;
+                }
+                // Check supplementary groups
+                let ngroups = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+                if ngroups > 0 {
+                    let mut groups = vec![0u32; ngroups as usize];
+                    let n = unsafe { libc::getgroups(ngroups, groups.as_mut_ptr()) };
+                    if n > 0 && groups[..n as usize].contains(&file_gid) {
+                        return true;
+                    }
+                }
             }
 
+            // Other write
             return mode & 0o002 != 0;
         }
     }
 
-    // Fallback or non-unix
+    // Fallback: actually try to create a file (also used on non-unix)
     let test_file = path.join(".wax_write_test");
     let result = std::fs::OpenOptions::new()
         .write(true)

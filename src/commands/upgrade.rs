@@ -118,8 +118,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         if pkg.is_cask {
             continue;
         }
-        let rev_deps =
-            find_installed_reverse_dependencies(&pkg.name, &formulae, &installed_names);
+        let rev_deps = find_installed_reverse_dependencies(&pkg.name, &formulae, &installed_names);
         for dep in rev_deps {
             if !outdated_names.contains(&dep) && !dependents_to_reinstall.contains(&dep) {
                 dependents_to_reinstall.push(dep);
@@ -182,7 +181,9 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         .filter_map(|pkg| {
             let formula = formula_by_name.get(pkg.name.as_str())?;
             let bottle_info = formula.bottle.as_ref()?.stable.as_ref()?;
-            let bottle_file = bottle_info.files.get(&platform)
+            let bottle_file = bottle_info
+                .files
+                .get(&platform)
                 .or_else(|| bottle_info.files.get("all"))?;
             Some((pkg.name.clone(), bottle_file.url.clone()))
         })
@@ -209,22 +210,33 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         }
 
         let total_size: u64 = sizes.values().sum();
+        let pool = BottleDownloader::GLOBAL_CONNECTION_POOL;
         let n = formula_bottle_urls.len().max(1);
-        sizes
+        let mut allocs: Vec<(String, usize, f64)> = sizes
             .iter()
             .map(|(name, &size)| {
-                let conns = if total_size == 0 {
-                    (BottleDownloader::GLOBAL_CONNECTION_POOL / n).max(1)
+                if total_size == 0 {
+                    let base = pool / n;
+                    (name.clone(), base.max(1), 0.0)
                 } else {
-                    let proportional = (BottleDownloader::GLOBAL_CONNECTION_POOL as f64
-                        * size as f64
-                        / total_size as f64)
-                        .round() as usize;
-                    proportional.max(1)
-                };
-                (name.clone(), conns)
+                    let exact = pool as f64 * size as f64 / total_size as f64;
+                    let base = (exact.floor() as usize).max(1);
+                    (name.clone(), base, exact - base as f64)
+                }
             })
-            .collect()
+            .collect();
+        // Distribute remaining connections by largest fractional part
+        let used: usize = allocs.iter().map(|(_, c, _)| *c).sum();
+        let mut remaining = pool.saturating_sub(used);
+        allocs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (_, c, _) in allocs.iter_mut() {
+            if remaining == 0 {
+                break;
+            }
+            *c += 1;
+            remaining -= 1;
+        }
+        allocs.into_iter().map(|(name, c, _)| (name, c)).collect()
     };
 
     let semaphore = Arc::new(Semaphore::new(UPGRADE_CONCURRENT_LIMIT));
@@ -236,7 +248,9 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         .filter_map(|pkg| {
             let formula = formula_by_name.get(pkg.name.as_str())?;
             let bottle_info = formula.bottle.as_ref()?.stable.as_ref()?;
-            let bottle_file = bottle_info.files.get(&platform)
+            let bottle_file = bottle_info
+                .files
+                .get(&platform)
                 .or_else(|| bottle_info.files.get("all"))?;
 
             let url = bottle_file.url.clone();
@@ -287,9 +301,15 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     let mut pre_downloaded: HashMap<String, PreDownloaded> = HashMap::new();
     for task in download_tasks {
         match task.await {
-            Ok(Ok(d)) => { pre_downloaded.insert(d.name.clone(), d); }
-            Ok(Err(e)) => { let _ = multi.println(format!("{} download failed: {}", style("✗").red(), e)); }
-            Err(e) => { let _ = multi.println(format!("{} task error: {}", style("✗").red(), e)); }
+            Ok(Ok(d)) => {
+                pre_downloaded.insert(d.name.clone(), d);
+            }
+            Ok(Err(e)) => {
+                let _ = multi.println(format!("{} download failed: {}", style("✗").red(), e));
+            }
+            Err(e) => {
+                let _ = multi.println(format!("{} task error: {}", style("✗").red(), e));
+            }
         }
     }
 
@@ -470,14 +490,18 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
             );
             spinner.enable_steady_tick(std::time::Duration::from_millis(80));
             set_current_op(format!("reinstalling {}", dep_name));
-            spinner.set_message(format!(
-                "  reinstalling {}...",
-                style(dep_name).magenta()
-            ));
+            spinner.set_message(format!("  reinstalling {}...", style(dep_name).magenta()));
 
             let result = async {
                 uninstall::uninstall_quiet(cache, dep_name, false).await?;
-                install::install_quiet(cache, std::slice::from_ref(dep_name), false, user_flag, global_flag).await
+                install::install_quiet(
+                    cache,
+                    std::slice::from_ref(dep_name),
+                    false,
+                    user_flag,
+                    global_flag,
+                )
+                .await
             }
             .await;
 
