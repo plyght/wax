@@ -1,3 +1,10 @@
+//! Best-effort package discovery for items installed outside Wax.
+//!
+//! Wax keeps its own install state, but users can also install software
+//! manually or through other package managers. These helpers scan platform-
+//! specific locations and merge any matches back into Wax’s installed-package
+//! view so lockfiles, sync, and status commands stay accurate.
+
 use crate::api::{Cask, Formula};
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use crate::bottle::detect_platform;
@@ -13,7 +20,9 @@ use tokio::process::Command;
 use tracing::{debug, info};
 
 #[allow(dead_code)]
-pub async fn discover_manual_casks(casks: &[Cask]) -> Result<HashMap<String, InstalledCask>> {
+pub async fn discover_manually_installed_casks(
+    casks: &[Cask],
+) -> Result<HashMap<String, InstalledCask>> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = casks;
@@ -22,10 +31,13 @@ pub async fn discover_manual_casks(casks: &[Cask]) -> Result<HashMap<String, Ins
 
     #[cfg(target_os = "macos")]
     {
-        let alias_index = build_cask_alias_index(casks);
+        // Match application bundles against every known cask token/name alias.
+        let token_index = build_cask_token_index(casks);
         let mut discovered = HashMap::new();
 
-        for root in macos_app_roots() {
+        // Scan the standard application roots so manually installed apps are
+        // visible to Wax even when they were not installed through brew.
+        for root in macos_application_roots() {
             if !root.exists() {
                 continue;
             }
@@ -52,18 +64,18 @@ pub async fn discover_manual_casks(casks: &[Cask]) -> Result<HashMap<String, Ins
                     continue;
                 }
 
-                let bundle_name = app_bundle_name(&path)
+                let bundle_name = read_app_bundle_name(&path)
                     .await
                     .unwrap_or_else(|| file_name.trim_end_matches(".app").to_string());
 
-                let token = match_cask_token(&alias_index, &bundle_name)
-                    .or_else(|| match_cask_token(&alias_index, &file_name));
+                let token = resolve_cask_token(&token_index, &bundle_name)
+                    .or_else(|| resolve_cask_token(&token_index, &file_name));
 
                 let Some(token) = token else {
                     continue;
                 };
 
-                let version = read_bundle_version(&path)
+                let version = read_app_bundle_version(&path)
                     .await
                     .unwrap_or_else(|| "unknown".to_string());
                 let install_date = entry
@@ -71,8 +83,8 @@ pub async fn discover_manual_casks(casks: &[Cask]) -> Result<HashMap<String, Ins
                     .await
                     .ok()
                     .and_then(|m| m.modified().ok())
-                    .and_then(system_time_to_unix_secs)
-                    .unwrap_or_else(now_unix_secs);
+                    .and_then(system_time_to_unix_seconds)
+                    .unwrap_or_else(unix_seconds_now);
 
                 discovered
                     .entry(token.clone())
@@ -89,7 +101,7 @@ pub async fn discover_manual_casks(casks: &[Cask]) -> Result<HashMap<String, Ins
 
         if !discovered.is_empty() {
             info!(
-                "Discovered {} manually installed cask(s) in /Applications",
+                "Discovered {} cask(s) from manual installs in application roots",
                 discovered.len()
             );
         }
@@ -100,7 +112,7 @@ pub async fn discover_manual_casks(casks: &[Cask]) -> Result<HashMap<String, Ins
 
 #[allow(dead_code)]
 #[allow(clippy::needless_return)]
-pub async fn discover_linux_formulae(
+pub async fn discover_linux_system_packages(
     formulae: &[Formula],
 ) -> Result<HashMap<String, InstalledPackage>> {
     #[cfg(not(target_os = "linux"))]
@@ -111,11 +123,14 @@ pub async fn discover_linux_formulae(
 
     #[cfg(target_os = "linux")]
     {
-        let alias_index = build_formula_alias_index(formulae);
+        // Normalize package-manager names so dpkg/rpm entries can be matched
+        // back to the canonical Homebrew formula name.
+        let token_index = build_formula_token_index(formulae);
         let mut discovered = HashMap::new();
 
-        for (name, version) in linux_package_inventory().await? {
-            let Some(formula_name) = alias_index.get(&normalize_identifier(&name)).cloned() else {
+        for (name, version) in read_linux_package_inventory().await? {
+            let Some(formula_name) = token_index.get(&normalize_package_token(&name)).cloned()
+            else {
                 continue;
             };
 
@@ -125,7 +140,7 @@ pub async fn discover_linux_formulae(
                     name: formula_name,
                     version,
                     platform: detect_platform(),
-                    install_date: now_unix_secs(),
+                    install_date: unix_seconds_now(),
                     install_mode: InstallMode::Global,
                     from_source: false,
                     bottle_rebuild: 0,
@@ -136,7 +151,7 @@ pub async fn discover_linux_formulae(
 
         if !discovered.is_empty() {
             info!(
-                "Discovered {} manually installed Linux package(s)",
+                "Discovered {} Linux package(s) from dpkg/rpm inventories",
                 discovered.len()
             );
         }
@@ -146,13 +161,13 @@ pub async fn discover_linux_formulae(
 }
 
 #[allow(dead_code)]
-fn build_cask_alias_index(casks: &[Cask]) -> HashMap<String, String> {
+fn build_cask_token_index(casks: &[Cask]) -> HashMap<String, String> {
     let mut index = HashMap::new();
 
     for cask in casks {
-        for alias in cask_aliases(cask) {
+        for alias in cask_tokens(cask) {
             index
-                .entry(normalize_identifier(&alias))
+                .entry(normalize_package_token(&alias))
                 .or_insert_with(|| cask.token.clone());
         }
     }
@@ -161,15 +176,15 @@ fn build_cask_alias_index(casks: &[Cask]) -> HashMap<String, String> {
 }
 
 #[allow(dead_code)]
-fn build_formula_alias_index(formulae: &[Formula]) -> HashMap<String, String> {
+fn build_formula_token_index(formulae: &[Formula]) -> HashMap<String, String> {
     let mut index = HashMap::new();
 
     for formula in formulae {
         index
-            .entry(normalize_identifier(&formula.name))
+            .entry(normalize_package_token(&formula.name))
             .or_insert_with(|| formula.name.clone());
         index
-            .entry(normalize_identifier(&formula.full_name))
+            .entry(normalize_package_token(&formula.full_name))
             .or_insert_with(|| formula.name.clone());
     }
 
@@ -177,26 +192,26 @@ fn build_formula_alias_index(formulae: &[Formula]) -> HashMap<String, String> {
 }
 
 #[allow(dead_code)]
-fn cask_aliases(cask: &Cask) -> Vec<String> {
+fn cask_tokens(cask: &Cask) -> Vec<String> {
     let mut aliases = vec![cask.token.clone(), cask.full_token.clone()];
     aliases.extend(cask.name.clone());
     aliases
 }
 
 #[allow(dead_code)]
-fn match_cask_token(alias_index: &HashMap<String, String>, value: &str) -> Option<String> {
-    let normalized = normalize_identifier(value);
-    if let Some(token) = alias_index.get(&normalized) {
+fn resolve_cask_token(token_index: &HashMap<String, String>, value: &str) -> Option<String> {
+    let normalized = normalize_package_token(value);
+    if let Some(token) = token_index.get(&normalized) {
         return Some(token.clone());
     }
 
     let stripped = value.trim_end_matches(".app");
-    let normalized_stripped = normalize_identifier(stripped);
-    alias_index.get(&normalized_stripped).cloned()
+    let normalized_stripped = normalize_package_token(stripped);
+    token_index.get(&normalized_stripped).cloned()
 }
 
 #[allow(dead_code)]
-fn normalize_identifier(value: &str) -> String {
+fn normalize_package_token(value: &str) -> String {
     let value = value
         .replace(".app", "")
         .replace("_", "-")
@@ -229,7 +244,7 @@ fn normalize_identifier(value: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-fn macos_app_roots() -> Vec<PathBuf> {
+fn macos_application_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Ok(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
@@ -238,11 +253,11 @@ fn macos_app_roots() -> Vec<PathBuf> {
 }
 
 #[allow(dead_code)]
-async fn app_bundle_name(path: &Path) -> Option<String> {
-    if let Some(name) = read_bundle_string(path, "CFBundleDisplayName").await {
+async fn read_app_bundle_name(path: &Path) -> Option<String> {
+    if let Some(name) = read_info_plist_string(path, "CFBundleDisplayName").await {
         return Some(name);
     }
-    if let Some(name) = read_bundle_string(path, "CFBundleName").await {
+    if let Some(name) = read_info_plist_string(path, "CFBundleName").await {
         return Some(name);
     }
 
@@ -252,15 +267,15 @@ async fn app_bundle_name(path: &Path) -> Option<String> {
 }
 
 #[allow(dead_code)]
-async fn read_bundle_version(path: &Path) -> Option<String> {
-    if let Some(version) = read_bundle_string(path, "CFBundleShortVersionString").await {
+async fn read_app_bundle_version(path: &Path) -> Option<String> {
+    if let Some(version) = read_info_plist_string(path, "CFBundleShortVersionString").await {
         Some(version)
     } else {
-        read_bundle_string(path, "CFBundleVersion").await
+        read_info_plist_string(path, "CFBundleVersion").await
     }
 }
 
-async fn read_bundle_string(path: &Path, key: &str) -> Option<String> {
+async fn read_info_plist_string(path: &Path, key: &str) -> Option<String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = path;
@@ -300,15 +315,15 @@ async fn read_bundle_string(path: &Path, key: &str) -> Option<String> {
 }
 
 #[allow(dead_code)]
-async fn linux_package_inventory() -> Result<Vec<(String, String)>> {
+async fn read_linux_package_inventory() -> Result<Vec<(String, String)>> {
     let mut inventories = Vec::new();
 
-    if let Some(pkgs) = query_dpkg_packages().await? {
+    if let Some(pkgs) = query_dpkg_inventory().await? {
         inventories.extend(pkgs);
     }
 
     if inventories.is_empty() {
-        if let Some(pkgs) = query_rpm_packages().await? {
+        if let Some(pkgs) = query_rpm_inventory().await? {
             inventories.extend(pkgs);
         }
     }
@@ -317,7 +332,7 @@ async fn linux_package_inventory() -> Result<Vec<(String, String)>> {
 }
 
 #[allow(dead_code)]
-async fn query_dpkg_packages() -> Result<Option<Vec<(String, String)>>> {
+async fn query_dpkg_inventory() -> Result<Option<Vec<(String, String)>>> {
     let output = Command::new("dpkg-query")
         .arg("-W")
         .arg("-f=${binary:Package}\t${Version}\n")
@@ -332,11 +347,11 @@ async fn query_dpkg_packages() -> Result<Option<Vec<(String, String)>>> {
         return Ok(None);
     }
 
-    Ok(Some(parse_package_lines(&output.stdout, true)))
+    Ok(Some(parse_package_inventory_lines(&output.stdout, true)))
 }
 
 #[allow(dead_code)]
-async fn query_rpm_packages() -> Result<Option<Vec<(String, String)>>> {
+async fn query_rpm_inventory() -> Result<Option<Vec<(String, String)>>> {
     let output = Command::new("rpm")
         .arg("-qa")
         .arg("--qf")
@@ -352,11 +367,11 @@ async fn query_rpm_packages() -> Result<Option<Vec<(String, String)>>> {
         return Ok(None);
     }
 
-    Ok(Some(parse_package_lines(&output.stdout, false)))
+    Ok(Some(parse_package_inventory_lines(&output.stdout, false)))
 }
 
 #[allow(dead_code)]
-fn parse_package_lines(stdout: &[u8], strip_arch_suffix: bool) -> Vec<(String, String)> {
+fn parse_package_inventory_lines(stdout: &[u8], strip_arch_suffix: bool) -> Vec<(String, String)> {
     String::from_utf8_lossy(stdout)
         .lines()
         .filter_map(|line| {
@@ -377,14 +392,14 @@ fn parse_package_lines(stdout: &[u8], strip_arch_suffix: bool) -> Vec<(String, S
         .collect()
 }
 
-fn system_time_to_unix_secs(time: SystemTime) -> Option<i64> {
+fn system_time_to_unix_seconds(time: SystemTime) -> Option<i64> {
     time.duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs() as i64)
 }
 
-fn now_unix_secs() -> i64 {
-    system_time_to_unix_secs(SystemTime::now()).unwrap_or(0)
+fn unix_seconds_now() -> i64 {
+    system_time_to_unix_seconds(SystemTime::now()).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -393,12 +408,15 @@ mod tests {
 
     #[test]
     fn normalizes_common_app_names() {
-        assert_eq!(normalize_identifier("Google Chrome.app"), "google-chrome");
         assert_eq!(
-            normalize_identifier("Visual Studio Code"),
+            normalize_package_token("Google Chrome.app"),
+            "google-chrome"
+        );
+        assert_eq!(
+            normalize_package_token("Visual Studio Code"),
             "visual-studio-code"
         );
-        assert_eq!(normalize_identifier("Docker Desktop"), "docker-desktop");
+        assert_eq!(normalize_package_token("Docker Desktop"), "docker-desktop");
     }
 
     #[test]
@@ -413,13 +431,13 @@ mod tests {
             deprecated: false,
             disabled: false,
         };
-        let index = build_cask_alias_index(&[cask]);
+        let index = build_cask_token_index(&[cask]);
         assert_eq!(
-            match_cask_token(&index, "Google Chrome.app"),
+            resolve_cask_token(&index, "Google Chrome.app"),
             Some("google-chrome".to_string())
         );
         assert_eq!(
-            match_cask_token(&index, "Google Chrome"),
+            resolve_cask_token(&index, "Google Chrome"),
             Some("google-chrome".to_string())
         );
     }
@@ -427,7 +445,7 @@ mod tests {
     #[test]
     fn parses_package_lines() {
         let input = b"vim\t2:9.1.0000-1\nchromium:amd64\t125.0.6422.141-1\n";
-        let parsed = parse_package_lines(input, true);
+        let parsed = parse_package_inventory_lines(input, true);
         assert_eq!(parsed[0], ("vim".to_string(), "2:9.1.0000-1".to_string()));
         assert_eq!(
             parsed[1],

@@ -1,6 +1,6 @@
 use crate::cache::Cache;
 use crate::cask::CaskState;
-use crate::discovery::{discover_linux_formulae, discover_manual_casks};
+use crate::discovery::{discover_linux_system_packages, discover_manually_installed_casks};
 use crate::error::Result;
 use crate::install::InstallState;
 use crate::lockfile::{Lockfile, LockfileCask, LockfilePackage};
@@ -19,13 +19,13 @@ pub async fn lock(cache: &Cache) -> Result<()> {
     let mut installed_casks = cask_state.load().await?;
 
     if cfg!(target_os = "linux") {
-        for (name, package) in discover_linux_formulae(&formulae).await? {
+        for (name, package) in discover_linux_system_packages(&formulae).await? {
             installed_packages.entry(name).or_insert(package);
         }
     }
 
     if cfg!(target_os = "macos") {
-        for (name, cask) in discover_manual_casks(&casks).await? {
+        for (name, cask) in discover_manually_installed_casks(&casks).await? {
             installed_casks.entry(name).or_insert(cask);
         }
     }

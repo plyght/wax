@@ -98,9 +98,11 @@ wax upgrade nginx tree   # upgrade multiple packages
 wax up nginx             # shorthand
 
 # Generate lockfile
+# Includes packages discovered from manual installs and other package managers when present
 wax lock
 
 # Install from lockfile
+# Uses the same discovery pass to include manual installs / other package managers in the installed view
 wax sync
 ```
 
