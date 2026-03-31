@@ -248,6 +248,23 @@ impl Drop for RollbackContext {
 }
 
 impl StagingContext {
+    /// Returns the permanent on-disk directory for this cask version.
+    /// For DMG installs the staging root is a temporary mount point; the parent
+    /// is the actual version directory that survives after the image is detached.
+    pub fn permanent_dir(&self) -> PathBuf {
+        match &self.mount_point {
+            Some(mp) => mp
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| self.staging_root.clone()),
+            None => self.staging_root.clone(),
+        }
+    }
+
+    pub fn is_mounted(&self) -> bool {
+        self.mount_point.is_some()
+    }
+
     pub async fn new_in_dir(
         download_path: &Path,
         artifact_type: &str,
@@ -744,11 +761,24 @@ impl CaskInstaller {
         {
             use std::os::unix::fs::PermissionsExt;
 
-            tokio::fs::symlink(&source, &binary_dest_path).await?;
+            // For DMG casks the staging root is a mounted image that gets detached
+            // after staging drops. Copy the binary to the permanent version_dir first
+            // so the symlink target survives past unmount.
+            let link_target = if staging.is_mounted() {
+                let perm_dir = staging.permanent_dir();
+                tokio::fs::create_dir_all(&perm_dir).await?;
+                let dest = perm_dir.join(name);
+                tokio::fs::copy(&source, &dest).await?;
+                dest
+            } else {
+                source
+            };
 
-            let mut perms = tokio::fs::metadata(&source).await?.permissions();
+            tokio::fs::symlink(&link_target, &binary_dest_path).await?;
+
+            let mut perms = tokio::fs::metadata(&link_target).await?.permissions();
             perms.set_mode(0o755);
-            tokio::fs::set_permissions(&source, perms).await?;
+            tokio::fs::set_permissions(&link_target, perms).await?;
         }
         #[cfg(not(unix))]
         {

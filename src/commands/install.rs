@@ -713,6 +713,19 @@ async fn install_impl(
         println!();
     }
     for (name, version, extract_dir, bottle_sha, bottle_rebuild) in extracted_packages {
+        let spinner = if quiet {
+            ProgressBar::hidden()
+        } else {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars(crate::ui::SPINNER_TICK_CHARS),
+            );
+            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+            pb
+        };
         install_extracted_bottle(
             &name,
             &version,
@@ -725,9 +738,17 @@ async fn install_impl(
             &state,
             quiet,
             None,
-            None,
+            Some(spinner.clone()),
         )
         .await?;
+        spinner.finish_and_clear();
+        if !quiet {
+            println!(
+                "+ {}@{}",
+                style(&name).magenta(),
+                style(&version).dim()
+            );
+        }
     }
 
     let state_snapshot = state.load().await?;
@@ -1231,10 +1252,22 @@ async fn install_from_downloaded(
 ) -> Result<InstalledCask> {
     let installer = CaskInstaller::new();
 
-    // Step feedback printed directly so it always shows regardless of any parent progress context.
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars(crate::ui::SPINNER_TICK_CHARS),
+    );
+    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
     macro_rules! step {
         ($msg:expr) => {
-            println!("  {} {}", style(&cask.token).magenta(), style($msg).dim());
+            spinner.set_message(format!(
+                "{} {}",
+                style(&cask.token).magenta(),
+                style($msg).dim()
+            ));
         };
     }
 
@@ -1524,6 +1557,7 @@ async fn install_from_downloaded(
 
     step!("registering...");
     rollback.commit();
+    spinner.finish_and_clear();
 
     Ok(InstalledCask {
         name: cask.token.clone(),
