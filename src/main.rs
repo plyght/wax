@@ -12,6 +12,7 @@ mod install;
 mod lockfile;
 mod signal;
 mod sudo;
+mod system_pm;
 mod tap;
 mod ui;
 mod version;
@@ -153,6 +154,17 @@ enum Commands {
         packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Also upgrade OS packages via the native package manager (apt/dnf/pacman/apk/…)"
+        )]
+        system: bool,
+    },
+
+    #[command(about = "Manage OS-level packages via the native package manager")]
+    System {
+        #[command(subcommand)]
+        action: SystemAction,
     },
 
     #[command(about = "List packages with available updates")]
@@ -274,6 +286,17 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum SystemAction {
+    #[command(about = "Upgrade all OS packages via the native package manager")]
+    Upgrade,
+    #[command(about = "Install packages via the native package manager")]
+    Install {
+        #[arg(required = true, help = "Package name(s) to install")]
+        packages: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum BundleAction {
     #[command(about = "Dump installed packages as a Waxfile")]
     Dump,
@@ -344,6 +367,23 @@ fn init_logging(verbose: bool) -> Result<()> {
         .init();
 
     Ok(())
+}
+
+async fn handle_system_upgrade() -> Result<()> {
+    use crate::system_pm::SystemPm;
+    match SystemPm::detect().await {
+        Some(pm) => {
+            println!("\n{} upgrading OS packages via {}", console::style("→").cyan(), pm.name());
+            pm.upgrade_all().await
+        }
+        None => {
+            println!(
+                "  {} no supported system package manager found",
+                console::style("!").yellow()
+            );
+            Ok(())
+        }
+    }
 }
 
 #[tokio::main]
@@ -426,9 +466,33 @@ async fn main() -> Result<()> {
             user,
             global,
         } => commands::install::postinstall(&cache, &formulae, user, global).await,
-        Commands::Upgrade { packages, dry_run } => {
-            commands::upgrade::upgrade(&cache, &packages, dry_run).await
+        Commands::Upgrade {
+            packages,
+            dry_run,
+            system,
+        } => {
+            commands::upgrade::upgrade(&cache, &packages, dry_run).await?;
+            if system {
+                handle_system_upgrade().await
+            } else {
+                Ok(())
+            }
         }
+        Commands::System { action } => match action {
+            SystemAction::Upgrade => handle_system_upgrade().await,
+            SystemAction::Install { packages } => {
+                use crate::system_pm::SystemPm;
+                match SystemPm::detect().await {
+                    Some(pm) => {
+                        println!("installing via {}", pm.name());
+                        pm.install(&packages).await
+                    }
+                    None => Err(crate::error::WaxError::PlatformNotSupported(
+                        "No supported system package manager found".to_string(),
+                    )),
+                }
+            }
+        },
         Commands::Outdated => commands::outdated::outdated(&cache).await,
         Commands::Link { packages } => commands::link::link(&packages).await,
         Commands::Unlink { packages } => commands::link::unlink(&packages).await,
