@@ -1,6 +1,7 @@
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::cache::Cache;
 use crate::cask::CaskState;
+use crate::discovery::{discover_linux_system_packages, discover_manually_installed_casks};
 use crate::error::{Result, WaxError};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::lockfile::Lockfile;
@@ -30,10 +31,23 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     let formulae = cache.load_formulae().await?;
     let state = InstallState::new()?;
-    let installed_packages = state.load().await?;
+    let mut installed_packages = state.load().await?;
 
+    if cfg!(target_os = "linux") {
+        for (name, package) in discover_linux_system_packages(&formulae).await? {
+            installed_packages.entry(name).or_insert(package);
+        }
+    }
+
+    let casks = cache.load_casks().await?;
     let cask_state = CaskState::new()?;
-    let installed_casks = cask_state.load().await?;
+    let mut installed_casks = cask_state.load().await?;
+
+    if cfg!(target_os = "macos") {
+        for (name, cask) in discover_manually_installed_casks(&casks).await? {
+            installed_casks.entry(name).or_insert(cask);
+        }
+    }
 
     let current_platform = detect_platform();
     let mut packages_to_install = Vec::new();
@@ -70,7 +84,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     for (name, lock_cask) in &lockfile.casks {
         match installed_casks.get(name) {
             Some(installed) if installed.version != lock_cask.version => {
-                cask_upgrades.push((name.clone(), installed.version.clone(), lock_cask.version.clone()));
+                cask_upgrades.push((
+                    name.clone(),
+                    installed.version.clone(),
+                    lock_cask.version.clone(),
+                ));
                 casks_to_install.push(name.clone());
             }
             Some(_) => {
@@ -175,14 +193,19 @@ pub async fn sync(cache: &Cache) -> Result<()> {
                 .bottle
                 .as_ref()
                 .and_then(|b| b.stable.as_ref())
-                .ok_or_else(|| WaxError::BottleNotAvailable(format!("{} (no bottle info)", name)))?;
+                .ok_or_else(|| {
+                    WaxError::BottleNotAvailable(format!("{} (no bottle info)", name))
+                })?;
 
             let bottle_file = bottle_info
                 .files
                 .get(&lock_pkg.bottle)
                 .or_else(|| bottle_info.files.get("all"))
                 .ok_or_else(|| {
-                    WaxError::BottleNotAvailable(format!("{} for platform {}", name, lock_pkg.bottle))
+                    WaxError::BottleNotAvailable(format!(
+                        "{} for platform {}",
+                        name, lock_pkg.bottle
+                    ))
                 })?;
 
             let url = bottle_file.url.clone();
@@ -211,7 +234,9 @@ pub async fn sync(cache: &Cache) -> Result<()> {
                     .path()
                     .join(format!("{}-{}.tar.gz", name_clone, version));
 
-                downloader.download(&url, &tarball_path, Some(&pb), conns).await?;
+                downloader
+                    .download(&url, &tarball_path, Some(&pb), conns)
+                    .await?;
                 pb.finish_and_clear();
 
                 BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
@@ -295,10 +320,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         crate::commands::install::install_quiet(
             cache,
             &casks_to_install,
-            true, // cask
+            true,  // cask
             false, // user
             false, // global
-        ).await?;
+        )
+        .await?;
     }
 
     let elapsed = start.elapsed();

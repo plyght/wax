@@ -52,9 +52,9 @@ impl BottleDownloader {
     /// capped by `max_connections` (the caller's share of the global pool).
     fn num_connections(size: u64, max_connections: usize) -> usize {
         let ideal = match size {
-            s if s < 10 * 1024 * 1024 => 4,  // <10 MB → up to 4
-            s if s < 50 * 1024 * 1024 => 6,  // <50 MB → up to 6
-            _ => 8,                            // ≥50 MB → up to 8
+            s if s < 10 * 1024 * 1024 => 4, // <10 MB → up to 4
+            s if s < 50 * 1024 * 1024 => 6, // <50 MB → up to 6
+            _ => 8,                         // ≥50 MB → up to 8
         };
         ideal.min(max_connections).max(1)
     }
@@ -79,19 +79,25 @@ impl BottleDownloader {
         // Probe with a tiny range request.  This also resolves any redirect chain
         // (e.g. GHCR → Azure CDN pre-signed URL) and tells us the final URL and
         // whether the server supports byte-range requests.
-        let (cdn_url, total_size, accepts_ranges) =
-            self.probe_url(url, &auth_token).await.unwrap_or_else(|_| {
-                (url.to_string(), 0, false)
-            });
+        let (cdn_url, total_size, accepts_ranges) = self
+            .probe_url(url, &auth_token)
+            .await
+            .unwrap_or_else(|_| (url.to_string(), 0, false));
 
-        debug!("Download probe: size={} bytes, accepts_ranges={}, max_connections={}", total_size, accepts_ranges, max_connections);
+        debug!(
+            "Download probe: size={} bytes, accepts_ranges={}, max_connections={}",
+            total_size, accepts_ranges, max_connections
+        );
         if accepts_ranges && total_size >= Self::MULTIPART_THRESHOLD && max_connections > 1 {
             match self
                 .download_multipart(&cdn_url, dest_path, total_size, progress, max_connections)
                 .await
             {
                 Ok(()) => return Ok(()),
-                Err(e) => tracing::info!("Multipart failed ({}), falling back to single-connection", e),
+                Err(e) => tracing::info!(
+                    "Multipart failed ({}), falling back to single-connection",
+                    e
+                ),
             }
         }
 
@@ -99,18 +105,41 @@ impl BottleDownloader {
             .await
     }
 
-    /// Makes a range probe (bytes=0-0) following all redirects to discover the
-    /// final CDN URL, total content length, and range support.
+    /// Makes a HEAD probe following all redirects to discover the final CDN URL,
+    /// total content length, and range support.  Falls back to a range-GET
+    /// (bytes=0-0) if the HEAD request fails (e.g. 405 Method Not Allowed).
     async fn probe_url(
         &self,
         url: &str,
         auth_token: &Option<String>,
     ) -> Result<(String, u64, bool)> {
-        let mut req = self.client.get(url).header("Range", "bytes=0-0");
+        // Try HEAD first — cheap and avoids downloading any body.
+        let mut head_req = self.client.head(url);
         if let Some(ref tok) = auth_token {
-            req = req.header("Authorization", format!("Bearer {}", tok));
+            head_req = head_req.header("Authorization", format!("Bearer {}", tok));
         }
-        let resp = req.send().await?;
+
+        let resp = match head_req.send().await {
+            Ok(r) if r.status().is_success() || r.status().as_u16() == 206 => r,
+            _ => {
+                // HEAD rejected or failed — fall back to a tiny range GET.
+                let mut get_req = self.client.get(url).header("Range", "bytes=0-0");
+                if let Some(ref tok) = auth_token {
+                    get_req = get_req.header("Authorization", format!("Bearer {}", tok));
+                }
+                let r = get_req.send().await?;
+                // If the server ignored the Range header and returned the full
+                // body (200 instead of 206), abort early to avoid downloading
+                // the entire file during a probe.
+                if r.status().as_u16() == 200 {
+                    let final_url = r.url().to_string();
+                    let size = r.content_length().unwrap_or(0);
+                    drop(r);
+                    return Ok((final_url, size, false));
+                }
+                r
+            }
+        };
 
         let final_url = resp.url().to_string();
         let status = resp.status().as_u16();
@@ -131,9 +160,6 @@ impl BottleDownloader {
             .and_then(|s| s.parse::<u64>().ok())
             .or_else(|| resp.content_length())
             .unwrap_or(0);
-
-        // Drain the tiny response body so the connection is properly returned to the pool.
-        let _ = resp.bytes().await;
 
         Ok((final_url, total_size, accepts_ranges))
     }
@@ -261,13 +287,20 @@ impl BottleDownloader {
         poll_handle.abort();
 
         if let Some(e) = err {
-            return Err(WaxError::InstallError(format!("Multipart download failed: {}", e)));
+            return Err(WaxError::InstallError(format!(
+                "Multipart download failed: {}",
+                e
+            )));
         }
 
         if let Some(pb) = progress {
             pb.set_position(total_size);
         }
-        tracing::info!("Multipart complete: {} connections, {} bytes", n, total_size);
+        tracing::info!(
+            "Multipart complete: {} connections, {} bytes",
+            n,
+            total_size
+        );
         Ok(())
     }
 
@@ -417,7 +450,36 @@ impl BottleDownloader {
                                 path.display()
                             ))
                         })?;
+                        // Validate symlink target: reject absolute paths and
+                        // parent-dir traversals that could escape the dest.
+                        let target = Path::new(&*link_name);
+                        if target.is_absolute() {
+                            return Err(WaxError::InstallError(format!(
+                                "Symlink target is absolute (path traversal): {}",
+                                link_name.display()
+                            )));
+                        }
+                        // Resolve the symlink target relative to the entry's
+                        // parent and ensure it stays within canonical_dest.
                         if let Some(parent) = full_path.parent() {
+                            let resolved = parent.join(&*link_name);
+                            // Normalize away ".." components manually
+                            let mut normalized = PathBuf::new();
+                            for component in resolved.components() {
+                                match component {
+                                    std::path::Component::ParentDir => {
+                                        normalized.pop();
+                                    }
+                                    _ => normalized.push(component),
+                                }
+                            }
+                            if !normalized.starts_with(&canonical_dest) {
+                                return Err(WaxError::InstallError(format!(
+                                    "Symlink target escapes destination: {} -> {}",
+                                    path.display(),
+                                    link_name.display()
+                                )));
+                            }
                             std::fs::create_dir_all(parent)?;
                         }
                         if full_path.symlink_metadata().is_ok() {

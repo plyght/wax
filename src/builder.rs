@@ -297,14 +297,18 @@ impl Builder {
             }
 
             if use_ccache && (program == "gcc" || program == "clang" || program == "cc") {
-                let ccache_path = Command::new("which").arg("ccache").output()
+                let ccache_path = Command::new("which")
+                    .arg("ccache")
+                    .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                     .unwrap_or_else(|_| "ccache".to_string());
                 cmd.env("CC", format!("{} {}", ccache_path, program));
             }
 
             if use_ccache && (program == "g++" || program == "clang++" || program == "c++") {
-                let ccache_path = Command::new("which").arg("ccache").output()
+                let ccache_path = Command::new("which")
+                    .arg("ccache")
+                    .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                     .unwrap_or_else(|_| "ccache".to_string());
                 cmd.env("CXX", format!("{} {}", ccache_path, program));

@@ -5,6 +5,7 @@ mod cache;
 mod cask;
 mod commands;
 mod deps;
+mod discovery;
 mod error;
 mod formula_parser;
 mod install;
@@ -443,7 +444,7 @@ async fn main() -> Result<()> {
         } => commands::show_deps::deps(&cache, &formula, tree, installed).await,
         Commands::Pin { packages } => commands::pin::pin(&packages).await,
         Commands::Unpin { packages } => commands::pin::unpin(&packages).await,
-        Commands::Lock => commands::lock::lock().await,
+        Commands::Lock => commands::lock::lock(&cache).await,
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action } => commands::tap::tap(action, Some(&cache)).await,
         Commands::Doctor { fix } => commands::doctor::doctor(&cache, fix).await,

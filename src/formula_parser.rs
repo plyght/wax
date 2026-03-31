@@ -1,8 +1,8 @@
 use crate::error::{Result, WaxError};
-use serde::{Deserialize, Serialize};
-use tracing::{debug, instrument};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -83,7 +83,8 @@ impl FormulaParser {
 
     fn extract_field(content: &str, field: &str) -> Result<String> {
         let re = RE_FIELD.get_or_init(|| {
-            Regex::new(r#"(?m)^\s*(?P<field>url|sha256|desc|homepage|license)\s+"(?P<value>[^"]+)"#).unwrap()
+            Regex::new(r#"(?m)^\s*(?P<field>url|sha256|desc|homepage|license)\s+"(?P<value>[^"]+)"#)
+                .unwrap()
         });
 
         for cap in re.captures_iter(content) {
@@ -113,12 +114,16 @@ impl FormulaParser {
 
     fn extract_dependencies(content: &str, build_only: bool) -> Vec<String> {
         let re = RE_DEPENDS.get_or_init(|| {
-            Regex::new(r#"(?m)^\s*depends_on\s+"(?P<dep>[^"]+)"(?:\s*=>\s*:(?P<type>\w+))?"#).unwrap()
+            Regex::new(r#"(?m)^\s*depends_on\s+"(?P<dep>[^"]+)"(?:\s*=>\s*:(?P<type>\w+))?"#)
+                .unwrap()
         });
 
         let mut deps = Vec::new();
         for cap in re.captures_iter(content) {
-            let is_build = cap.name("type").map(|m| m.as_str() == "build").unwrap_or(false);
+            let is_build = cap
+                .name("type")
+                .map(|m| m.as_str() == "build")
+                .unwrap_or(false);
             if build_only == is_build {
                 deps.push(cap["dep"].to_string());
             }
@@ -147,7 +152,10 @@ impl FormulaParser {
                         if depth == 0 {
                             break;
                         }
-                    } else if trimmed.ends_with(" do") || trimmed.contains(" {") || (trimmed.starts_with("def ") && !trimmed.starts_with("def install")) {
+                    } else if trimmed.ends_with(" do")
+                        || trimmed.contains(" {")
+                        || (trimmed.starts_with("def ") && !trimmed.starts_with("def install"))
+                    {
                         depth += 1;
                     }
                     block.push_str(line);
@@ -185,7 +193,8 @@ impl FormulaParser {
 
         for cap in re.captures_iter(install_block) {
             let arg = &cap["arg"];
-            if !arg.contains("#{") { // Skip dynamic args for now as we can't easily resolve them
+            if !arg.contains("#{") {
+                // Skip dynamic args for now as we can't easily resolve them
                 args.push(arg.to_string());
             }
         }
@@ -194,9 +203,7 @@ impl FormulaParser {
     }
 
     fn extract_install_commands(install_block: &str) -> Vec<String> {
-        let re = RE_SYSTEM.get_or_init(|| {
-            Regex::new(r#"system\s+"(?P<cmd>[^"]+)""#).unwrap()
-        });
+        let re = RE_SYSTEM.get_or_init(|| Regex::new(r#"system\s+"(?P<cmd>[^"]+)""#).unwrap());
 
         let mut commands = Vec::new();
         for cap in re.captures_iter(install_block) {
@@ -219,7 +226,10 @@ impl FormulaParser {
 
         debug!("Fetching formula from: {}", url);
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| WaxError::ParseError(format!("Failed to create HTTP client: {}", e)))?;
         let response = client.get(&url).send().await?;
 
         if !response.status().is_success() {
@@ -247,7 +257,10 @@ impl FormulaParser {
 
         debug!("Fetching cask from: {}", url);
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| WaxError::ParseError(format!("Failed to create HTTP client: {}", e)))?;
         let response = client.get(&url).send().await?;
 
         if !response.status().is_success() {
@@ -263,18 +276,18 @@ impl FormulaParser {
 
     pub fn extract_shimscript(content: &str) -> Option<String> {
         let re = Regex::new(r"(?m)File\.write\s+(?:shimscript|\w+),\s*<<~([A-Z_]+)\n").ok()?;
-        
+
         if let Some(cap) = re.captures(content) {
             let delim = &cap[1];
             let start = cap.get(0).unwrap().end();
             let rest = &content[start..];
-            
+
             // Find the delimiter on a line by itself (ignoring leading whitespace)
             let end_re_str = format!(r"(?m)^\s*{}$", delim);
             if let Ok(end_re) = Regex::new(&end_re_str) {
                 if let Some(end_match) = end_re.find(rest) {
                     let mut script = rest[..end_match.start()].to_string();
-                    
+
                     // Basic interpolations
                     script = script.replace("#{appdir}", "/Applications");
                     return Some(script);
@@ -325,7 +338,11 @@ mod tests {
     EOS
   end
         "#;
-        let expected = "#!/bin/bash\n      exec '/Applications/Firefox.app/Contents/MacOS/firefox' \"$@\"";
-        assert_eq!(FormulaParser::extract_shimscript(ruby).unwrap().trim(), expected);
+        let expected =
+            "#!/bin/bash\n      exec '/Applications/Firefox.app/Contents/MacOS/firefox' \"$@\"";
+        assert_eq!(
+            FormulaParser::extract_shimscript(ruby).unwrap().trim(),
+            expected
+        );
     }
 }
