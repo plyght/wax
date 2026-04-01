@@ -1,4 +1,5 @@
 use crate::cache::Cache;
+use crate::cask::CaskState;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
@@ -24,8 +25,16 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     state.sync_from_cellar().await.ok();
     let installed = state.load().await?;
 
+    let cask_state = CaskState::new()?;
+    let installed_casks = cask_state.load().await?;
+
     let resolved: Vec<String> = if all {
         let mut names: Vec<String> = installed.keys().cloned().collect();
+        for name in installed_casks.keys() {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
         names.sort();
         names
     } else {
@@ -59,6 +68,9 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     };
 
     for (i, name) in resolved.iter().enumerate() {
+        // Determine if this package is a cask (either by explicit flag or by being in cask state)
+        let is_cask = cask || installed_casks.contains_key(name.as_str());
+
         let install_mode = installed.get(name.as_str()).map(|p| p.install_mode);
         let (user_flag, global_flag) = match install_mode {
             Some(InstallMode::User) => (true, false),
@@ -84,8 +96,8 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         set_current_op(format!("removing {}", name));
         spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
 
-        if installed.contains_key(name.as_str()) {
-            uninstall::uninstall_quiet(cache, name, cask).await?;
+        if installed.contains_key(name.as_str()) || installed_casks.contains_key(name.as_str()) {
+            uninstall::uninstall_quiet(cache, name, is_cask).await?;
         }
         spinner.finish_and_clear();
 
@@ -104,7 +116,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         install::install_quiet_with_progress(
             cache,
             std::slice::from_ref(name),
-            cask,
+            is_cask,
             user_flag,
             global_flag,
             &pb,
