@@ -331,7 +331,10 @@ async fn uninstall_cask(
                 let mut removed = false;
                 for app_path in &candidates {
                     if app_path.exists() {
-                        tokio::fs::remove_dir_all(app_path).await?;
+                        if let Err(_) = tokio::fs::remove_dir_all(app_path).await {
+                            // Fall back to sudo for system-installed apps.
+                            crate::sudo::sudo_remove(app_path)?;
+                        }
                         removed = true;
                         break;
                     }
