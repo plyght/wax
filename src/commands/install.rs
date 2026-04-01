@@ -748,11 +748,7 @@ async fn install_impl(
         .await?;
         spinner.finish_and_clear();
         if !quiet {
-            println!(
-                "+ {}@{}",
-                style(&name).magenta(),
-                style(&version).dim()
-            );
+            println!("+ {}@{}", style(&name).magenta(), style(&version).dim());
         }
     }
 
@@ -968,9 +964,8 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
     // Reuse the globally active MultiProgress if one is running (e.g. upgrade),
     // so download bars appear inside the existing render layer instead of a
     // competing one that causes terminal tearing.
-    let multi: Arc<MultiProgress> = Arc::new(
-        crate::signal::clone_active_multi().unwrap_or_else(MultiProgress::new),
-    );
+    let multi: Arc<MultiProgress> =
+        Arc::new(crate::signal::clone_active_multi().unwrap_or_else(MultiProgress::new));
 
     let casks = cache.load_casks().await?;
     let _state = CaskState::new()?;
@@ -1007,15 +1002,6 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
     if to_install.is_empty() {
         return Ok(());
     }
-
-    let _ = multi.println(format!(
-        "installing {}\n",
-        to_install
-            .iter()
-            .map(|n| format!("{} (cask)", style(n).magenta()))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
 
     if dry_run {
         let _ = multi.println("dry run - no changes made".to_string());
