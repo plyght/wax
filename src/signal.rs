@@ -26,6 +26,17 @@ pub fn clear_active_multi() {
     }
 }
 
+/// Clone the currently active MultiProgress, if any.
+/// Callers that need to add bars or print through the active render layer
+/// (e.g. install_casks called from upgrade) use this to avoid spawning a
+/// competing MultiProgress instance that causes terminal tearing.
+pub fn clone_active_multi() -> Option<MultiProgress> {
+    active_multi_mutex()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned())
+}
+
 /// Print a message that appears correctly above/alongside active progress bars.
 fn print_interrupt(msg: &str) {
     let used_multi = active_multi_mutex()

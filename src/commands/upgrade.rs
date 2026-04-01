@@ -377,28 +377,18 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                 set_current_op(format!("installing {}", pkg.name));
 
                 if pkg.is_cask {
-                    // Casks: use the normal install path
-                    let pb = multi.insert_from_back(1, ProgressBar::new(0));
-                    pb.set_style(
-                        ProgressStyle::default_bar()
-                            .template(&format!(
-                                "{{spinner:.green}} {} {{bar:30.cyan/blue}} {{bytes}}/{{total_bytes}} {{bytes_per_sec}}",
-                                label
-                            ))
-                            .unwrap()
-                            .progress_chars(PROGRESS_BAR_CHARS),
-                    );
-                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                    // Casks: install_casks reuses the active MultiProgress so
+                    // its download bars appear in the same render layer. Pass a
+                    // hidden placeholder — the pb param is unused for casks.
                     let r = install::install_quiet_with_progress(
                         cache,
                         std::slice::from_ref(&pkg.name),
                         true,
                         false,
                         false,
-                        &pb,
+                        &ProgressBar::hidden(),
                     )
                     .await;
-                    pb.finish_and_clear();
                     r
                 } else if let Some(dl) = pre_downloaded.remove(&pkg.name) {
                     // Formula: use pre-downloaded bottle.

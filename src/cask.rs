@@ -667,7 +667,18 @@ impl CaskInstaller {
             )));
         }
 
-        println!("\n⚠️  PKG installer requires administrator privileges");
+        // Warn before prompting so the user knows why credentials are needed.
+        if let Some(m) = crate::signal::clone_active_multi() {
+            let _ = m.println("\n⚠️  PKG installer requires administrator privileges");
+        } else {
+            println!("\n⚠️  PKG installer requires administrator privileges");
+        }
+
+        // Acquire sudo credentials interactively before spawning the installer.
+        // acquire_sudo() prompts with Touch ID / password and caches the ticket.
+        tokio::task::spawn_blocking(crate::sudo::acquire_sudo)
+            .await
+            .map_err(|e| WaxError::InstallError(e.to_string()))??;
 
         let install_output = tokio::process::Command::new("sudo")
             .arg("installer")

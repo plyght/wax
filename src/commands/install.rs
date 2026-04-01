@@ -964,6 +964,14 @@ struct DownloadedCask {
 #[instrument(skip(cache))]
 async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> Result<()> {
     let start = std::time::Instant::now();
+
+    // Reuse the globally active MultiProgress if one is running (e.g. upgrade),
+    // so download bars appear inside the existing render layer instead of a
+    // competing one that causes terminal tearing.
+    let multi: Arc<MultiProgress> = Arc::new(
+        crate::signal::clone_active_multi().unwrap_or_else(MultiProgress::new),
+    );
+
     let casks = cache.load_casks().await?;
     let _state = CaskState::new()?;
     let mut installed_casks = _state.load().await?;
@@ -992,7 +1000,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
 
     if !already_installed.is_empty() {
         for name in &already_installed {
-            println!("{} is already installed", style(name).magenta());
+            let _ = multi.println(format!("{} is already installed", style(name).magenta()));
         }
     }
 
@@ -1000,17 +1008,17 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         return Ok(());
     }
 
-    println!(
+    let _ = multi.println(format!(
         "installing {}\n",
         to_install
             .iter()
             .map(|n| format!("{} (cask)", style(n).magenta()))
             .collect::<Vec<_>>()
             .join(", ")
-    );
+    ));
 
     if dry_run {
-        println!("dry run - no changes made");
+        let _ = multi.println("dry run - no changes made".to_string());
         return Ok(());
     }
 
@@ -1069,9 +1077,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         ));
     }
 
-    // --- Phase 2: download all concurrently with shared MultiProgress ---
-    let multi = Arc::new(MultiProgress::new());
-
+    // --- Phase 2: download all concurrently ---
     let download_tasks: Vec<_> = resolved
         .into_iter()
         .map(|(name, details, artifact_type)| {
@@ -1081,7 +1087,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
                 let temp_dir = TempDir::new()?;
                 let download_path = temp_dir.path().join(format!("{}.{}", name, artifact_type));
 
-                let pb = multi.add(ProgressBar::new(0));
+                let pb = multi.insert_from_back(1, ProgressBar::new(0));
                 pb.set_style(
                     ProgressStyle::default_bar()
                         .template(PROGRESS_BAR_PREFIX_TEMPLATE)
