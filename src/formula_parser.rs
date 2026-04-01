@@ -152,10 +152,7 @@ impl FormulaParser {
                         if depth == 0 {
                             break;
                         }
-                    } else if trimmed.ends_with(" do")
-                        || trimmed.contains(" {")
-                        || (trimmed.starts_with("def ") && !trimmed.starts_with("def install"))
-                    {
+                    } else if Self::opens_ruby_block(trimmed) {
                         depth += 1;
                     }
                     block.push_str(line);
@@ -173,6 +170,21 @@ impl FormulaParser {
         ))
     }
 
+    fn opens_ruby_block(trimmed: &str) -> bool {
+        trimmed.ends_with(" do")
+            || trimmed.contains(" {")
+            || trimmed.starts_with("if ")
+            || trimmed.starts_with("unless ")
+            || trimmed.starts_with("case ")
+            || trimmed.starts_with("while ")
+            || trimmed.starts_with("until ")
+            || trimmed.starts_with("for ")
+            || trimmed.starts_with("begin")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("module ")
+            || (trimmed.starts_with("def ") && !trimmed.starts_with("def install"))
+    }
+
     fn detect_build_system(install_block: &str) -> BuildSystem {
         if install_block.contains("./configure") || install_block.contains("./bootstrap") {
             BuildSystem::Autotools
@@ -188,7 +200,8 @@ impl FormulaParser {
     }
 
     fn extract_configure_args(install_block: &str) -> Vec<String> {
-        let re = Regex::new(r#""(?P<arg>--[a-z0-9\-_=#{}/]+)""#).unwrap();
+        let re =
+            Regex::new(r#""(?P<arg>(?:--[a-z0-9\-_=#{}/]+|-D[A-Za-z0-9_=\-#{}/.:+]+))""#).unwrap();
         let mut args = Vec::new();
 
         for cap in re.captures_iter(install_block) {
@@ -344,5 +357,38 @@ mod tests {
             FormulaParser::extract_shimscript(ruby).unwrap().trim(),
             expected
         );
+    }
+
+    #[test]
+    fn test_extract_install_block_with_nested_if() {
+        let formula = r#"
+class Fastfetch < Formula
+  def install
+    args = ["-DENABLE_SYSTEM_YYJSON=ON"]
+    if HOMEBREW_PREFIX.to_s != HOMEBREW_DEFAULT_PREFIX
+      args << "-DCUSTOM_PCRE2=ON"
+    end
+    system "cmake", "-S", ".", "-B", "build", *args, *std_cmake_args
+    system "cmake", "--build", "build"
+  end
+end
+        "#;
+
+        let block = FormulaParser::extract_install_block(formula).unwrap();
+        assert!(
+            block.contains(r#"system "cmake", "-S", ".", "-B", "build", *args, *std_cmake_args"#)
+        );
+        assert!(block.contains(r#"system "cmake", "--build", "build""#));
+    }
+
+    #[test]
+    fn test_extract_cmake_define_args() {
+        let install_block = r#"
+system "cmake", "-S", ".", "-B", "build", "-DBUILD_FLASHFETCH=OFF", "-DENABLE_SYSTEM_YYJSON=ON", *std_cmake_args
+        "#;
+
+        let args = FormulaParser::extract_configure_args(install_block);
+        assert!(args.contains(&"-DBUILD_FLASHFETCH=OFF".to_string()));
+        assert!(args.contains(&"-DENABLE_SYSTEM_YYJSON=ON".to_string()));
     }
 }
