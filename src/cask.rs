@@ -400,20 +400,6 @@ impl CaskInstaller {
         }
     }
 
-    fn check_platform_support() -> Result<()> {
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(WaxError::PlatformNotSupported(
-                "Cask installation is only supported on macOS. Use formulae for Linux packages."
-                    .to_string(),
-            ))
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Ok(())
-        }
-    }
-
     pub fn applications_dir() -> Result<PathBuf> {
         #[cfg(target_os = "macos")]
         {
@@ -421,9 +407,7 @@ impl CaskInstaller {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            Err(WaxError::PlatformNotSupported(
-                "Applications directory concept is macOS-specific".to_string(),
-            ))
+            Ok(dirs::home_dir()?.join("Applications"))
         }
     }
 
@@ -607,7 +591,11 @@ impl CaskInstaller {
         rollback: &mut RollbackContext,
         source_rel: &str,
     ) -> Result<()> {
-        Self::check_platform_support()?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            debug!("Skipping .app bundle install on non-macOS: {}", source_rel);
+            return Ok(());
+        }
         let source = self.resolve_source_path(staging, source_rel);
         let app_name = Path::new(source_rel)
             .file_name()
@@ -656,7 +644,10 @@ impl CaskInstaller {
         _rollback: &mut RollbackContext,
         source_rel: &str,
     ) -> Result<()> {
-        Self::check_platform_support()?;
+        #[cfg(not(target_os = "macos"))]
+        return Err(WaxError::PlatformNotSupported(
+            "PKG installers are macOS-only".to_string(),
+        ));
         let source = self.resolve_source_path(staging, source_rel);
         info!("Installing PKG: {:?}", source);
 
@@ -709,7 +700,6 @@ impl CaskInstaller {
         target_name: Option<&str>,
         cask_name: Option<&str>,
     ) -> Result<Option<PathBuf>> {
-        Self::check_platform_support()?;
         let source = self.resolve_source_path(staging, source_rel);
         let name = target_name.unwrap_or_else(|| {
             Path::new(source_rel)
@@ -812,7 +802,6 @@ impl CaskInstaller {
         rollback: &mut RollbackContext,
         source_rel: &str,
     ) -> Result<()> {
-        Self::check_platform_support()?;
         let source = self.resolve_source_path(staging, source_rel);
         let font_name = Path::new(source_rel)
             .file_name()
@@ -821,7 +810,10 @@ impl CaskInstaller {
                 WaxError::InstallError(format!("Invalid font source: {}", source_rel))
             })?;
 
+        #[cfg(target_os = "macos")]
         let user_fonts = dirs::home_dir()?.join("Library/Fonts");
+        #[cfg(not(target_os = "macos"))]
+        let user_fonts = dirs::home_dir()?.join(".local/share/fonts");
         tokio::fs::create_dir_all(&user_fonts).await?;
         let dest = user_fonts.join(font_name);
 
@@ -842,7 +834,7 @@ impl CaskInstaller {
         rollback: &mut RollbackContext,
         source_rel: &str,
     ) -> Result<()> {
-        Self::check_platform_support()?;
+
         let source = self.resolve_source_path(staging, source_rel);
         let man_name = Path::new(source_rel)
             .file_name()
@@ -879,7 +871,7 @@ impl CaskInstaller {
         source_rel: &str,
         target_path: &str,
     ) -> Result<()> {
-        Self::check_platform_support()?;
+
         let source = self.resolve_source_path(staging, source_rel);
         let dest = PathBuf::from(target_path);
 
@@ -921,7 +913,7 @@ impl CaskInstaller {
         source_rel: &str,
         dest_parent: &Path,
     ) -> Result<()> {
-        Self::check_platform_support()?;
+
         let source = self.resolve_source_path(staging, source_rel);
         let name = Path::new(source_rel)
             .file_name()
@@ -970,7 +962,7 @@ impl CaskInstaller {
         token: &str,
         target_name: Option<&str>,
     ) -> Result<()> {
-        Self::check_platform_support()?;
+
 
         let source = self.resolve_source_path(staging, source_rel);
 

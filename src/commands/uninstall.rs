@@ -303,57 +303,58 @@ async fn uninstall_cask(
             }
         }
         _ => {
+            // Normalize the stored app_name to just the .app bundle filename,
+            // in case a deeper path was stored (e.g. "Foo.app/Contents/MacOS/foo").
+            let raw_name = cask
+                .app_name
+                .clone()
+                .unwrap_or_else(|| format!("{}.app", cask_name));
+            let app_basename = std::path::Path::new(&raw_name)
+                .components()
+                .find(|c| {
+                    matches!(c, std::path::Component::Normal(n)
+                        if n.to_string_lossy().ends_with(".app"))
+                })
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .unwrap_or(raw_name);
+
+            // On macOS: check /Applications, then ~/Applications.
+            // On Linux: check ~/Applications only (no system /Applications).
             #[cfg(target_os = "macos")]
-            {
-                // Normalize the stored app_name to just the .app bundle filename,
-                // in case a deeper path was stored (e.g. "Foo.app/Contents/MacOS/foo").
-                let raw_name = cask
-                    .app_name
-                    .clone()
-                    .unwrap_or_else(|| format!("{}.app", cask_name));
-                let app_basename = std::path::Path::new(&raw_name)
-                    .components()
-                    .find(|c| {
-                        matches!(c, std::path::Component::Normal(n)
-                            if n.to_string_lossy().ends_with(".app"))
-                    })
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .unwrap_or(raw_name);
+            let candidates: Vec<std::path::PathBuf> = vec![
+                std::path::PathBuf::from("/Applications").join(&app_basename),
+                dirs::home_dir()
+                    .map(|h| h.join("Applications").join(&app_basename))
+                    .unwrap_or_default(),
+            ];
+            #[cfg(not(target_os = "macos"))]
+            let candidates: Vec<std::path::PathBuf> = vec![dirs::home_dir()
+                .map(|h| h.join("Applications").join(&app_basename))
+                .unwrap_or_default()];
 
-                // Check /Applications first, then ~/Applications as fallback.
-                let candidates = [
-                    std::path::PathBuf::from("/Applications").join(&app_basename),
-                    dirs::home_dir()
-                        .map(|h| h.join("Applications").join(&app_basename))
-                        .unwrap_or_default(),
-                ];
-
-                let mut removed = false;
-                for app_path in &candidates {
-                    if app_path.exists() {
-                        if let Err(_) = tokio::fs::remove_dir_all(app_path).await {
-                            // Fall back to sudo for system-installed apps.
-                            crate::sudo::sudo_remove(app_path)?;
-                        }
+            let mut removed = false;
+            for app_path in &candidates {
+                if app_path.exists() {
+                    #[cfg(target_os = "macos")]
+                    if let Err(_) = tokio::fs::remove_dir_all(app_path).await {
+                        // Fall back to sudo for system-installed apps.
+                        crate::sudo::sudo_remove(app_path)?;
                         removed = true;
                         break;
                     }
-                }
-
-                if !removed && !quiet {
-                    eprintln!(
-                        "warning: could not find {}.app in /Applications — \
-                        you may need to remove it manually",
-                        cask_name
-                    );
+                    #[cfg(not(target_os = "macos"))]
+                    tokio::fs::remove_dir_all(app_path).await?;
+                    removed = true;
+                    break;
                 }
             }
 
-            #[cfg(not(target_os = "macos"))]
-            {
-                return Err(WaxError::PlatformNotSupported(
-                    "Cask uninstallation is only supported on macOS".to_string(),
-                ));
+            if !removed && !quiet {
+                eprintln!(
+                    "warning: could not find {} in Applications — \
+                    you may need to remove it manually",
+                    app_basename
+                );
             }
         }
     }
