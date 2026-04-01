@@ -184,6 +184,7 @@ impl Builder {
             "Unix Makefiles"
         };
 
+        let homebrew_prefix = crate::bottle::homebrew_prefix();
         let mut args = vec![
             "-S".to_string(),
             source_dir.display().to_string(),
@@ -191,6 +192,10 @@ impl Builder {
             build_dir.display().to_string(),
             format!("-DCMAKE_INSTALL_PREFIX={}", prefix.display()),
             format!("-G{}", generator),
+            // Embed Homebrew lib dir in RPATH so installed binaries find .so files
+            // without needing LD_LIBRARY_PATH.
+            format!("-DCMAKE_INSTALL_RPATH={}/lib", homebrew_prefix.display()),
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string(),
         ];
         args.extend(configure_args.iter().cloned());
 

@@ -199,6 +199,20 @@ impl FormulaParser {
         }
     }
 
+    /// cmake mode verbs that appear as quoted args in `system "cmake", "--build", ...` calls.
+    /// These are NOT configure options and must not be forwarded to the cmake -S/-B step.
+    const CMAKE_MODE_VERBS: &'static [&'static str] = &[
+        "--build",
+        "--install",
+        "--open",
+        "--preset",
+        "--fresh",
+        "--list-presets",
+        "--workflow",
+        "--version",
+        "--help",
+    ];
+
     fn extract_configure_args(install_block: &str) -> Vec<String> {
         // Match args in double quotes: "--flag" or "-DFLAG=val"
         let re_quoted =
@@ -214,7 +228,7 @@ impl FormulaParser {
 
         for cap in re_quoted.captures_iter(install_block) {
             let arg = &cap["arg"];
-            if !arg.contains("#{") {
+            if !arg.contains("#{") && !Self::CMAKE_MODE_VERBS.contains(&arg) {
                 args.push(arg.to_string());
             }
         }
@@ -430,5 +444,27 @@ system "cmake", "-S", ".", "-B", "build", "-DBUILD_FLASHFETCH=OFF", "-DENABLE_SY
         // Static -D args must be captured
         assert!(args.contains(&"-DBUILD_FLASHFETCH=OFF".to_string()));
         assert!(args.contains(&"-DENABLE_SYSTEM_YYJSON=ON".to_string()));
+    }
+
+    #[test]
+    fn test_cmake_mode_verbs_not_captured_as_configure_args() {
+        // --build and --install are cmake mode verbs, not configure flags.
+        // They must NOT appear in configure_args or they break the cmake -S/-B step.
+        let install_block = r#"
+    system "cmake", "-S", ".", "-B", "build", "-DFOO=ON", *std_cmake_args
+    system "cmake", "--build", "build"
+    system "cmake", "--install", "build"
+        "#;
+
+        let args = FormulaParser::extract_configure_args(install_block);
+        assert!(
+            !args.contains(&"--build".to_string()),
+            "--build must not be a configure arg"
+        );
+        assert!(
+            !args.contains(&"--install".to_string()),
+            "--install must not be a configure arg"
+        );
+        assert!(args.contains(&"-DFOO=ON".to_string()));
     }
 }
