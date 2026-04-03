@@ -1122,22 +1122,26 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         }
     }
 
-    let mut to_install = Vec::new();
-    let mut native_linux_installs = Vec::new();
+    let mut to_install = Vec::new();          // macOS: full CaskInstaller path
+    let mut linux_cask_installs = Vec::new(); // Linux: snap → flatpak → native PM
     let mut already_installed = Vec::new();
 
     for cask_name in cask_names {
         if installed_casks.contains_key(cask_name) {
             already_installed.push(cask_name.clone());
-        } else if !cfg!(target_os = "macos") && (cask_name == "google-chrome" || cask_name.ends_with("/google-chrome") || cask_name.ends_with("google-chrome")) {
-            native_linux_installs.push(cask_name.clone());
-        } else if casks
-            .iter()
-            .any(|c| &c.token == cask_name || &c.full_token == cask_name)
-        {
-            to_install.push(cask_name.clone());
+        } else if cfg!(target_os = "macos") {
+            if casks
+                .iter()
+                .any(|c| &c.token == cask_name || &c.full_token == cask_name)
+            {
+                to_install.push(cask_name.clone());
+            } else {
+                eprintln!("{}: cask not found", style(cask_name).magenta());
+            }
         } else {
-            eprintln!("{}: cask not found", style(cask_name).magenta());
+            // On Linux, Homebrew cask artifacts are macOS-only.
+            // Route all cask requests through snap/flatpak/native PM instead.
+            linux_cask_installs.push(cask_name.clone());
         }
     }
 
@@ -1147,7 +1151,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         }
     }
 
-    if to_install.is_empty() && native_linux_installs.is_empty() {
+    if to_install.is_empty() && linux_cask_installs.is_empty() {
         return Ok(());
     }
 
@@ -1205,7 +1209,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         }
     }
 
-    if resolved.is_empty() && native_linux_installs.is_empty() {
+    if resolved.is_empty() && linux_cask_installs.is_empty() {
         return Err(WaxError::InstallError(
             "No casks could be resolved".to_string(),
         ));
@@ -1300,25 +1304,27 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         }
     }
 
-    if !native_linux_installs.is_empty() {
+    if !linux_cask_installs.is_empty() {
         let pm = SystemPm::detect().await.ok_or_else(|| {
             WaxError::InstallError(
-                "No native package manager found for Google Chrome on Linux".to_string(),
+                "No supported package manager found for Linux cask install".to_string(),
             )
         })?;
 
-        for name in &native_linux_installs {
-            match name.as_str() {
-                "google-chrome" => {
-                    pm.install_google_chrome().await?;
+        for name in &linux_cask_installs {
+            match pm.install_cask(name).await {
+                Ok(()) => {
                     println!(
-                        "{} {} installed via native package manager",
+                        "{} {} installed",
                         style("✓").green().bold(),
                         style(name).magenta(),
                     );
                     installed_count += 1;
                 }
-                _ => {}
+                Err(e) => {
+                    eprintln!("{} {} failed: {}", style("✗").red(), style(name).magenta(), e);
+                    failed.push(name.clone());
+                }
             }
         }
     }

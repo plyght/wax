@@ -169,30 +169,56 @@ impl SystemPm {
         Ok(())
     }
 
-    /// Install Google Chrome on Fedora-like Linux systems using Google's RPM.
-    /// This is used as a native-package fallback when users request google-chrome
-    /// on Linux instead of the macOS-only Homebrew cask path.
-    pub async fn install_google_chrome(&self) -> Result<()> {
-        let rpm_url = "https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm";
-
-        match self {
-            Self::Dnf | Self::Yum => {
-                let pkg_bin = if which("dnf").await {
-                    "dnf"
-                } else if which("yum").await {
-                    "yum"
-                } else {
-                    return Err(WaxError::PlatformNotSupported(
-                        "Google Chrome native install requires dnf or yum".to_string(),
-                    ));
-                };
-                run_visible("sudo", &[pkg_bin, "install", "-y", rpm_url]).await?;
-                Ok(())
+    /// Install a cask (GUI app) on Linux by trying snap → flatpak → native PM.
+    ///
+    /// On Linux, Homebrew cask artifacts are macOS-only, so we route cask
+    /// installs through the Linux app distribution layers instead.
+    pub async fn install_cask(&self, cask_name: &str) -> Result<()> {
+        // 1. Try snap — no extra repo setup needed on Ubuntu/Debian/derivatives.
+        if which("snap").await {
+            // Some snaps need --classic confinement; try both.
+            for args in &[
+                vec!["install", cask_name],
+                vec!["install", "--classic", cask_name],
+            ] {
+                let ok = tokio::process::Command::new("snap")
+                    .args(args.as_slice())
+                    .status()
+                    .await
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if ok {
+                    return Ok(());
+                }
             }
-            _ => Err(WaxError::PlatformNotSupported(
-                "Google Chrome native install is only wired for Fedora-like systems".to_string(),
-            )),
         }
+
+        // 2. Try flatpak via Flathub — good GUI app coverage on Fedora/etc.
+        if which("flatpak").await {
+            // Ensure Flathub remote exists (harmless if already present).
+            let _ = tokio::process::Command::new("flatpak")
+                .args([
+                    "remote-add",
+                    "--if-not-exists",
+                    "flathub",
+                    "https://dl.flathub.org/repo/flathub.flatpakrepo",
+                ])
+                .output()
+                .await;
+
+            let ok = tokio::process::Command::new("flatpak")
+                .args(["install", "-y", "flathub", cask_name])
+                .status()
+                .await
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                return Ok(());
+            }
+        }
+
+        // 3. Fall back to native package manager (apt, dnf, pacman, etc.).
+        self.install(&[cask_name.to_string()]).await
     }
 }
 

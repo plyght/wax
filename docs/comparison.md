@@ -1,5 +1,136 @@
 # Wax vs Homebrew Performance Comparison
 
+---
+
+## Benchmark 2 — Linux x86\_64 (WSL2, wax 0.12.6)
+
+### System
+
+| | |
+|--|--|
+| **OS** | Fedora Linux 43 (WSL2 — Windows Subsystem for Linux 2.6.3.0) |
+| **Kernel** | Linux 6.6.87.2-microsoft-standard-WSL2 |
+| **Host** | Windows (WSL2 adds a filesystem translation layer — native Linux would be faster) |
+| **CPU** | Intel Core i9-7960X (12 cores) @ 2.81 GHz |
+| **GPU** | AMD Radeon RX 6800 XT + NVIDIA GeForce GTX 1080 |
+| **RAM** | 61.32 GiB |
+| **wax** | 0.12.6 (release build) |
+| **Homebrew** | 5.1.3-4-g8fbdcb7 (Linuxbrew) |
+| **Date** | 2026-04-03 |
+
+> **WSL2 note**: Filesystem operations cross a hypervisor boundary (ext4 inside Hyper-V). This adds measurable overhead to both tools but is more pronounced for brew's tar extraction and Ruby startup. Native Linux installs would show even larger margins for wax.
+
+### Results
+
+Each command run 3 times, averaged. All wax installs use `--user` (no sudo required).
+
+#### Update
+
+| Run | wax (warm) | brew (warm) |
+|-----|-----------|------------|
+| 1 | 0.238s | 0.723s |
+| 2 | 0.227s | 0.739s |
+| 3 | 0.234s | 0.718s |
+| **avg** | **0.233s** | **0.727s** |
+
+**3.1x faster** · wax uses HTTP 304 conditional requests; brew runs `git fetch`
+
+Cold cache (first run after cache wipe): wax **0.782s** vs brew would require a full `git pull` (~13s+ on a fresh install).
+
+---
+
+#### Search
+
+| Run | wax | brew |
+|-----|-----|------|
+| 1 | 0.137s | 1.714s |
+| 2 | 0.135s | 1.668s |
+| 3 | 0.136s | 1.665s |
+| **avg** | **0.136s** | **1.682s** |
+
+**12.4x faster** · wax searches pre-parsed in-memory JSON; brew evaluates Ruby files
+
+---
+
+#### Info
+
+| Run | wax | brew |
+|-----|-----|------|
+| 1 | 0.104s | 2.428s |
+| 2 | 0.100s | 2.073s |
+| 3 | 0.100s | 2.068s |
+| **avg** | **0.101s** | **2.190s** |
+
+**21.7x faster**
+
+---
+
+#### Install: `tree` (single package, cold)
+
+| Run | wax | brew |
+|-----|-----|------|
+| 1 | 1.807s | 6.635s |
+| 2 | ~0.13s* | 5.709s |
+| 3 | ~0.13s* | — |
+| **cold avg** | **1.807s** | **6.17s** |
+
+**3.4x faster** · wax downloads and extracts the bottle; brew does the same plus runs `brew cleanup`
+
+\* Runs 2–3 report "already installed" (wax detects via Cellar scan); cold run 1 is the valid figure.
+
+---
+
+#### Install: `ripgrep bat fd` (3 packages, cold, parallel)
+
+| Run | wax | brew |
+|-----|-----|------|
+| 1 | 2.396s | 16.380s |
+| 2 | 0.134s* | 2.131s* |
+| 3 | 0.133s* | 2.154s* |
+| **cold (run 1)** | **2.396s** | **16.380s** |
+
+**6.8x faster** · wax downloads all packages concurrently; brew is sequential
+
+---
+
+#### Install: `ffmpeg` + 8 dependencies (large, parallel download, cold)
+
+ffmpeg 8.1 — 287 files, 67.6 MB bottle — plus 8 dependencies (dav1d, x264, x265, lame, opus, svt-av1, libvpx, sdl2) installed fresh.
+
+| Run | wax (9 pkgs parallel) | brew (ffmpeg only†) |
+|-----|-----------------------|---------------------|
+| 1 | 5.339s | 11.552s |
+| 2 | 5.148s | 11.398s |
+| 3 | 5.160s | 11.472s |
+| **avg** | **5.22s** | **11.47s** |
+
+**>2.2x faster** — and that's wax installing *9 packages* vs brew installing *ffmpeg alone* (with deps pre-installed). Full brew install from scratch would take substantially longer.
+
+† `brew reinstall ffmpeg` — deps (x264, x265, etc.) were already present in the Linuxbrew Cellar. wax installed all 9 from scratch in parallel.
+
+---
+
+### Summary Table (Linux, wax 0.12.6 vs Homebrew 5.1.3)
+
+| Benchmark | wax | brew | speedup |
+|-----------|-----|------|---------|
+| update (warm) | 0.233s | 0.727s | **3.1x** |
+| search nginx | 0.136s | 1.682s | **12.4x** |
+| info nginx | 0.101s | 2.190s | **21.7x** |
+| install tree (cold) | 1.807s | 6.17s | **3.4x** |
+| install ripgrep+bat+fd (cold, parallel) | 2.396s | 16.380s | **6.8x** |
+| install ffmpeg+8deps (cold, parallel) | 5.22s | 11.47s† | **>2.2x** |
+
+† brew had deps pre-installed; wax started from scratch.
+
+> Run `bash benchmark.sh` from the repo root to reproduce these results on your machine.
+
+---
+
+---
+
+## Benchmark 1 — macOS Apple Silicon (wax 0.1.0–0.1.5)
+
 ## Executive Summary
 
 Performance benchmarks comparing wax 0.1.0 against Homebrew 5.0.9 on macOS 15.6.1 (Apple M1, 8GB RAM).
