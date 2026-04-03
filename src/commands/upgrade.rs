@@ -843,6 +843,8 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
                     installed_version: installed.version.clone(),
                     latest_version: if rebuild_outdated {
                         format!("{} (rebuild {})", latest, formula.bottle_rebuild())
+                    } else if sha_outdated {
+                        format!("{} (bottle updated)", latest)
                     } else {
                         latest
                     },

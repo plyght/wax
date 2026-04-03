@@ -400,7 +400,7 @@ async fn install_impl(
     cache.ensure_fresh().await?;
 
     if cask {
-        return install_casks(cache, package_names, dry_run).await;
+        return install_casks(cache, package_names, dry_run, quiet).await;
     }
 
     let install_mode = match InstallMode::from_flags(user, global)? {
@@ -546,7 +546,7 @@ async fn install_impl(
 
     // Install all auto-detected casks concurrently (batch download + serial install)
     if !detected_casks.is_empty() {
-        install_casks(cache, &detected_casks, dry_run).await?;
+        install_casks(cache, &detected_casks, dry_run, quiet).await?;
     }
 
     if all_to_install.is_empty() {
@@ -1095,7 +1095,7 @@ struct DownloadedCask {
 }
 
 #[instrument(skip(cache))]
-async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> Result<()> {
+async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quiet: bool) -> Result<()> {
     let start = std::time::Instant::now();
 
     // Reuse the globally active MultiProgress if one is running (e.g. upgrade),
@@ -1276,12 +1276,14 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
             Ok(installed_cask) => {
                 let state = CaskState::new()?;
                 state.add(installed_cask).await?;
-                println!(
-                    "{} {} (cask) {}",
-                    style("✓").green().bold(),
-                    style(&d.name).magenta(),
-                    style(&d.details.version).dim()
-                );
+                if !quiet {
+                    println!(
+                        "{} {} (cask) {}",
+                        style("✓").green().bold(),
+                        style(&d.name).magenta(),
+                        style(&d.details.version).dim()
+                    );
+                }
                 installed_count += 1;
             }
             Err(e) => {
@@ -1306,11 +1308,13 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
         for name in &linux_cask_installs {
             match pm.install_cask(name).await {
                 Ok(()) => {
-                    println!(
-                        "{} {} installed",
-                        style("✓").green().bold(),
-                        style(name).magenta(),
-                    );
+                    if !quiet {
+                        println!(
+                            "{} {} installed",
+                            style("✓").green().bold(),
+                            style(name).magenta(),
+                        );
+                    }
                     installed_count += 1;
                 }
                 Err(e) => {
@@ -1323,25 +1327,29 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool) -> R
 
     let elapsed = start.elapsed();
     if failed.is_empty() {
-        println!(
-            "\n{} {} installed [{}ms]",
-            installed_count,
-            if installed_count == 1 {
-                "cask"
-            } else {
-                "casks"
-            },
-            elapsed.as_millis()
-        );
+        if !quiet {
+            println!(
+                "\n{} {} installed [{}ms]",
+                installed_count,
+                if installed_count == 1 {
+                    "cask"
+                } else {
+                    "casks"
+                },
+                elapsed.as_millis()
+            );
+        }
         Ok(())
     } else {
-        println!(
-            "\n{}/{} casks installed ({} failed) [{}ms]",
-            installed_count,
-            downloaded.len(),
-            failed.len(),
-            elapsed.as_millis()
-        );
+        if !quiet {
+            println!(
+                "\n{}/{} casks installed ({} failed) [{}ms]",
+                installed_count,
+                downloaded.len(),
+                failed.len(),
+                elapsed.as_millis()
+            );
+        }
         Err(WaxError::InstallError(format!(
             "Some casks failed: {}",
             failed.join(", ")
