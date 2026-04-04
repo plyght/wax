@@ -51,40 +51,9 @@ cd wax
 ./install.sh
 ```
 
-On Windows, from the clone: `.\install.ps1` (same idea: `cargo build --release`, then copies `wax.exe`).
+To **force** a pre-built release while standing in a clone, set `WAX_USE_RELEASE=1` before `./install.sh`.
 
-To **force** a pre-built release while standing in a clone, set `WAX_USE_RELEASE=1` before `./install.sh`, or `$env:WAX_USE_RELEASE = '1'` before `.\install.ps1`.
-
-**Windows (PowerShell one-liner)** — downloads the matching pre-built binary from [GitHub Releases](https://github.com/semitechnological/wax/releases) (`wax-windows-x64.exe` or `wax-windows-arm64.exe`; requires a release produced after this asset set exists):
-
-```powershell
-irm https://raw.githubusercontent.com/semitechnological/wax/master/install.ps1 | iex
-```
-
-Installs to `%USERPROFILE%\.local\bin\wax.exe` by default. Override with `$env:WAX_INSTALL_DIR = 'C:\path\to\bin'` before running. Pin a build with `$env:WAX_VERSION = 'v0.14.3'`.
-
-If `iex` is blocked, use: `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/semitechnological/wax/master/install.ps1 | iex"`
-
-From `cmd.exe` you can run that same `powershell -NoProfile ...` line.
-
-**Execution policy (narrowest change):** To allow local scripts **only for the current PowerShell process** (recommended instead of changing machine-wide policy), run once per window before `.\install.ps1` or `iex`:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
-
-That does not persist after you close the session. Prefer this over `RemoteSigned`/`Unrestricted` at `CurrentUser` or `LocalMachine` unless you intentionally want a broader policy.
-
-Release archives include **Linux** (`wax-linux-x64`, `wax-linux-arm64`), **macOS** (`wax-macos-x64`, `wax-macos-arm64`), and **Windows** (`wax-windows-x64.exe`, `wax-windows-arm64.exe`), each with a `.sha256` sidecar when published by CI.
-
-**Windows (build from source)** — with Rust from [rustup](https://rustup.rs/), use `.\install.ps1` from a clone (above), or manually:
-
-```powershell
-git clone https://github.com/semitechnological/wax.git
-cd wax
-cargo build --release
-.\target\release\wax.exe --help
-```
+GitHub Releases ship **Linux** and **macOS** binaries (`wax-linux-*`, `wax-macos-*`) with `.sha256` sidecars when published by CI.
 
 **Homebrew tap** — builds from source via cargo:
 
