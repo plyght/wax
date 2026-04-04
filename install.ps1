@@ -1,11 +1,11 @@
 #Requires -Version 5.1
-# Wax installer — downloads the pre-built Windows binary from GitHub Releases.
-# Usage (from an elevated or normal PowerShell):
+# Wax installer — from a clone: builds with cargo. Otherwise: GitHub Releases.
+# Usage:
 #   irm https://raw.githubusercontent.com/semitechnological/wax/master/install.ps1 | iex
-# Pin a release:
-#   $env:WAX_VERSION = 'v0.14.3'; irm ... | iex
-# Custom install directory (directory only; file will be wax.exe):
-#   $env:WAX_INSTALL_DIR = "$env:USERPROFILE\bin"; irm ... | iex
+#   .\install.ps1
+#   $env:WAX_USE_RELEASE = '1'; .\install.ps1   # force release download from a clone
+#
+param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -16,64 +16,107 @@ $installDir = if ($env:WAX_INSTALL_DIR) {
     Join-Path $env:USERPROFILE '.local\bin'
 }
 
-if (-not [Environment]::Is64BitOperatingSystem) {
-    Write-Error 'Wax pre-built Windows installers require 64-bit Windows.'
-}
-
-$osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-$asset = switch ($osArch) {
-    ([System.Runtime.InteropServices.Architecture]::X64) { 'wax-windows-x64.exe' }
-    ([System.Runtime.InteropServices.Architecture]::Arm64) { 'wax-windows-arm64.exe' }
-    default { throw "Unsupported Windows CPU architecture for pre-built wax: $osArch (build from source instead)." }
-}
-
-$archLabel = if ($asset -match 'arm64') { 'windows/arm64' } else { 'windows/x64' }
-
-$version = $env:WAX_VERSION
-if (-not $version) {
-    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ 'User-Agent' = 'wax-install-ps1' }
-    $version = $rel.tag_name
-}
-if ($version -notmatch '^v') {
-    $version = "v$version"
-}
-
-$base = "https://github.com/$Repo/releases/download/$version"
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("wax-install-" + [System.IO.Path]::GetRandomFileName())
-
-try {
-    Write-Host "Installing wax ${version} ($archLabel)…"
-    Invoke-WebRequest -Uri "$base/$asset" -OutFile $tmp -UseBasicParsing
-
-    $expected = $null
+function Install-FromRepo {
+    param([string]$Root)
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        throw 'cargo not in PATH — install Rust from https://rustup.rs/ or set WAX_USE_RELEASE=1 to download a release binary.'
+    }
+    Write-Host "Building wax from local checkout ($Root)…"
+    Push-Location $Root
     try {
-        $raw = (Invoke-WebRequest -Uri "$base/$asset.sha256" -UseBasicParsing).Content.Trim()
-        $expected = ($raw -split '\s+')[0]
-    } catch {
-        Write-Warning "No .sha256 file for ${version} — skipping integrity check"
+        cargo build --release
+    } finally {
+        Pop-Location
     }
-
-    if ($expected) {
-        $hash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
-        if ($hash.ToLowerInvariant() -ne $expected.ToLowerInvariant()) {
-            throw "SHA256 mismatch (expected $expected, got $hash)"
-        }
-        Write-Host 'Checksum verified.'
+    $built = Join-Path $Root 'target\release\wax.exe'
+    if (-not (Test-Path -LiteralPath $built)) {
+        throw "Build finished but $built not found."
     }
-
     New-Item -ItemType Directory -Force -Path $installDir | Out-Null
     $dest = Join-Path $installDir 'wax.exe'
-    Move-Item -LiteralPath $tmp -Destination $dest -Force
+    Copy-Item -LiteralPath $built -Destination $dest -Force
     Write-Host "Installed to $dest"
+    Hint-Path
+}
 
+function Hint-Path {
     $dirs = ($env:PATH -split ';' | ForEach-Object { $_.TrimEnd('\') })
     if ($installDir -notin $dirs) {
         Write-Host ''
         Write-Host 'Add this folder to your user PATH if `wax` is not found:'
         Write-Host "  $installDir"
     }
-} finally {
-    if (Test-Path -LiteralPath $tmp) {
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+}
+
+function Install-FromRelease {
+    if (-not [Environment]::Is64BitOperatingSystem) {
+        Write-Error 'Wax pre-built Windows installers require 64-bit Windows.'
     }
+
+    $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    $asset = switch ($osArch) {
+        ([System.Runtime.InteropServices.Architecture]::X64) { 'wax-windows-x64.exe' }
+        ([System.Runtime.InteropServices.Architecture]::Arm64) { 'wax-windows-arm64.exe' }
+        default { throw "Unsupported Windows CPU architecture for pre-built wax: $osArch (clone the repo and run .\install.ps1 to build)." }
+    }
+
+    $archLabel = if ($asset -match 'arm64') { 'windows/arm64' } else { 'windows/x64' }
+
+    $version = $env:WAX_VERSION
+    if (-not $version) {
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ 'User-Agent' = 'wax-install-ps1' }
+        $version = $rel.tag_name
+    }
+    if ($version -notmatch '^v') {
+        $version = "v$version"
+    }
+
+    $base = "https://github.com/$Repo/releases/download/$version"
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("wax-install-" + [System.IO.Path]::GetRandomFileName())
+
+    try {
+        Write-Host "Installing wax $version ($archLabel) from GitHub Releases…"
+        Invoke-WebRequest -Uri "$base/$asset" -OutFile $tmp -UseBasicParsing
+
+        $expected = $null
+        try {
+            $raw = (Invoke-WebRequest -Uri "$base/$asset.sha256" -UseBasicParsing).Content.Trim()
+            $expected = ($raw -split '\s+')[0]
+        } catch {
+            Write-Warning "No .sha256 file for $version — skipping integrity check"
+        }
+
+        if ($expected) {
+            $hash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
+            if ($hash.ToLowerInvariant() -ne $expected.ToLowerInvariant()) {
+                throw "SHA256 mismatch (expected $expected, got $hash)"
+            }
+            Write-Host 'Checksum verified.'
+        }
+
+        New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+        $dest = Join-Path $installDir 'wax.exe'
+        Move-Item -LiteralPath $tmp -Destination $dest -Force
+        Write-Host "Installed to $dest"
+
+        Hint-Path
+    } finally {
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$repoRoot = $PSScriptRoot
+$invokedAsThisScript = $PSCommandPath -and ((Split-Path -Leaf $PSCommandPath) -eq 'install.ps1')
+if (
+    $invokedAsThisScript -and
+    $repoRoot -and
+    ($env:WAX_USE_RELEASE -ne '1') -and
+    (Test-Path -LiteralPath (Join-Path $repoRoot 'Cargo.toml')) -and
+    (Select-String -Path (Join-Path $repoRoot 'Cargo.toml') -Pattern 'name\s*=\s*"waxpkg"' -Quiet)
+) {
+    Install-FromRepo -Root $repoRoot
+} else {
+    Install-FromRelease
 }

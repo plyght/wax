@@ -43,6 +43,18 @@ curl -fsSL https://raw.githubusercontent.com/semitechnological/wax/master/instal
 Installs to `~/.local/bin/wax`. Override the destination with `WAX_INSTALL_DIR=/usr/local/bin`.
 Pin a specific release with `WAX_VERSION=v0.13.3`.
 
+**From a git clone** (builds with your Rust toolchain; no GitHub download):
+
+```bash
+git clone https://github.com/semitechnological/wax.git
+cd wax
+./install.sh
+```
+
+On Windows, from the clone: `.\install.ps1` (same idea: `cargo build --release`, then copies `wax.exe`).
+
+To **force** a pre-built release while standing in a clone, set `WAX_USE_RELEASE=1` before `./install.sh`, or `$env:WAX_USE_RELEASE = '1'` before `.\install.ps1`.
+
 **Windows (PowerShell one-liner)** — downloads the matching pre-built binary from [GitHub Releases](https://github.com/semitechnological/wax/releases) (`wax-windows-x64.exe` or `wax-windows-arm64.exe`; requires a release produced after this asset set exists):
 
 ```powershell
@@ -57,7 +69,7 @@ From `cmd.exe` you can run that same `powershell -NoProfile ...` line.
 
 Release archives include **Linux** (`wax-linux-x64`, `wax-linux-arm64`), **macOS** (`wax-macos-x64`, `wax-macos-arm64`), and **Windows** (`wax-windows-x64.exe`, `wax-windows-arm64.exe`), each with a `.sha256` sidecar when published by CI.
 
-**Windows (build from source)** — with Rust from [rustup](https://rustup.rs/):
+**Windows (build from source)** — with Rust from [rustup](https://rustup.rs/), use `.\install.ps1` from a clone (above), or manually:
 
 ```powershell
 git clone https://github.com/semitechnological/wax.git
@@ -79,7 +91,7 @@ brew install --HEAD wax
 cargo install waxpkg
 ```
 
-**From source:**
+**From source (manual)** — equivalent to `./install.sh` from a clone:
 
 ```bash
 git clone https://github.com/semitechnological/wax.git
