@@ -47,6 +47,11 @@ jobs:
             asset_name: wax-windows-x64.exe
             use_cross: false
 
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset_name: wax-windows-arm64.exe
+            use_cross: false
+
     steps:
       - uses: actions/checkout@v4
         with:

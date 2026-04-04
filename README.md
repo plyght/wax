@@ -43,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/semitechnological/wax/master/instal
 Installs to `~/.local/bin/wax`. Override the destination with `WAX_INSTALL_DIR=/usr/local/bin`.
 Pin a specific release with `WAX_VERSION=v0.13.3`.
 
-**Windows (PowerShell one-liner)** — downloads `wax-windows-x64.exe` from [GitHub Releases](https://github.com/semitechnological/wax/releases) (requires a release that includes the Windows asset, produced by the release workflow):
+**Windows (PowerShell one-liner)** — downloads the matching pre-built binary from [GitHub Releases](https://github.com/semitechnological/wax/releases) (`wax-windows-x64.exe` or `wax-windows-arm64.exe`; requires a release produced after this asset set exists):
 
 ```powershell
 irm https://raw.githubusercontent.com/semitechnological/wax/master/install.ps1 | iex
@@ -53,7 +53,9 @@ Installs to `%USERPROFILE%\.local\bin\wax.exe` by default. Override with `$env:W
 
 If `iex` is blocked, use: `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/semitechnological/wax/master/install.ps1 | iex"`
 
-**Windows (`cmd.exe`)** — same as above via PowerShell, or run the repo’s `install.bat` after `git clone`.
+From `cmd.exe` you can run that same `powershell -NoProfile ...` line.
+
+Release archives include **Linux** (`wax-linux-x64`, `wax-linux-arm64`), **macOS** (`wax-macos-x64`, `wax-macos-arm64`), and **Windows** (`wax-windows-x64.exe`, `wax-windows-arm64.exe`), each with a `.sha256` sidecar when published by CI.
 
 **Windows (build from source)** — with Rust from [rustup](https://rustup.rs/):
 

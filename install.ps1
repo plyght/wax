@@ -20,7 +20,14 @@ if (-not [Environment]::Is64BitOperatingSystem) {
     Write-Error 'Wax pre-built Windows installers require 64-bit Windows.'
 }
 
-$asset = 'wax-windows-x64.exe'
+$osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+$asset = switch ($osArch) {
+    ([System.Runtime.InteropServices.Architecture]::X64) { 'wax-windows-x64.exe' }
+    ([System.Runtime.InteropServices.Architecture]::Arm64) { 'wax-windows-arm64.exe' }
+    default { throw "Unsupported Windows CPU architecture for pre-built wax: $osArch (build from source instead)." }
+}
+
+$archLabel = if ($asset -match 'arm64') { 'windows/arm64' } else { 'windows/x64' }
 
 $version = $env:WAX_VERSION
 if (-not $version) {
@@ -35,7 +42,7 @@ $base = "https://github.com/$Repo/releases/download/$version"
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("wax-install-" + [System.IO.Path]::GetRandomFileName())
 
 try {
-    Write-Host "Installing wax ${version} (windows/x64)…"
+    Write-Host "Installing wax ${version} ($archLabel)…"
     Invoke-WebRequest -Uri "$base/$asset" -OutFile $tmp -UseBasicParsing
 
     $expected = $null
