@@ -67,6 +67,14 @@ If `iex` is blocked, use: `powershell -NoProfile -ExecutionPolicy Bypass -Comman
 
 From `cmd.exe` you can run that same `powershell -NoProfile ...` line.
 
+**Execution policy (narrowest change):** To allow local scripts **only for the current PowerShell process** (recommended instead of changing machine-wide policy), run once per window before `.\install.ps1` or `iex`:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+That does not persist after you close the session. Prefer this over `RemoteSigned`/`Unrestricted` at `CurrentUser` or `LocalMachine` unless you intentionally want a broader policy.
+
 Release archives include **Linux** (`wax-linux-x64`, `wax-linux-arm64`), **macOS** (`wax-macos-x64`, `wax-macos-arm64`), and **Windows** (`wax-windows-x64.exe`, `wax-windows-arm64.exe`), each with a `.sha256` sidecar when published by CI.
 
 **Windows (build from source)** — with Rust from [rustup](https://rustup.rs/), use `.\install.ps1` from a clone (above), or manually:

@@ -114,7 +114,7 @@ if (
     $repoRoot -and
     ($env:WAX_USE_RELEASE -ne '1') -and
     (Test-Path -LiteralPath (Join-Path $repoRoot 'Cargo.toml')) -and
-    (Select-String -Path (Join-Path $repoRoot 'Cargo.toml') -Pattern 'name\s*=\s*"waxpkg"' -Quiet)
+    (Select-String -LiteralPath (Join-Path $repoRoot 'Cargo.toml') -SimpleMatch 'name = "waxpkg"' -Quiet)
 ) {
     Install-FromRepo -Root $repoRoot
 } else {
