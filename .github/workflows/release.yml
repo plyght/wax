@@ -42,16 +42,6 @@ jobs:
             asset_name: wax-macos-arm64
             use_cross: false
 
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            asset_name: wax-windows-x64.exe
-            use_cross: false
-
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            asset_name: wax-windows-arm64.exe
-            use_cross: false
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,15 +60,10 @@ jobs:
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Build (native)
-        if: matrix.use_cross == false && runner.os != 'Windows'
+        if: matrix.use_cross == false
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Build (native, Windows)
-        if: runner.os == 'Windows'
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Stage binary (Unix)
-        if: runner.os != 'Windows'
+      - name: Stage binary
         run: |
           cp target/${{ matrix.target }}/release/wax ${{ matrix.asset_name }}
           chmod +x ${{ matrix.asset_name }}
@@ -87,14 +72,6 @@ jobs:
           else
             shasum -a 256 ${{ matrix.asset_name }} | awk '{print $1}' > ${{ matrix.asset_name }}.sha256
           fi
-
-      - name: Stage binary (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Copy-Item "target/${{ matrix.target }}/release/wax.exe" "${{ matrix.asset_name }}"
-          $h = (Get-FileHash "${{ matrix.asset_name }}" -Algorithm SHA256).Hash.ToLowerInvariant()
-          $h | Out-File -FilePath "${{ matrix.asset_name }}.sha256" -Encoding ascii -NoNewline
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
