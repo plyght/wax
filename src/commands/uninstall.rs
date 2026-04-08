@@ -4,7 +4,7 @@ use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
 use crate::signal::{clear_current_op, set_current_op};
 use crate::ui::dirs;
-use crate::ui::{OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, SPINNER_TICK_CHARS};
+use crate::ui::SPINNER_TICK_CHARS;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
@@ -40,19 +40,9 @@ pub async fn uninstall(
     let total = names.len();
     let start = Instant::now();
 
-    let overall_pb = if total > 1 {
+    if total > 1 {
         println!("uninstalling {} packages\n", style(total).bold());
-        let pb = ProgressBar::new(total as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(OVERALL_PROGRESS_TEMPLATE)
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    }
 
     for (i, name) in names.iter().enumerate() {
         let prefix = if total > 1 {
@@ -61,13 +51,6 @@ pub async fn uninstall(
             String::new()
         };
         uninstall_impl(cache, name, dry_run, cask, yes, false, &prefix).await?;
-        if let Some(ref pb) = overall_pb {
-            pb.inc(1);
-        }
-    }
-
-    if let Some(pb) = overall_pb {
-        pb.finish_and_clear();
     }
     clear_current_op();
 

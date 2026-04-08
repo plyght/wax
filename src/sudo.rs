@@ -72,11 +72,6 @@ pub fn acquire_sudo() -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
-        "{} elevated permissions required — authenticate with Touch ID or password",
-        console::style("🔐").dim()
-    );
-
     let status = Command::new("sudo")
         .args(["-v"])
         .stdin(std::process::Stdio::inherit())

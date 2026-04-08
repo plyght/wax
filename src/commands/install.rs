@@ -674,12 +674,21 @@ async fn install_impl(
         }
     }
 
-    // Install all auto-detected casks concurrently (batch download + serial install)
-    if !detected_casks.is_empty() {
-        install_casks(cache, &detected_casks, dry_run, quiet).await?;
-    }
+    let cask_task = if detected_casks.is_empty() {
+        None
+    } else {
+        let cask_names = detected_casks.clone();
+        Some(tokio::spawn(async move {
+            let local_cache = Cache::new()?;
+            install_casks(&local_cache, &cask_names, dry_run, quiet).await
+        }))
+    };
 
     if all_to_install.is_empty() {
+        if let Some(task) = cask_task {
+            task.await
+                .map_err(|e| WaxError::InstallError(format!("cask task failed: {}", e)))??;
+        }
         return Ok(());
     }
 
@@ -747,8 +756,9 @@ async fn install_impl(
 
     // Probe all bottle URLs concurrently to get file sizes, then allocate
     // connections proportionally by size from the global pool.
-    // All packages download simultaneously; limit only caps runaway scenarios.
-    let concurrent_limit = packages_to_install.len().max(1).min(32);
+    // Run one formula pipeline at a time so each package moves directly from
+    // download to install without waiting behind other formula downloads.
+    let concurrent_limit = 1;
     let connections_map: std::collections::HashMap<String, usize> = {
         use std::sync::Arc;
         let dl = Arc::clone(&downloader);
@@ -944,8 +954,8 @@ async fn install_impl(
         tasks.push(task);
     }
 
-    // Collect results; abort remaining tasks immediately on cancellation
-    let mut extracted_packages: Vec<(String, String, std::path::PathBuf, String, u32)> = Vec::new();
+    // Collect results; abort remaining tasks immediately on cancellation.
+    // Install each extracted bottle as soon as it becomes available.
     let mut failed_packages = Vec::new();
     let mut cancelled = false;
 
@@ -956,7 +966,48 @@ async fn install_impl(
             continue;
         }
         match handle.await {
-            Ok(Ok(data)) => extracted_packages.push(data),
+            Ok(Ok((name, version, extract_dir, bottle_sha, bottle_rebuild))) => {
+                let spinner = if quiet {
+                    ProgressBar::hidden()
+                } else {
+                    let pb = ProgressBar::new_spinner();
+                    pb.set_style(
+                        ProgressStyle::default_spinner()
+                            .template("{spinner:.cyan} {msg}")
+                            .unwrap()
+                            .tick_chars(crate::ui::SPINNER_TICK_CHARS),
+                    );
+                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                    pb
+                };
+                match install_extracted_bottle(
+                    &name,
+                    &version,
+                    &extract_dir,
+                    bottle_sha,
+                    bottle_rebuild,
+                    &cellar,
+                    install_mode,
+                    &platform,
+                    &state,
+                    quiet,
+                    None,
+                    Some(spinner.clone()),
+                )
+                .await
+                {
+                    Ok(()) => {
+                        spinner.finish_and_clear();
+                        if !quiet {
+                            println!("+ {}@{}", style(&name).magenta(), style(&version).dim());
+                        }
+                    }
+                    Err(e) => {
+                        spinner.finish_and_clear();
+                        failed_packages.push(format!("{}", e));
+                    }
+                }
+            }
             Ok(Err(WaxError::Interrupted)) => {
                 cancelled = true;
             }
@@ -980,57 +1031,15 @@ async fn install_impl(
         for err in &failed_packages {
             eprintln!("{}", err);
         }
-        if extracted_packages.is_empty() {
+        if all_to_install.len() == failed_packages.len() {
             return Err(WaxError::InstallError(
                 "All package downloads failed".to_string(),
             ));
         }
     }
 
-    let _extracted_packages_count = extracted_packages.len();
     check_cancelled()?;
-
-    // Drop MultiProgress before the install phase so its draw layer releases
-    // stdout and plain println! calls in install_extracted_bottle are visible.
     drop(multi);
-
-    if !quiet {
-        println!();
-    }
-    for (name, version, extract_dir, bottle_sha, bottle_rebuild) in extracted_packages {
-        let spinner = if quiet {
-            ProgressBar::hidden()
-        } else {
-            let pb = ProgressBar::new_spinner();
-            pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.cyan} {msg}")
-                    .unwrap()
-                    .tick_chars(crate::ui::SPINNER_TICK_CHARS),
-            );
-            pb.enable_steady_tick(std::time::Duration::from_millis(80));
-            pb
-        };
-        install_extracted_bottle(
-            &name,
-            &version,
-            &extract_dir,
-            bottle_sha,
-            bottle_rebuild,
-            &cellar,
-            install_mode,
-            &platform,
-            &state,
-            quiet,
-            None,
-            Some(spinner.clone()),
-        )
-        .await?;
-        spinner.finish_and_clear();
-        if !quiet {
-            println!("+ {}@{}", style(&name).magenta(), style(&version).dim());
-        }
-    }
 
     let state_snapshot = state.load().await?;
     let installed_names: std::collections::HashSet<String> =
@@ -1063,9 +1072,10 @@ async fn install_impl(
             }
         }
     }
-
-
-
+    if let Some(task) = cask_task {
+        task.await
+            .map_err(|e| WaxError::InstallError(format!("cask task failed: {}", e)))??;
+    }
     Ok(())
 }
 
@@ -1215,15 +1225,6 @@ pub async fn install_extracted_bottle(
     Ok(())
 }
 
-struct DownloadedCask {
-    name: String,
-    details: crate::api::CaskDetails,
-    artifact_type: &'static str,
-    download_path: std::path::PathBuf,
-    // keep temp dir alive until install is done
-    _temp_dir: TempDir,
-}
-
 #[instrument(skip(cache))]
 async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quiet: bool) -> Result<()> {
     let start = std::time::Instant::now();
@@ -1337,71 +1338,49 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
         ));
     }
 
-    // --- Phase 2: download all concurrently ---
-    let download_tasks: Vec<_> = resolved
-        .into_iter()
-        .map(|(name, details, artifact_type)| {
-            let inst = Arc::clone(&installer);
-            let multi = Arc::clone(&multi);
-            tokio::spawn(async move {
-                let temp_dir = TempDir::new()?;
-                let download_path = temp_dir.path().join(format!("{}.{}", name, artifact_type));
-
-                let pb = multi.insert_from_back(1, ProgressBar::new(0));
-                pb.set_style(
-                    ProgressStyle::default_bar()
-                        .template(PROGRESS_BAR_PREFIX_TEMPLATE)
-                        .unwrap()
-                        .progress_chars(PROGRESS_BAR_CHARS),
-                );
-                pb.set_prefix(name.clone());
-
-                inst.download_cask(&details.url, &download_path, Some(&pb))
-                    .await?;
-                pb.finish_and_clear();
-
-                Ok::<_, WaxError>(DownloadedCask {
-                    name,
-                    details,
-                    artifact_type,
-                    download_path,
-                    _temp_dir: temp_dir,
-                })
-            })
-        })
-        .collect();
-
-    let mut downloaded = Vec::new();
-    for task in download_tasks {
-        match task.await {
-            Ok(Ok(d)) => downloaded.push(d),
-            Ok(Err(e)) => eprintln!("{} download failed: {}", style("✗").red(), e),
-            Err(e) => eprintln!("{} task error: {}", style("✗").red(), e),
-        }
-    }
-
-    // Drop multi before the install phase so its draw layer releases stdout.
-    drop(multi);
-
-    // --- Phase 3: verify checksums + install serially ---
+    // --- Phase 2: download + install serially (pipeline per cask) ---
     let mut installed_count = 0;
     let mut failed = Vec::new();
-
-    for d in &downloaded {
+    for (name, details, artifact_type) in resolved {
         check_cancelled()?;
+        let temp_dir = TempDir::new()?;
+        let download_path = temp_dir.path().join(format!("{}.{}", name, artifact_type));
+        let pb = multi.insert_from_back(1, ProgressBar::new(0));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(PROGRESS_BAR_PREFIX_TEMPLATE)
+                .unwrap()
+                .progress_chars(PROGRESS_BAR_CHARS),
+        );
+        pb.set_prefix(name.clone());
+        if let Err(e) = installer
+            .download_cask(&details.url, &download_path, Some(&pb))
+            .await
+        {
+            pb.finish_and_clear();
+            eprintln!(
+                "{} {} download failed: {}",
+                style("✗").red(),
+                style(&name).magenta(),
+                e
+            );
+            failed.push(name.clone());
+            continue;
+        }
+        pb.finish_and_clear();
 
-        if let Err(e) = CaskInstaller::verify_checksum(&d.download_path, &d.details.sha256) {
+        if let Err(e) = CaskInstaller::verify_checksum(&download_path, &details.sha256) {
             eprintln!(
                 "{} {} checksum failed: {}",
                 style("✗").red(),
-                style(&d.name).magenta(),
+                style(&name).magenta(),
                 e
             );
-            failed.push(d.name.clone());
+            failed.push(name.clone());
             continue;
         }
 
-        let result = install_from_downloaded(&d.details, d.artifact_type, &d.download_path).await;
+        let result = install_from_downloaded(&details, artifact_type, &download_path).await;
         match result {
             Ok(installed_cask) => {
                 let state = CaskState::new()?;
@@ -1410,8 +1389,8 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
                     println!(
                         "{} {} (cask) {}",
                         style("✓").green().bold(),
-                        style(&d.name).magenta(),
-                        style(&d.details.version).dim()
+                        style(&name).magenta(),
+                        style(&details.version).dim()
                     );
                 }
                 installed_count += 1;
@@ -1420,13 +1399,16 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
                 eprintln!(
                     "{} {} failed: {}",
                     style("✗").red(),
-                    style(&d.name).magenta(),
+                    style(&name).magenta(),
                     e
                 );
-                failed.push(d.name.clone());
+                failed.push(name.clone());
             }
         }
     }
+
+    // Drop multi before summary to keep output stable.
+    drop(multi);
 
     if !linux_cask_installs.is_empty() {
         let pm = SystemPm::detect().await.ok_or_else(|| {
@@ -1475,7 +1457,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
             println!(
                 "\n{}/{} casks installed ({} failed) [{}ms]",
                 installed_count,
-                downloaded.len(),
+                installed_count + failed.len(),
                 failed.len(),
                 elapsed.as_millis()
             );

@@ -4,9 +4,7 @@ use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
 use crate::signal::{clear_active_multi, clear_current_op, set_active_multi, set_current_op};
-use crate::ui::{
-    OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS,
-};
+use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::Instant;
@@ -52,20 +50,9 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     set_active_multi(multi.clone());
     let _signal_guard = ReinstallSignalGuard;
 
-    // Overall progress bar for multi-package reinstalls, anchored to the bottom
-    let overall_pb = if total > 1 {
+    if total > 1 {
         println!("reinstalling {} packages\n", style(total).bold());
-        let pb = multi.insert_from_back(0, ProgressBar::new(total as u64));
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(OVERALL_PROGRESS_TEMPLATE)
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    }
 
     for (i, name) in resolved.iter().enumerate() {
         // Determine if this package is a cask (either by explicit flag or by being in cask state)
@@ -136,10 +123,6 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             .await?;
             pb.finish_and_clear();
         }
-        if let Some(ref opb) = overall_pb {
-            opb.inc(1);
-        }
-
         println!(
             "{} {}{}@{}  {}",
             style("✓").green().bold(),
@@ -154,10 +137,6 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             .dim(),
             style(format!("[{}ms]", pkg_start.elapsed().as_millis())).dim(),
         );
-    }
-
-    if let Some(pb) = overall_pb {
-        pb.finish_and_clear();
     }
 
     println!(

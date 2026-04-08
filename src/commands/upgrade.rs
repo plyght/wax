@@ -10,9 +10,7 @@ use crate::signal::{
     check_cancelled, clear_active_multi, clear_current_op, set_active_multi, set_current_op,
     CriticalSection,
 };
-use crate::ui::{
-    OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS,
-};
+use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
 use crate::version::is_same_or_newer;
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -160,20 +158,6 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     set_active_multi(multi.clone());
     let _guard = UpgradeMultiGuard;
 
-    // Anchor an overall progress bar at the very bottom so per-package bars
-    // inserted above it never cause it to "flash" or jump.
-    let overall_pb = if total > 1 {
-        let pb = multi.insert_from_back(0, ProgressBar::new(total as u64));
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(OVERALL_PROGRESS_TEMPLATE)
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS),
-        );
-        Some(pb)
-    } else {
-        None
-    };
 
     // --- Phase 0: pre-download all formula bottles concurrently ---
     let platform = detect_platform();
@@ -487,9 +471,6 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                 failed_names.push(pkg.name.clone());
             }
         }
-        if let Some(ref pb) = overall_pb {
-            pb.inc(1);
-        }
     }
 
     // Reinstall all affected dependents — each exactly once.
@@ -556,10 +537,6 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                 }
             }
         }
-    }
-
-    if let Some(pb) = overall_pb {
-        pb.finish_and_clear();
     }
 
     let elapsed = start.elapsed();
