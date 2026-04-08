@@ -589,7 +589,7 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
                 println!("\ndry run - no changes made");
                 return Ok(());
             }
-            return self_update(Channel::Stable, false).await;
+            return self_update(Channel::Stable, false, None).await;
         } else {
             return Err(WaxError::NotInstalled(formula_name.to_string()));
         }

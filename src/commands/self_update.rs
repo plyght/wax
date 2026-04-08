@@ -2,7 +2,9 @@ use crate::error::{Result, WaxError};
 use crate::ui::create_spinner;
 use crate::version::WAX_VERSION as CURRENT_VERSION;
 use console::style;
+use inquire::Confirm;
 use sha2::{Digest, Sha256};
+use std::io::IsTerminal;
 use tracing::{debug, info, instrument};
 
 const GITHUB_REPO: &str = "semitechnological/wax";
@@ -153,12 +155,15 @@ fn install_binary(bytes: &[u8]) -> Result<()> {
 }
 
 #[instrument]
-pub async fn self_update(channel: Channel, force: bool) -> Result<()> {
-    info!("Self-update initiated: channel={channel}, force={force}");
+pub async fn self_update(channel: Channel, force: bool, nightly_cleanup: Option<bool>) -> Result<()> {
+    info!(
+        "Self-update initiated: channel={channel}, force={force}, nightly_cleanup={:?}",
+        nightly_cleanup
+    );
 
     match channel {
         Channel::Stable => update_from_release(force).await,
-        Channel::Nightly => update_from_source(force).await,
+        Channel::Nightly => update_from_source(force, nightly_cleanup).await,
     }
 }
 
@@ -246,7 +251,52 @@ async fn update_from_release(force: bool) -> Result<()> {
     Ok(())
 }
 
-async fn update_from_source(force: bool) -> Result<()> {
+fn cleanup_nightly_artifacts() -> Result<usize> {
+    let home = crate::ui::dirs::home_dir()?;
+    let mut removed = 0usize;
+
+    let roots = [home.join(".cargo/git/checkouts"), home.join(".cargo/git/db")];
+    for root in roots {
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("wax-") && path.is_dir() {
+                if std::fs::remove_dir_all(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+fn should_cleanup_nightly(nightly_cleanup: Option<bool>) -> Result<bool> {
+    match nightly_cleanup {
+        Some(value) => Ok(value),
+        None => {
+            if !std::io::stdin().is_terminal() {
+                println!(
+                    "  {} use {} or {} to control nightly cache cleanup",
+                    style("hint:").dim(),
+                    style("--clean").yellow(),
+                    style("--no-clean").yellow()
+                );
+                return Ok(false);
+            }
+            Confirm::new("Clean Cargo git cache for wax nightly sources?")
+                .with_default(false)
+                .prompt()
+                .map_err(|e| WaxError::SelfUpdateError(format!("Failed to read prompt input: {e}")))
+        }
+    }
+}
+
+async fn update_from_source(force: bool, nightly_cleanup: Option<bool>) -> Result<()> {
     println!(
         "  {} {}",
         style("current:").dim(),
@@ -258,25 +308,39 @@ async fn update_from_source(force: bool) -> Result<()> {
         style("nightly (GitHub HEAD)").yellow()
     );
 
-    let spinner = create_spinner("Building from source (this may take a moment)…");
-
     let mut args = vec!["install", "--git", GITHUB_REPO_URL, "--bin", "wax"];
     if force {
         args.push("--force");
     }
 
-    let output = std::process::Command::new("cargo")
+    println!(
+        "  {} running {} (live output below)",
+        style("build:").dim(),
+        style(format!("cargo {}", args.join(" "))).yellow()
+    );
+
+    let status = std::process::Command::new("cargo")
         .args(&args)
-        .output()
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
         .map_err(|e| WaxError::SelfUpdateError(format!("Failed to run cargo: {e}")))?;
 
-    spinner.finish_and_clear();
+    if !status.success() {
+        return Err(WaxError::SelfUpdateError(
+            "cargo install failed".to_string(),
+        ));
+    }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(WaxError::SelfUpdateError(format!(
-            "cargo install failed:\n{stderr}"
-        )));
+    if should_cleanup_nightly(nightly_cleanup)? {
+        let removed = cleanup_nightly_artifacts()?;
+        println!(
+            "{} cleaned {} nightly cache entr{}",
+            style("✓").green(),
+            removed,
+            if removed == 1 { "y" } else { "ies" }
+        );
     }
 
     println!("{} installed nightly build from HEAD", style("✓").green());

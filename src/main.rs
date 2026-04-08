@@ -59,6 +59,10 @@ enum Commands {
             help = "Force reinstall even if on latest version (with --self)"
         )]
         force: bool,
+        #[arg(long, help = "After nightly self-update, clean Cargo git cache for wax")]
+        clean: bool,
+        #[arg(long, help = "After nightly self-update, keep Cargo git cache")]
+        no_clean: bool,
     },
 
     #[command(about = "Search formulae and casks  [alias: s, find]")]
@@ -417,14 +421,32 @@ async fn main() -> Result<()> {
             update_self,
             nightly,
             force,
+            clean,
+            no_clean,
         } => {
             if update_self {
+                if clean && no_clean {
+                    return Err(error::WaxError::InvalidInput(
+                        "Cannot specify both --clean and --no-clean".to_string(),
+                    ));
+                }
                 let channel = if nightly {
                     commands::self_update::Channel::Nightly
                 } else {
                     commands::self_update::Channel::Stable
                 };
-                commands::self_update::self_update(channel, force).await
+                let nightly_cleanup = if channel == commands::self_update::Channel::Nightly {
+                    if clean {
+                        Some(true)
+                    } else if no_clean {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                commands::self_update::self_update(channel, force, nightly_cleanup).await
             } else {
                 commands::update::update(&api_client, &cache).await
             }
@@ -495,6 +517,7 @@ async fn main() -> Result<()> {
                 commands::self_update::self_update(
                     commands::self_update::Channel::Stable,
                     false,
+                    None,
                 )
                 .await?;
                 return Ok(());
@@ -507,6 +530,7 @@ async fn main() -> Result<()> {
             commands::self_update::self_update(
                 commands::self_update::Channel::Stable,
                 false,
+                None,
             )
             .await?;
             Ok(())

@@ -82,6 +82,8 @@ wax update -s            # stable (from crates.io)
 wax update --self        # same as above
 wax update -sn           # nightly (from GitHub)
 wax update -sf           # force reinstall
+wax update -sn --clean   # nightly + clean cargo git cache
+wax update -sn --no-clean  # nightly + keep cargo cache
 
 # Search packages
 wax search nginx
