@@ -1439,7 +1439,8 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
 
     // Aggregate download progress on the top row; per-cask rows sit below and switch to
     // install spinners in place (avoids fighting an overall bar at the bottom).
-    let pipeline_totals = if quiet {
+    // Skip the overall "All downloads" row when only one cask — the per-cask bar is enough.
+    let pipeline_totals = if quiet || cask_count <= 1 {
         None
     } else {
         Some(DownloadTotals::default())
