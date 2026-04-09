@@ -561,6 +561,7 @@ async fn install_impl(
     let mut already_installed = Vec::new();
     let mut errors = Vec::new();
     let mut detected_casks: Vec<String> = Vec::new();
+    let mut user_direct_formula_names: HashSet<String> = HashSet::new();
 
     for package_name in package_names {
         if installed.contains(package_name) {
@@ -646,6 +647,7 @@ async fn install_impl(
 
         match resolve_dependencies(formula, &formulae, &installed) {
             Ok(deps) => {
+                user_direct_formula_names.insert(formula.name.clone());
                 for dep in deps {
                     if !all_to_install.contains(&dep) {
                         all_to_install.push(dep);
@@ -733,7 +735,6 @@ async fn install_impl(
     let cellar = install_mode.cellar_path()?;
 
     let multi = MultiProgress::new();
-    let downloader = Arc::new(BottleDownloader::new());
 
     let packages_to_install: Vec<_> = all_to_install
         .iter()
@@ -744,6 +745,71 @@ async fn install_impl(
                 .ok_or_else(|| WaxError::FormulaNotFound(name.clone()))
         })
         .collect::<Result<_>>()?;
+
+    let formula_bottle_count = packages_to_install
+        .iter()
+        .filter(|pkg| {
+            !(head || build_from_source)
+                && pkg
+                    .bottle
+                    .as_ref()
+                    .and_then(|b| b.stable.as_ref())
+                    .and_then(|s| s.files.get(&platform).or_else(|| s.files.get("all")))
+                    .is_some()
+        })
+        .count();
+
+    let user_direct_formula_count = user_direct_formula_names.len();
+
+    // "All downloads" only for multiple *user-requested* formulae with multiple bottle
+    // downloads. One requested formula (plus deps), or a single bottle, stays per-row only
+    // — same idea as one cask, and keeps `wax install one_formula one_cask` uncluttered.
+    let formula_pipeline_totals = if quiet
+        || external_pb.is_some()
+        || user_direct_formula_count <= 1
+        || formula_bottle_count <= 1
+    {
+        None
+    } else {
+        Some(DownloadTotals::default())
+    };
+    let hide_formula_overall = Arc::new(AtomicBool::new(false));
+    let formula_net_phase_done = Arc::new(AtomicUsize::new(0));
+    let formula_overall_poller = if let Some(totals) = formula_pipeline_totals.as_ref() {
+        let overall_pb = multi.insert(0, ProgressBar::new(0));
+        overall_pb.set_style(
+            ProgressStyle::default_bar()
+                .template(PROGRESS_BAR_TEMPLATE)
+                .unwrap()
+                .progress_chars(PROGRESS_BAR_CHARS),
+        );
+        overall_pb.set_message("All downloads");
+        let totals_w = totals.clone();
+        let overall_w = overall_pb.clone();
+        let hide_w = Arc::clone(&hide_formula_overall);
+        Some(tokio::spawn(async move {
+            loop {
+                if hide_w.load(Ordering::Relaxed) {
+                    overall_w.finish_and_clear();
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                if hide_w.load(Ordering::Relaxed) {
+                    overall_w.finish_and_clear();
+                    return;
+                }
+                let pos = totals_w.downloaded.load(Ordering::Relaxed);
+                let len = totals_w.expected.load(Ordering::Relaxed);
+                let cap = len.max(pos).max(1);
+                overall_w.set_length(cap);
+                overall_w.set_position(pos);
+            }
+        }))
+    } else {
+        None
+    };
+
+    let downloader = Arc::new(BottleDownloader::new());
 
     // Collect (name, url) for every package that has a bottle on this platform.
     let bottle_urls: Vec<(String, String)> = packages_to_install
@@ -914,6 +980,10 @@ async fn install_impl(
         let semaphore = Arc::clone(&semaphore);
         let temp_dir = Arc::clone(&temp_dir);
         let conns = pkg_connections;
+        let pipe_totals = formula_pipeline_totals.clone();
+        let net_done_f = Arc::clone(&formula_net_phase_done);
+        let hide_f = Arc::clone(&hide_formula_overall);
+        let n_bottle_formula = formula_bottle_count;
 
         let pb = if quiet {
             ProgressBar::hidden()
@@ -936,14 +1006,26 @@ async fn install_impl(
 
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
-            downloader
-                .download(&url, &tarball_path, Some(&pb), conns, None)
-                .await?;
+            let dl = downloader
+                .download(
+                    &url,
+                    &tarball_path,
+                    Some(&pb),
+                    conns,
+                    pipe_totals.as_ref(),
+                )
+                .await;
             pb.finish_and_clear();
 
             // Release the download permit before extraction so the next package
             // can start downloading immediately rather than waiting for CPU-bound work.
             drop(permit);
+
+            if pipe_totals.is_some() {
+                note_aggregate_download_row_done(&net_done_f, n_bottle_formula, &hide_f);
+            }
+
+            dl?;
 
             BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
 
@@ -1023,6 +1105,11 @@ async fn install_impl(
                 failed_packages.push(format!("Task error: {}", e));
             }
         }
+    }
+
+    hide_formula_overall.store(true, Ordering::SeqCst);
+    if let Some(poller) = formula_overall_poller {
+        let _ = poller.await;
     }
 
     if cancelled {
@@ -1294,9 +1381,9 @@ impl Drop for FinishProgressLine<'_> {
     }
 }
 
-/// One increment per cask when its download attempt finishes (ok or fail). When all have
+/// One increment per package when its download attempt finishes (ok or fail). When all have
 /// reached that point, `hide_overall` tells the aggregate bar poller to exit and clear.
-fn note_cask_network_phase_done(done: &AtomicUsize, total: usize, hide_overall: &AtomicBool) {
+fn note_aggregate_download_row_done(done: &AtomicUsize, total: usize, hide_overall: &AtomicBool) {
     if total == 0 {
         return;
     }
@@ -1537,7 +1624,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
                 .await
             {
                 pb.finish_and_clear();
-                note_cask_network_phase_done(&net_done, cask_count, &hide_dl);
+                note_aggregate_download_row_done(&net_done, cask_count, &hide_dl);
                 return Err(CaskPipelineFail::Download { name, err: e });
             }
 
@@ -1546,17 +1633,17 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
 
             if let Err(e) = check_cancelled() {
                 pb.finish_and_clear();
-                note_cask_network_phase_done(&net_done, cask_count, &hide_dl);
+                note_aggregate_download_row_done(&net_done, cask_count, &hide_dl);
                 return Err(CaskPipelineFail::Download { name, err: e });
             }
 
             let installed_cask = {
                 let _line_done = FinishProgressLine(&pb);
                 if let Err(e) = CaskInstaller::verify_checksum(&download_path, &details.sha256) {
-                    note_cask_network_phase_done(&net_done, cask_count, &hide_dl);
+                    note_aggregate_download_row_done(&net_done, cask_count, &hide_dl);
                     return Err(CaskPipelineFail::Checksum { name, err: e });
                 }
-                note_cask_network_phase_done(&net_done, cask_count, &hide_dl);
+                note_aggregate_download_row_done(&net_done, cask_count, &hide_dl);
                 install_from_downloaded(&details, artifact_type.as_str(), &download_path, &pb).await
             };
 
