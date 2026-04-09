@@ -37,6 +37,17 @@ pub fn clone_active_multi() -> Option<MultiProgress> {
         .and_then(|guard| guard.as_ref().cloned())
 }
 
+/// Print a line through the active multi-progress layer when one is registered
+/// (e.g. cask preflight notes). Falls back to `println!` otherwise.
+pub fn println_through_active_multi(msg: impl Into<String>) {
+    let s = msg.into();
+    if let Some(m) = clone_active_multi() {
+        let _ = m.println(s);
+    } else {
+        println!("{s}");
+    }
+}
+
 /// Print a message that appears correctly above/alongside active progress bars.
 fn print_interrupt(msg: &str) {
     let used_multi = active_multi_mutex()

@@ -361,10 +361,10 @@ impl RollbackContext {
 impl Drop for RollbackContext {
     fn drop(&mut self) {
         if !self.committed && !self.installed_paths.is_empty() {
-            println!(
+            crate::signal::println_through_active_multi(format!(
                 "  ⚠️  rolling back {} partially installed artifact(s)...",
                 self.installed_paths.len()
-            );
+            ));
             for path in &self.installed_paths {
                 if path.exists() {
                     if path.is_dir() {
@@ -883,10 +883,10 @@ impl CaskInstaller {
                             tokio::fs::create_dir_all(parent).await.ok();
                         }
                         if tokio::fs::write(&source, script_content).await.is_ok() {
-                            println!(
+                            crate::signal::println_through_active_multi(format!(
                                 "  {} generated wrapper script via preflight",
                                 console::style("✓").green()
-                            );
+                            ));
                         }
                     }
                 }
@@ -894,8 +894,8 @@ impl CaskInstaller {
         }
 
         if !source.exists() {
-            println!(
-                "  ⚠️  skipping binary: source not found (possibly requires preflight script)"
+            crate::signal::println_through_active_multi(
+                "  ⚠️  skipping binary: source not found (possibly requires preflight script)",
             );
             return Ok(None);
         }

@@ -1,5 +1,5 @@
 use crate::api::{CaskArtifact, Formula};
-use crate::bottle::{detect_platform, BottleDownloader};
+use crate::bottle::{detect_platform, BottleDownloader, DownloadTotals};
 use crate::builder::Builder;
 use crate::cache::Cache;
 use crate::cask::{
@@ -22,6 +22,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sha2::Digest;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::{Mutex, Semaphore};
@@ -1413,7 +1414,48 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
     // is serialized so concurrent installs do not corrupt the cask JSON.
     const CASK_PIPELINE_CONCURRENCY: usize = 8;
 
+    // Register our MultiProgress for nested cask helpers (preflight, etc.) only once we know
+    // we are past early returns; standalone installs own the global slot until phase 2 ends.
+    let owns_multi_globals = crate::signal::clone_active_multi().is_none();
+    if owns_multi_globals {
+        crate::signal::set_active_multi((*multi).clone());
+    }
+
     let state_lock = Arc::new(Mutex::new(()));
+
+    // Aggregate download progress on the top row; per-cask rows sit below and switch to
+    // install spinners in place (avoids fighting an overall bar at the bottom).
+    let pipeline_totals = if quiet {
+        None
+    } else {
+        Some(DownloadTotals::default())
+    };
+
+    let overall_poller = if let Some(totals) = pipeline_totals.as_ref() {
+        let overall_pb = multi.insert(0, ProgressBar::new(0));
+        overall_pb.set_style(
+            ProgressStyle::default_bar()
+                .template(PROGRESS_BAR_TEMPLATE)
+                .unwrap()
+                .progress_chars(PROGRESS_BAR_CHARS),
+        );
+        overall_pb.set_message("All downloads");
+        let totals_w = totals.clone();
+        let overall_w = overall_pb.clone();
+        let poller = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let pos = totals_w.downloaded.load(Ordering::Relaxed);
+                let len = totals_w.expected.load(Ordering::Relaxed);
+                let cap = len.max(pos).max(1);
+                overall_w.set_length(cap);
+                overall_w.set_position(pos);
+            }
+        });
+        Some((overall_pb, poller))
+    } else {
+        None
+    };
 
     // One JoinSet task per cask so work runs on the runtime thread pool (true overlap of
     // I/O and CPU-heavy install steps). A semaphore caps how many pipelines run at once.
@@ -1424,6 +1466,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
         let multi = Arc::clone(&multi);
         let installer = Arc::clone(&installer);
         let state_lock = Arc::clone(&state_lock);
+        let dl_totals = pipeline_totals.clone();
         let pipeline_sem = Arc::clone(&pipeline_sem);
         pipeline_tasks.spawn(async move {
             let _permit = pipeline_sem.acquire().await.map_err(|_| {
@@ -1452,7 +1495,12 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
             );
             pb.set_prefix(name.clone());
             if let Err(e) = installer
-                .download_cask(&details.url, &download_path, Some(&pb), None)
+                .download_cask(
+                    &details.url,
+                    &download_path,
+                    Some(&pb),
+                    dl_totals.as_ref(),
+                )
                 .await
             {
                 pb.finish_and_clear();
@@ -1548,6 +1596,15 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
                 failed.push(name);
             }
         }
+    }
+
+    if let Some((_overall_pb, poller)) = overall_poller {
+        poller.abort();
+        _overall_pb.finish_and_clear();
+    }
+
+    if owns_multi_globals {
+        crate::signal::clear_active_multi();
     }
 
     // Drop multi before summary to keep output stable.
