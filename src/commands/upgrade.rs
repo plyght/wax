@@ -511,7 +511,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                     pb.set_style(
                         ProgressStyle::default_bar()
                             .template(&format!(
-                                "{{spinner:.green}} {} {{bar:30.cyan/blue}} {{bytes}}/{{total_bytes}} {{bytes_per_sec}}",
+                                "{{spinner:.green}} {} {{wide_bar:.cyan/blue}} {{bytes}}/{{total_bytes}} {{bytes_per_sec}}",
                                 label
                             ))
                             .unwrap()
