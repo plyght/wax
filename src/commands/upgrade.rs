@@ -205,10 +205,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         .filter_map(|pkg| {
             let formula = formula_by_name.get(pkg.name.as_str())?;
             let bottle_info = formula.bottle.as_ref()?.stable.as_ref()?;
-            let bottle_file = bottle_info
-                .files
-                .get(&platform)
-                .or_else(|| bottle_info.files.get("all"))?;
+            let bottle_file = bottle_info.file_for_platform(&platform)?;
             Some((pkg.name.clone(), bottle_file.url.clone()))
         })
         .collect();
@@ -320,11 +317,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         let Some(bottle_info) = formula.bottle.as_ref().and_then(|b| b.stable.as_ref()) else {
             continue;
         };
-        let Some(bottle_file) = bottle_info
-            .files
-            .get(&platform)
-            .or_else(|| bottle_info.files.get("all"))
-        else {
+        let Some(bottle_file) = bottle_info.file_for_platform(&platform) else {
             continue;
         };
 
@@ -1017,7 +1010,7 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
                     .bottle
                     .as_ref()
                     .and_then(|b| b.stable.as_ref())
-                    .and_then(|s| s.files.get(&platform).or_else(|| s.files.get("all")))
+                    .and_then(|s| s.file_for_platform(&platform))
                     .map(|f| Some(&f.sha256) != installed.bottle_sha256.as_ref())
                     .unwrap_or(false);
 

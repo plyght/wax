@@ -45,6 +45,23 @@ pub struct BottleStable {
     pub files: std::collections::HashMap<String, BottleFile>,
 }
 
+impl BottleStable {
+    /// Resolve the bottle tarball for this OS/arch tag, matching Homebrew JSON keys.
+    ///
+    /// Linux ARM bottles have appeared as both `arm64_linux` and `aarch64_linux` in
+    /// formulae; we accept either when the runtime tag is the other.
+    pub fn file_for_platform(&self, platform: &str) -> Option<&BottleFile> {
+        self.files
+            .get(platform)
+            .or_else(|| self.files.get("all"))
+            .or_else(|| match platform {
+                "arm64_linux" => self.files.get("aarch64_linux"),
+                "aarch64_linux" => self.files.get("arm64_linux"),
+                _ => None,
+            })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BottleFile {
     pub url: String,
@@ -315,5 +332,40 @@ impl ApiClient {
 impl Default for ApiClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod bottle_stable_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn sample_file() -> BottleFile {
+        BottleFile {
+            url: "https://example.com/bottle.tar.gz".into(),
+            sha256: "deadbeef".into(),
+        }
+    }
+
+    #[test]
+    fn file_for_platform_matches_arm64_when_json_has_aarch64_linux() {
+        let mut files = HashMap::new();
+        files.insert("aarch64_linux".into(), sample_file());
+        let stable = BottleStable { rebuild: 0, files };
+        let f = stable
+            .file_for_platform("arm64_linux")
+            .expect("aarch64_linux alias");
+        assert_eq!(f.sha256, "deadbeef");
+    }
+
+    #[test]
+    fn file_for_platform_matches_aarch64_when_json_has_arm64_linux() {
+        let mut files = HashMap::new();
+        files.insert("arm64_linux".into(), sample_file());
+        let stable = BottleStable { rebuild: 0, files };
+        let f = stable
+            .file_for_platform("aarch64_linux")
+            .expect("arm64_linux alias");
+        assert_eq!(f.sha256, "deadbeef");
     }
 }

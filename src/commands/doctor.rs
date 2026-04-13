@@ -6,6 +6,7 @@ use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::Result;
 use crate::install::{create_symlinks, InstallMode, InstallState};
+use crate::ui::dirs;
 use console::style;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -449,6 +450,23 @@ async fn check_symlink_dirs(fix: bool) -> DiagResult {
             }
         }
     }
+    if let Ok(home) = dirs::home_dir() {
+        let user_bin = home.join(".local/wax/bin");
+        if user_bin.exists() {
+            if let Ok(path_var) = std::env::var("PATH") {
+                let bin_str = user_bin.to_string_lossy();
+                if path_var.split(':').any(|p| p == bin_str.as_ref()) {
+                    d.pass(&format!("{} is in PATH", user_bin.display()));
+                } else {
+                    d.warn(&format!(
+                        "{} is not in PATH — required for `wax install --user` binaries",
+                        user_bin.display()
+                    ));
+                }
+            }
+        }
+    }
+
     d
 }
 

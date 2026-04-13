@@ -570,6 +570,34 @@ fn tap_name_from_qualified_package(package_name: &str) -> Option<String> {
     Some(format!("{}/{}", user, repo))
 }
 
+fn hint_user_prefix_path_if_needed(install_mode: InstallMode, quiet: bool) {
+    if quiet || install_mode != InstallMode::User {
+        return;
+    }
+    let Ok(prefix) = install_mode.prefix() else {
+        return;
+    };
+    let bin_dir = prefix.join("bin");
+    if !bin_dir.exists() {
+        return;
+    }
+    let Ok(path_var) = std::env::var("PATH") else {
+        return;
+    };
+    let bin_str = bin_dir.to_string_lossy();
+    if path_var.split(':').any(|p| p == bin_str.as_ref()) {
+        return;
+    }
+    println!();
+    println!("{}", style("Installed programs are linked under:").yellow());
+    println!("  {}", bin_dir.display());
+    println!(
+        "{}",
+        style("Add this to your shell profile if a command is not found:").dim()
+    );
+    println!("  export PATH=\"{}:$PATH\"", bin_dir.display());
+}
+
 async fn install_impl(
     cache: &Cache,
     package_names: &[String],
@@ -784,6 +812,7 @@ async fn install_impl(
             task.await
                 .map_err(|e| WaxError::InstallError(format!("cask task failed: {}", e)))??;
         }
+        hint_user_prefix_path_if_needed(install_mode, quiet);
         return Ok(());
     }
 
@@ -845,7 +874,7 @@ async fn install_impl(
                     .bottle
                     .as_ref()
                     .and_then(|b| b.stable.as_ref())
-                    .and_then(|s| s.files.get(&platform).or_else(|| s.files.get("all")))
+                    .and_then(|s| s.file_for_platform(&platform))
                     .is_some()
         })
         .count();
@@ -908,7 +937,7 @@ async fn install_impl(
         .filter(|_pkg| !build_from_source)
         .filter_map(|pkg| {
             let f = pkg.bottle.as_ref()?.stable.as_ref()?;
-            let file = f.files.get(&platform).or_else(|| f.files.get("all"))?;
+            let file = f.file_for_platform(&platform)?;
             Some((pkg.name.clone(), file.url.clone()))
         })
         .collect();
@@ -977,7 +1006,7 @@ async fn install_impl(
             .bottle
             .as_ref()
             .and_then(|b| b.stable.as_ref())
-            .and_then(|s| s.files.get(&platform).or_else(|| s.files.get("all")))
+            .and_then(|s| s.file_for_platform(&platform))
             .is_some();
 
         if head {
@@ -1010,13 +1039,9 @@ async fn install_impl(
                 WaxError::BottleNotAvailable(format!("{} (no bottle info)", pkg.name))
             })?;
 
-        let bottle_file = bottle_info
-            .files
-            .get(&platform)
-            .or_else(|| bottle_info.files.get("all"))
-            .ok_or_else(|| {
-                WaxError::BottleNotAvailable(format!("{} for platform {}", pkg.name, platform))
-            })?;
+        let bottle_file = bottle_info.file_for_platform(&platform).ok_or_else(|| {
+            WaxError::BottleNotAvailable(format!("{} for platform {}", pkg.name, platform))
+        })?;
 
         let url = bottle_file.url.clone();
         let sha256 = bottle_file.sha256.clone();
@@ -1249,6 +1274,7 @@ async fn install_impl(
         task.await
             .map_err(|e| WaxError::InstallError(format!("cask task failed: {}", e)))??;
     }
+    hint_user_prefix_path_if_needed(install_mode, quiet);
     Ok(())
 }
 
@@ -1289,6 +1315,32 @@ fn infer_artifact_type_from_cask_artifacts(
     }
 
     None
+}
+
+/// Pick the cellar version directory inside an extracted bottle (`name/<version>/...`).
+/// Uses exact `stable` or `stable_*` rebuild suffixes only (avoids `1.1` matching `1.10`).
+fn cellar_version_from_bottle_layout(name_dir: &Path, stable: &str, bottle_rebuild: u32) -> String {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(name_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let entry_name = entry.file_name().to_string_lossy().to_string();
+            if entry_name == stable || entry_name.starts_with(&format!("{stable}_")) {
+                candidates.push(entry_name);
+            }
+        }
+    }
+    if !candidates.is_empty() {
+        crate::version::sort_versions(&mut candidates);
+        return candidates.pop().expect("non-empty");
+    }
+    if bottle_rebuild > 0 {
+        format!("{stable}_{bottle_rebuild}")
+    } else {
+        stable.to_string()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1339,23 +1391,7 @@ pub async fn install_extracted_bottle(
     // field can lag behind. Scanning the extracted dir gives us the ground truth.
     let name_dir = extract_dir.join(name);
     let cellar_version: String = if name_dir.exists() {
-        let mut found = None;
-        if let Ok(mut entries) = std::fs::read_dir(&name_dir) {
-            while let Some(Ok(entry)) = entries.next() {
-                let entry_name = entry.file_name().to_string_lossy().to_string();
-                if entry_name.starts_with(version) && entry.path().is_dir() {
-                    found = Some(entry_name);
-                    break;
-                }
-            }
-        }
-        found.unwrap_or_else(|| {
-            if bottle_rebuild > 0 {
-                format!("{}_{}", version, bottle_rebuild)
-            } else {
-                version.to_string()
-            }
-        })
+        cellar_version_from_bottle_layout(&name_dir, version, bottle_rebuild)
     } else if bottle_rebuild > 0 {
         format!("{}_{}", version, bottle_rebuild)
     } else {

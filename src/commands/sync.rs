@@ -220,9 +220,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
                 })?;
 
             let bottle_file = bottle_info
-                .files
-                .get(&lock_pkg.bottle)
-                .or_else(|| bottle_info.files.get("all"))
+                .file_for_platform(&lock_pkg.bottle)
                 .ok_or_else(|| {
                     WaxError::BottleNotAvailable(format!(
                         "{} for platform {}",
