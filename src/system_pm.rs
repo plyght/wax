@@ -45,9 +45,9 @@ impl SystemPm {
     /// Detect the first available system package manager on the current host.
     /// Returns `None` on macOS or when no supported PM is found.
     pub async fn detect() -> Option<Self> {
-        #[cfg(target_os = "macos")]
-        return None;
-
+    if cfg!(target_os = "macos") {
+        None
+    } else {
         let candidates: &[(&str, Self)] = &[
             ("apt-get", Self::Apt),
             ("dnf", Self::Dnf),
@@ -67,6 +67,7 @@ impl SystemPm {
             }
         }
         None
+    }
     }
 
     /// Upgrade all packages managed by this PM.

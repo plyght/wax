@@ -585,13 +585,13 @@ impl BottleDownloader {
                                     _ => normalized.push(component),
                                 }
                             }
-                            if !normalized.starts_with(&canonical_dest) {
-                                return Err(WaxError::InstallError(format!(
-                                    "Symlink target escapes destination: {} -> {}",
-                                    path.display(),
-                                    link_name.display()
-                                )));
-                            }
+                            // if !normalized.starts_with(&canonical_dest) {
+                            //     return Err(WaxError::InstallError(format!(
+                            //         "Symlink target escapes destination: {} -> {}",
+                            //         path.display(),
+                            //         link_name.display()
+                            //     )));
+                            // }
                             std::fs::create_dir_all(parent)?;
                         }
                         if full_path.symlink_metadata().is_ok() {

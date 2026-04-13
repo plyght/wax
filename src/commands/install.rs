@@ -824,9 +824,8 @@ async fn install_impl(
 
     // Probe all bottle URLs concurrently to get file sizes, then allocate
     // connections proportionally by size from the global pool.
-    // Run one formula pipeline at a time so each package moves directly from
-    // download to install without waiting behind other formula downloads.
-    let concurrent_limit = 1;
+    // Run multiple formula pipelines concurrently for parallel downloads.
+    let concurrent_limit = 8;
     let connections_map: std::collections::HashMap<String, usize> = {
         use std::sync::Arc;
         let dl = Arc::clone(&downloader);
@@ -1526,12 +1525,8 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
 
     // Aggregate download progress on the top row; per-cask rows sit below and switch to
     // install spinners in place (avoids fighting an overall bar at the bottom).
-    // Skip the overall "All downloads" row when only one cask — the per-cask bar is enough.
-    let pipeline_totals = if quiet || cask_count <= 1 {
-        None
-    } else {
-        Some(DownloadTotals::default())
-    };
+    // Skip the overall "All downloads" row for formula bottles to clean up UI.
+    let pipeline_totals: Option<DownloadTotals> = None;
 
     let hide_overall_downloads = Arc::new(AtomicBool::new(false));
     let network_phase_done = Arc::new(AtomicUsize::new(0));
