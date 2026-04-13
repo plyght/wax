@@ -571,10 +571,14 @@ impl CaskInstaller {
             }
         }
 
-        let local_bin = dirs::home_dir()?.join(".local").join("bin");
+        let local_bin = Self::user_bin_dir()?;
         tokio::fs::create_dir_all(&local_bin).await?;
         debug!("Using fallback bin directory: {:?}", local_bin);
         Ok(local_bin)
+    }
+
+    fn user_bin_dir() -> Result<PathBuf> {
+        Ok(dirs::home_dir()?.join(".local").join("wax").join("bin"))
     }
 
     async fn is_dir_writable(path: &Path) -> bool {
@@ -1277,5 +1281,14 @@ mod tests {
         // Test relative path
         let res = installer.resolve_source_path(&staging, "relative/path");
         assert_eq!(res, staging_root.join("relative/path"));
+    }
+
+    #[test]
+    fn user_bin_dir_matches_documented_path() {
+        let user_bin_dir = CaskInstaller::user_bin_dir().unwrap();
+        assert_eq!(
+            user_bin_dir,
+            dirs::home_dir().unwrap().join(".local/wax/bin")
+        );
     }
 }
