@@ -18,6 +18,7 @@ pub struct CacheMetadata {
     pub casks_last_modified: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Cache {
     cache_dir: PathBuf,
 }

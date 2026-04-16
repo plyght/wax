@@ -80,18 +80,23 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
                 .tick_chars(SPINNER_TICK_CHARS),
         );
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-        set_current_op(format!("removing {}", name));
-        spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
+        let is_installed =
+            installed.contains_key(name.as_str()) || installed_casks.contains_key(name.as_str());
 
-        if installed.contains_key(name.as_str()) || installed_casks.contains_key(name.as_str()) {
+        if is_installed {
+            set_current_op(format!("removing {}", name));
+            spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
             uninstall::uninstall_quiet(cache, name, is_cask).await?;
+            spinner.finish_and_clear();
+        } else {
+            spinner.set_message(format!("{}installing {}...", prefix, style(name).magenta()));
+            spinner.finish_and_clear();
         }
-        spinner.finish_and_clear();
 
         let pkg_start = Instant::now();
         if is_cask {
             set_current_op(format!("installing {}", name));
-            install::install_quiet(
+            install::install_quiet_force(
                 cache,
                 std::slice::from_ref(name),
                 true,
@@ -119,6 +124,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
                 user_flag,
                 global_flag,
                 &pb,
+                true,
             )
             .await?;
             pb.finish_and_clear();

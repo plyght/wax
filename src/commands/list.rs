@@ -2,6 +2,7 @@ use crate::bottle::homebrew_prefix;
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::commands::upgrade::{get_outdated_packages, upgrade as run_upgrade};
+use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::install::InstallState;
 use console::style;
@@ -28,7 +29,7 @@ impl std::fmt::Display for InstalledRow {
     }
 }
 
-async fn collect_installed_rows() -> Result<Vec<InstalledRow>> {
+async fn collect_installed_rows(cache: &Cache) -> Result<Vec<InstalledRow>> {
     let test_cellar = std::env::var_os(WAX_TEST_CELLAR_ENV);
 
     let (cellar_path, skip_casks) = if let Some(ref raw) = test_cellar {
@@ -54,6 +55,10 @@ async fn collect_installed_rows() -> Result<Vec<InstalledRow>> {
     } else {
         cask_state.load().await?
     };
+
+    // External cask discovery is handled by sync/lock commands
+    // which save discovered casks to CaskState for persistence.
+    // List here only shows what's in CaskState.
 
     let install_state = InstallState::new()?;
     let installed_packages = install_state.load().await?;
@@ -224,10 +229,7 @@ async fn offer_upgrade_for_selection(cache: &Cache, choice: &InstalledRow) -> Re
 
     let prompt = format!(
         "Upgrade {}{} from {} → {}?",
-        choice.name,
-        cask_note,
-        pkg.installed_version,
-        pkg.latest_version
+        choice.name, cask_note, pkg.installed_version, pkg.latest_version
     );
 
     let should_upgrade = Confirm::new(prompt.as_str())
@@ -252,7 +254,7 @@ async fn run_interactive_list(cache: &Cache, initial_query: Option<String>) -> R
     let mut first_prompt = true;
 
     loop {
-        let rows = collect_installed_rows().await?;
+        let rows = collect_installed_rows(cache).await?;
         if rows.is_empty() {
             println!("no packages installed");
             return Ok(());
@@ -300,16 +302,15 @@ async fn run_interactive_list(cache: &Cache, initial_query: Option<String>) -> R
 
 #[instrument(skip(cache))]
 pub async fn list(cache: &Cache, query: Option<String>) -> Result<()> {
-    let rows = collect_installed_rows().await?;
+    let rows = collect_installed_rows(cache).await?;
 
     if rows.is_empty() {
         println!("no packages installed");
         return Ok(());
     }
 
-    let use_ui = io::stdin().is_terminal()
-        && io::stdout().is_terminal()
-        && std::env::var_os("CI").is_none();
+    let use_ui =
+        io::stdin().is_terminal() && io::stdout().is_terminal() && std::env::var_os("CI").is_none();
 
     if use_ui {
         return run_interactive_list(cache, query).await;
@@ -336,8 +337,8 @@ pub async fn list(cache: &Cache, query: Option<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::InstalledRow;
     use super::matches_query;
+    use super::InstalledRow;
 
     fn row(name: &str, line: &str) -> InstalledRow {
         InstalledRow {

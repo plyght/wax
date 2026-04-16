@@ -89,10 +89,9 @@ async fn fetch_latest_release_tag(client: &reqwest::Client) -> Result<String> {
         tag_name: String,
     }
 
-    let release: Release = resp
-        .json()
-        .await
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to parse GitHub API response: {e}")))?;
+    let release: Release = resp.json().await.map_err(|e| {
+        WaxError::SelfUpdateError(format!("Failed to parse GitHub API response: {e}"))
+    })?;
 
     Ok(release.tag_name)
 }
@@ -127,8 +126,9 @@ async fn download_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> 
 /// rename cannot leave the directory without a working `wax` even if the
 /// process is interrupted.
 fn install_binary(bytes: &[u8]) -> Result<()> {
-    let current_exe = std::env::current_exe()
-        .map_err(|e| WaxError::SelfUpdateError(format!("Cannot determine current binary path: {e}")))?;
+    let current_exe = std::env::current_exe().map_err(|e| {
+        WaxError::SelfUpdateError(format!("Cannot determine current binary path: {e}"))
+    })?;
 
     // Resolve symlinks so we write to the real file.
     let dest = dunce::canonicalize(&current_exe).unwrap_or(current_exe);
@@ -155,7 +155,11 @@ fn install_binary(bytes: &[u8]) -> Result<()> {
 }
 
 #[instrument]
-pub async fn self_update(channel: Channel, force: bool, nightly_cleanup: Option<bool>) -> Result<()> {
+pub async fn self_update(
+    channel: Channel,
+    force: bool,
+    nightly_cleanup: Option<bool>,
+) -> Result<()> {
     info!(
         "Self-update initiated: channel={channel}, force={force}, nightly_cleanup={:?}",
         nightly_cleanup
@@ -201,9 +205,7 @@ async fn update_from_release(force: bool) -> Result<()> {
     }
 
     let asset = asset_name()?;
-    let base = format!(
-        "https://github.com/{GITHUB_REPO}/releases/download/{latest_tag}"
-    );
+    let base = format!("https://github.com/{GITHUB_REPO}/releases/download/{latest_tag}");
 
     let download_spinner = create_spinner(&format!("Downloading wax {latest_version}…"));
 
@@ -219,9 +221,7 @@ async fn update_from_release(force: bool) -> Result<()> {
 
     // Verify checksum when available (releases ≥ v0.13.3).
     if let Ok(sha_bytes) = sha_result {
-        let expected = String::from_utf8_lossy(&sha_bytes)
-            .trim()
-            .to_string();
+        let expected = String::from_utf8_lossy(&sha_bytes).trim().to_string();
         if !expected.is_empty() {
             let actual = format!("{:x}", Sha256::digest(&binary));
             if actual != expected {
@@ -255,7 +255,10 @@ fn cleanup_nightly_artifacts() -> Result<usize> {
     let home = crate::ui::dirs::home_dir()?;
     let mut removed = 0usize;
 
-    let roots = [home.join(".cargo/git/checkouts"), home.join(".cargo/git/db")];
+    let roots = [
+        home.join(".cargo/git/checkouts"),
+        home.join(".cargo/git/db"),
+    ];
     for root in roots {
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,

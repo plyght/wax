@@ -1,7 +1,7 @@
-use crate::cask::{CaskState, relink_installed_cask, unlink_installed_cask};
+use crate::cask::{relink_installed_cask, unlink_installed_cask, CaskState};
 use crate::error::validate_package_name;
 use crate::error::{Result, WaxError};
-use crate::install::{InstallState, create_symlinks, remove_symlinks};
+use crate::install::{create_symlinks, remove_symlinks, InstallState};
 use console::style;
 
 pub async fn link(packages: &[String]) -> Result<()> {

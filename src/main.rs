@@ -59,7 +59,10 @@ enum Commands {
             help = "Force reinstall even if on latest version (with --self)"
         )]
         force: bool,
-        #[arg(long, help = "After nightly self-update, clean Cargo git cache for wax")]
+        #[arg(
+            long,
+            help = "After nightly self-update, clean Cargo git cache for wax"
+        )]
         clean: bool,
         #[arg(long, help = "After nightly self-update, keep Cargo git cache")]
         no_clean: bool,
@@ -101,7 +104,10 @@ enum Commands {
         global: bool,
         #[arg(long, help = "Build from source even if bottle available")]
         build_from_source: bool,
-        #[arg(long, help = "Install the HEAD version (clones git repo, builds from source)")]
+        #[arg(
+            long,
+            help = "Install the HEAD version (clones git repo, builds from source)"
+        )]
         head: bool,
     },
 
@@ -347,7 +353,12 @@ enum TapAction {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
-    #[command(about = "Remove a custom tap", visible_alias = "rm", alias = "uninstall", alias = "delete")]
+    #[command(
+        about = "Remove a custom tap",
+        visible_alias = "rm",
+        alias = "uninstall",
+        alias = "delete"
+    )]
     Remove {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
@@ -527,12 +538,8 @@ async fn main() -> Result<()> {
                 handle_system_upgrade().await?;
             }
             // Always check for a wax update at the end of upgrade.
-            commands::self_update::self_update(
-                commands::self_update::Channel::Stable,
-                false,
-                None,
-            )
-            .await?;
+            commands::self_update::self_update(commands::self_update::Channel::Stable, false, None)
+                .await?;
             Ok(())
         }
         Commands::System { action } => match action {

@@ -1,4 +1,4 @@
-use crate::bottle::{BottleDownloader, DownloadTotals, homebrew_prefix};
+use crate::bottle::{homebrew_prefix, BottleDownloader, DownloadTotals};
 use crate::error::{Result, WaxError};
 use crate::ui::dirs;
 use indicatif::ProgressBar;
@@ -48,7 +48,8 @@ impl CaskState {
     pub async fn load(&self) -> Result<HashMap<String, InstalledCask>> {
         let mut casks = HashMap::new();
 
-        // 1. Load from legacy state file (if any)
+        // Load only from legacy state file - NOT from Caskroom directories
+        // This ensures we only show casks that were explicitly tracked
         if self.legacy_state_path.exists() {
             if let Ok(json) = fs::read_to_string(&self.legacy_state_path).await {
                 if let Ok(legacy_casks) =
@@ -56,45 +57,6 @@ impl CaskState {
                 {
                     casks.extend(legacy_casks);
                 }
-            }
-        }
-
-        // 2. Scan Homebrew Caskroom and User Caskroom
-        let mut caskrooms = vec![Self::caskroom_dir()];
-        if let Ok(user_dir) = Self::user_caskroom_dir() {
-            caskrooms.push(user_dir);
-        }
-
-        for caskroom in caskrooms {
-            if !caskroom.exists() {
-                continue;
-            }
-
-            let mut entries = tokio::fs::read_dir(&caskroom).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                let file_type = entry.file_type().await?;
-                if !file_type.is_dir() {
-                    continue;
-                }
-
-                let cask_name = entry.file_name().to_string_lossy().to_string();
-                if cask_name.starts_with('.') {
-                    continue;
-                }
-
-                // Find version and install date
-                let (version, install_date) = self.scan_cask_version_dir(&entry.path()).await?;
-
-                casks
-                    .entry(cask_name.clone())
-                    .or_insert_with(|| InstalledCask {
-                        name: cask_name,
-                        version,
-                        install_date,
-                        artifact_type: None,
-                        binary_paths: None,
-                        app_name: None,
-                    });
             }
         }
 
@@ -194,11 +156,9 @@ impl CaskState {
 }
 
 async fn installed_cask_version_dir(cask: &InstalledCask) -> Result<Option<PathBuf>> {
-    let mut candidates = vec![
-        CaskState::caskroom_dir()
-            .join(&cask.name)
-            .join(&cask.version),
-    ];
+    let mut candidates = vec![CaskState::caskroom_dir()
+        .join(&cask.name)
+        .join(&cask.version)];
     if let Ok(user_dir) = CaskState::user_caskroom_dir() {
         candidates.push(user_dir.join(&cask.name).join(&cask.version));
     }
@@ -504,7 +464,15 @@ impl StagingContext {
                 let decoded_filename = urlencoding::decode(original_filename)
                     .unwrap_or(std::borrow::Cow::Borrowed(original_filename));
 
-                let dest = staging_root.join(decoded_filename.as_ref());
+                let filename = decoded_filename.as_ref();
+                if filename.contains("..") || filename.starts_with("/") || filename.contains("\0") {
+                    return Err(WaxError::InstallError(format!(
+                        "Filename contains unsafe characters: {}",
+                        filename
+                    )));
+                }
+
+                let dest = staging_root.join(filename);
                 tokio::fs::copy(download_path, &dest).await?;
             }
         }

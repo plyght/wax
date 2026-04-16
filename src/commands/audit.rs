@@ -3,6 +3,7 @@ use crate::error::Result;
 use crate::install::InstallState;
 use crate::version::is_same_or_newer;
 use console::style;
+use std::collections::HashMap;
 
 pub async fn audit(cache: &Cache) -> Result<()> {
     let state = InstallState::new()?;
@@ -16,6 +17,7 @@ pub async fn audit(cache: &Cache) -> Result<()> {
 
     cache.ensure_fresh().await?;
     let formulae = cache.load_all_formulae().await?;
+    let formula_index: HashMap<_, _> = formulae.iter().map(|f| (f.name.as_str(), f)).collect();
 
     let mut deprecated = Vec::new();
     let mut disabled = Vec::new();
@@ -23,7 +25,7 @@ pub async fn audit(cache: &Cache) -> Result<()> {
     let mut unknown = Vec::new();
 
     for (name, pkg) in &installed {
-        match formulae.iter().find(|f| &f.name == name) {
+        match formula_index.get(name.as_str()) {
             Some(formula) => {
                 if formula.disabled {
                     let reason = formula

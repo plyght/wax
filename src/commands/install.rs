@@ -350,7 +350,9 @@ async fn install_from_head_task(
         .await?;
 
     let sha = if sha_output.status.success() {
-        String::from_utf8_lossy(&sha_output.stdout).trim().to_string()
+        String::from_utf8_lossy(&sha_output.stdout)
+            .trim()
+            .to_string()
     } else {
         "HEAD".to_string()
     };
@@ -418,6 +420,7 @@ struct InstallArgs<'a> {
     build_from_source: bool,
     head: bool,
     quiet: bool,
+    force_reinstall: bool,
     external_pb: Option<&'a ProgressBar>,
 }
 
@@ -443,6 +446,7 @@ pub async fn install(
             build_from_source,
             head,
             quiet: false,
+            force_reinstall: false,
             external_pb: None,
         },
     )
@@ -471,19 +475,19 @@ pub async fn install_quiet(
             build_from_source: false,
             head: false,
             quiet: true,
+            force_reinstall: false,
             external_pb: None,
         },
     )
     .await
 }
 
-pub async fn install_quiet_with_progress(
+pub async fn install_quiet_force(
     cache: &Cache,
     package_names: &[impl AsRef<str>],
     cask: bool,
     user: bool,
     global: bool,
-    pb: &ProgressBar,
 ) -> Result<()> {
     let names: Vec<String> = package_names
         .iter()
@@ -500,6 +504,38 @@ pub async fn install_quiet_with_progress(
             build_from_source: false,
             head: false,
             quiet: true,
+            force_reinstall: true,
+            external_pb: None,
+        },
+    )
+    .await
+}
+
+pub async fn install_quiet_with_progress(
+    cache: &Cache,
+    package_names: &[impl AsRef<str>],
+    cask: bool,
+    user: bool,
+    global: bool,
+    pb: &ProgressBar,
+    force_reinstall: bool,
+) -> Result<()> {
+    let names: Vec<String> = package_names
+        .iter()
+        .map(|s| s.as_ref().to_string())
+        .collect();
+    install_impl(
+        cache,
+        &names,
+        InstallArgs {
+            dry_run: false,
+            cask,
+            user,
+            global,
+            build_from_source: false,
+            head: false,
+            quiet: true,
+            force_reinstall,
             external_pb: Some(pb),
         },
     )
@@ -519,6 +555,7 @@ async fn install_impl(
         build_from_source,
         head,
         quiet,
+        force_reinstall,
         external_pb,
     } = args;
     if package_names.is_empty() {
@@ -532,7 +569,7 @@ async fn install_impl(
     cache.ensure_fresh().await?;
 
     if cask {
-        return install_casks(cache, package_names, dry_run, quiet).await;
+        return install_casks(cache, package_names, dry_run, quiet, force_reinstall).await;
     }
 
     let install_mode = match InstallMode::from_flags(user, global)? {
@@ -684,7 +721,7 @@ async fn install_impl(
         let cask_names = detected_casks.clone();
         Some(tokio::spawn(async move {
             let local_cache = Cache::new()?;
-            install_casks(&local_cache, &cask_names, dry_run, quiet).await
+            install_casks(&local_cache, &cask_names, dry_run, quiet, false).await
         }))
     };
 
@@ -877,7 +914,7 @@ async fn install_impl(
     };
 
     let semaphore = Arc::new(Semaphore::new(concurrent_limit));
-    let mut tasks = Vec::new();
+    let mut tasks = JoinSet::new();
 
     let temp_dir = Arc::new(TempDir::new()?);
 
@@ -997,7 +1034,7 @@ async fn install_impl(
             pb
         };
 
-        let task = tokio::spawn(async move {
+        tasks.spawn(async move {
             let permit = semaphore.acquire().await.unwrap();
             // Don't even start if already cancelled
             crate::signal::check_cancelled()?;
@@ -1006,13 +1043,7 @@ async fn install_impl(
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 
             let dl = downloader
-                .download(
-                    &url,
-                    &tarball_path,
-                    Some(&pb),
-                    conns,
-                    pipe_totals.as_ref(),
-                )
+                .download(&url, &tarball_path, Some(&pb), conns, pipe_totals.as_ref())
                 .await;
             pb.finish_and_clear();
 
@@ -1033,8 +1064,6 @@ async fn install_impl(
 
             Ok::<_, WaxError>((name, version, extract_dir, sha256, rebuild))
         });
-
-        tasks.push(task);
     }
 
     // Collect results; abort remaining tasks immediately on cancellation.
@@ -1042,13 +1071,13 @@ async fn install_impl(
     let mut failed_packages = Vec::new();
     let mut cancelled = false;
 
-    for handle in tasks {
+    while let Some(handle) = tasks.join_next().await {
         if cancelled || crate::signal::is_shutdown_requested() {
-            handle.abort();
+            tasks.abort_all();
             cancelled = true;
             continue;
         }
-        match handle.await {
+        match handle {
             Ok(Ok((name, version, extract_dir, bottle_sha, bottle_rebuild))) => {
                 let spinner = if quiet {
                     ProgressBar::hidden()
@@ -1167,7 +1196,9 @@ async fn install_impl(
     Ok(())
 }
 
-fn infer_artifact_type_from_cask_artifacts(details: &crate::api::CaskDetails) -> Option<&'static str> {
+fn infer_artifact_type_from_cask_artifacts(
+    details: &crate::api::CaskDetails,
+) -> Option<&'static str> {
     let artifacts = details.artifacts.as_ref()?;
 
     if artifacts
@@ -1315,7 +1346,10 @@ pub async fn install_extracted_bottle(
     if let Some(_formula) = state.load().await?.get(name) {
         // Auto-run postinstall if possible
         if let Ok(formulae) = state.load_formulae_from_cache().await {
-            if let Some(f) = formulae.iter().find(|f| f.name == name) {
+            if let Some(f) = formulae
+                .iter()
+                .find(|f| f.name == name || f.full_name == name)
+            {
                 if f.post_install_defined {
                     let _ = postinstall_impl(name, install_mode, true).await;
                 }
@@ -1393,7 +1427,13 @@ fn note_aggregate_download_row_done(done: &AtomicUsize, total: usize, hide_overa
 }
 
 #[instrument(skip(cache))]
-async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quiet: bool) -> Result<()> {
+async fn install_casks(
+    cache: &Cache,
+    cask_names: &[String],
+    dry_run: bool,
+    quiet: bool,
+    force_reinstall: bool,
+) -> Result<()> {
     let start = std::time::Instant::now();
 
     // Reuse the globally active MultiProgress if one is running (e.g. upgrade),
@@ -1412,12 +1452,12 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
         }
     }
 
-    let mut to_install = Vec::new();          // macOS: full CaskInstaller path
+    let mut to_install = Vec::new(); // macOS: full CaskInstaller path
     let mut linux_cask_installs = Vec::new(); // Linux: snap → flatpak → native PM
     let mut already_installed = Vec::new();
 
     for cask_name in cask_names {
-        if installed_casks.contains_key(cask_name) {
+        if installed_casks.contains_key(cask_name) && !force_reinstall {
             already_installed.push(cask_name.clone());
         } else if cfg!(target_os = "macos") {
             if casks
@@ -1584,12 +1624,13 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
         let hide_dl = Arc::clone(&hide_overall_downloads);
         let net_done = Arc::clone(&network_phase_done);
         pipeline_tasks.spawn(async move {
-            let _permit = pipeline_sem.acquire().await.map_err(|_| {
-                CaskPipelineFail::Download {
+            let _permit = pipeline_sem
+                .acquire()
+                .await
+                .map_err(|_| CaskPipelineFail::Download {
                     name: name.clone(),
                     err: WaxError::InstallError("download worker cancelled".into()),
-                }
-            })?;
+                })?;
 
             if let Err(e) = check_cancelled() {
                 return Err(CaskPipelineFail::Download { name, err: e });
@@ -1600,7 +1641,9 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
                 err: e.into(),
             })?;
             let download_path =
-                temp_dir.path().join(format!("{}.{}", name, artifact_type.as_str()));
+                temp_dir
+                    .path()
+                    .join(format!("{}.{}", name, artifact_type.as_str()));
             let pb = multi.insert_from_back(1, ProgressBar::new(0));
             pb.set_style(
                 ProgressStyle::default_bar()
@@ -1610,12 +1653,7 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
             );
             pb.set_prefix(name.clone());
             if let Err(e) = installer
-                .download_cask(
-                    &details.url,
-                    &download_path,
-                    Some(&pb),
-                    dl_totals.as_ref(),
-                )
+                .download_cask(&details.url, &download_path, Some(&pb), dl_totals.as_ref())
                 .await
             {
                 pb.finish_and_clear();
@@ -1650,12 +1688,13 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
                     })?;
                     {
                         let _guard = state_lock.lock().await;
-                        state.add(installed_cask).await.map_err(|e| {
-                            CaskPipelineFail::Install {
+                        state
+                            .add(installed_cask)
+                            .await
+                            .map_err(|e| CaskPipelineFail::Install {
                                 name: name.clone(),
                                 err: e,
-                            }
-                        })?;
+                            })?;
                     }
                     if !quiet {
                         let _ = multi.println(format!(
@@ -1750,7 +1789,12 @@ async fn install_casks(cache: &Cache, cask_names: &[String], dry_run: bool, quie
                     installed_count += 1;
                 }
                 Err(e) => {
-                    eprintln!("{} {} failed: {}", style("✗").red(), style(name).magenta(), e);
+                    eprintln!(
+                        "{} {} failed: {}",
+                        style("✗").red(),
+                        style(name).magenta(),
+                        e
+                    );
                     failed.push(name.clone());
                 }
             }

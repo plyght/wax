@@ -11,6 +11,7 @@ pub enum BuildSystem {
     CMake,
     Meson,
     Make,
+    Cargo,
     Unknown,
 }
 
@@ -106,9 +107,7 @@ impl FormulaParser {
     }
 
     fn extract_head_url(content: &str) -> Option<String> {
-        let re = RE_HEAD.get_or_init(|| {
-            Regex::new(r#"(?m)^\s*head\s+"([^"]+)""#).unwrap()
-        });
+        let re = RE_HEAD.get_or_init(|| Regex::new(r#"(?m)^\s*head\s+"([^"]+)""#).unwrap());
         re.captures(content).map(|c| c[1].to_string())
     }
 
@@ -217,7 +216,9 @@ impl FormulaParser {
     }
 
     fn detect_build_system(install_block: &str) -> BuildSystem {
-        if install_block.contains("./configure") || install_block.contains("./bootstrap") {
+        if install_block.contains("cargo") {
+            BuildSystem::Cargo
+        } else if install_block.contains("./configure") || install_block.contains("./bootstrap") {
             BuildSystem::Autotools
         } else if install_block.contains("cmake") {
             BuildSystem::CMake
@@ -247,11 +248,9 @@ impl FormulaParser {
     fn extract_configure_args(install_block: &str) -> Vec<String> {
         // Match args in double quotes: "--flag" or "-DFLAG=val"
         let re_quoted =
-            Regex::new(r#""(?P<arg>(?:--[a-z0-9\-_=#{}/]+|-D[A-Za-z0-9_=\-#{}/.:+]+))""#)
-                .unwrap();
+            Regex::new(r#""(?P<arg>(?:--[a-z0-9\-_=#{}/]+|-D[A-Za-z0-9_=\-#{}/.:+]+))""#).unwrap();
         // Match bare args inside %W[...] or %w[...] word arrays (no quotes)
-        let re_word_array =
-            Regex::new(r#"%[Ww]\[(?P<body>[^\]]*)\]"#).unwrap();
+        let re_word_array = Regex::new(r#"%[Ww]\[(?P<body>[^\]]*)\]"#).unwrap();
         let re_bare_arg =
             Regex::new(r"(?P<arg>(?:--[a-z0-9\-_=]+|-D[A-Za-z0-9_=\-.:+]+))").unwrap();
 
@@ -432,11 +431,9 @@ impl FormulaParser {
 
     /// Extract the first `url` + `sha256` pair from a block of Ruby cask content.
     fn extract_url_sha(block: &str) -> Option<CaskLinuxArtifact> {
-        let re_url = RE_CASK_URL
-            .get_or_init(|| Regex::new(r#"(?m)^\s*url\s+"([^"]+)""#).unwrap());
-        let re_sha = RE_CASK_SHA.get_or_init(|| {
-            Regex::new(r#"(?m)^\s*sha256\s+(?:"([^"]+)"|:no_check)"#).unwrap()
-        });
+        let re_url = RE_CASK_URL.get_or_init(|| Regex::new(r#"(?m)^\s*url\s+"([^"]+)""#).unwrap());
+        let re_sha = RE_CASK_SHA
+            .get_or_init(|| Regex::new(r#"(?m)^\s*sha256\s+(?:"([^"]+)"|:no_check)"#).unwrap());
 
         let url = re_url.captures(block).map(|c| c[1].to_string())?;
         let sha256 = re_sha
@@ -561,6 +558,12 @@ mod tests {
 
         let make = r#"system "make", "install""#;
         assert_eq!(FormulaParser::detect_build_system(make), BuildSystem::Make);
+
+        let cargo = r#"system "cargo", "install", *std_cargo_args(path: "brush-shell")"#;
+        assert_eq!(
+            FormulaParser::detect_build_system(cargo),
+            BuildSystem::Cargo
+        );
     }
 
     #[test]
@@ -735,7 +738,10 @@ end
     bin.install "menubar_linux.py" if File.exist?("menubar_linux.py")
 "#;
         let bins = FormulaParser::extract_bin_installs(install_block);
-        assert_eq!(bins, vec!["poke-around", "poke-around-bridge.js", "menubar_linux.py"]);
+        assert_eq!(
+            bins,
+            vec!["poke-around", "poke-around-bridge.js", "menubar_linux.py"]
+        );
     }
 
     #[test]

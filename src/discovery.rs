@@ -272,8 +272,7 @@ async fn read_app_bundle_name(path: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-#[allow(dead_code)]
-async fn read_app_bundle_version(path: &Path) -> Option<String> {
+pub async fn read_app_bundle_version(path: &Path) -> Option<String> {
     if let Some(version) = read_info_plist_string(path, "CFBundleShortVersionString").await {
         Some(version)
     } else {

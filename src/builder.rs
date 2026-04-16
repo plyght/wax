@@ -75,6 +75,7 @@ impl Builder {
                     .await?
             }
             BuildSystem::Make => self.build_make(&source_dir, install_prefix).await?,
+            BuildSystem::Cargo => self.build_cargo(&source_dir, install_prefix).await?,
             BuildSystem::Unknown => {
                 return Err(WaxError::BuildError(
                     "Unknown build system - cannot build from source".to_string(),
@@ -114,6 +115,7 @@ impl Builder {
                     .await?
             }
             BuildSystem::Make => self.build_make(source_dir, install_prefix).await?,
+            BuildSystem::Cargo => self.build_cargo(source_dir, install_prefix).await?,
             BuildSystem::Unknown => {
                 return Err(WaxError::BuildError(
                     "Unknown build system - cannot build from source".to_string(),
@@ -291,6 +293,22 @@ impl Builder {
             "install".to_string(),
         ];
         self.run_command(source_dir, "ninja", &install_args, "Installing")
+            .await?;
+
+        Ok(())
+    }
+
+    async fn build_cargo(&self, source_dir: &Path, prefix: &Path) -> Result<()> {
+        info!("Building with Cargo");
+
+        let install_args = vec![
+            "--root".to_string(),
+            prefix.display().to_string(),
+            "--prefix".to_string(),
+            prefix.display().to_string(),
+            format!("-j{}", self.num_cores),
+        ];
+        self.run_command(source_dir, "cargo", &install_args, "Building")
             .await?;
 
         Ok(())

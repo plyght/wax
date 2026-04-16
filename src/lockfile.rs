@@ -111,15 +111,65 @@ impl Lockfile {
         match crate::ui::dirs::wax_dir() {
             Ok(dir) => dir.join("wax.lock"),
             Err(e) => {
-                warn!("Could not determine wax config directory: {}; using .wax/ fallback", e);
+                warn!(
+                    "Could not determine wax config directory: {}; using .wax/ fallback",
+                    e
+                );
                 PathBuf::from(".wax").join("wax.lock")
             }
         }
+    }
+
+    pub async fn remove_cask(&mut self, name: &str) {
+        self.casks.remove(name);
+    }
+
+    pub async fn remove_package(&mut self, name: &str) {
+        self.packages.remove(name);
     }
 }
 
 impl Default for Lockfile {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_remove_cask() {
+        let mut lockfile = Lockfile::new();
+        lockfile.casks.insert(
+            "brave-browser".to_string(),
+            LockfileCask { version: "1.0.0".to_string() },
+        );
+        lockfile.remove_cask("brave-browser").await;
+        assert!(lockfile.casks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_package() {
+        let mut lockfile = Lockfile::new();
+        lockfile.packages.insert(
+            "nginx".to_string(),
+            LockfilePackage {
+                version: "1.25.0".to_string(),
+                bottle: "all".to_string(),
+            },
+        );
+        lockfile.remove_package("nginx").await;
+        assert!(lockfile.packages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_nonexistent() {
+        let mut lockfile = Lockfile::new();
+        lockfile.remove_cask("nonexistent").await;
+        lockfile.remove_package("nonexistent").await;
+        assert!(lockfile.casks.is_empty());
+        assert!(lockfile.packages.is_empty());
     }
 }

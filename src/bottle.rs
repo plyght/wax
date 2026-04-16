@@ -129,14 +129,7 @@ impl BottleDownloader {
             }
         }
 
-        self.download_single(
-            url,
-            dest_path,
-            &auth_token,
-            total_size,
-            progress,
-            totals,
-        )
+        self.download_single(url, dest_path, &auth_token, total_size, progress, totals)
             .await
     }
 
@@ -212,7 +205,9 @@ impl BottleDownloader {
         let chunk_size = total_size.div_ceil(n as u64);
 
         if let Some(pb) = progress {
-            pb.set_length(total_size);
+            if total_size > 0 {
+                pb.set_length(total_size);
+            }
             // Append "[Nx]" badge to whichever field the caller used for the name.
             // Formula bars use set_message ({msg}); cask bars use set_prefix ({prefix}).
             if n > 1 {
@@ -381,7 +376,9 @@ impl BottleDownloader {
 
         let total_size = response.content_length().unwrap_or(content_length);
         if let Some(pb) = progress {
-            pb.set_length(total_size);
+            if total_size > 0 {
+                pb.set_length(total_size);
+            }
         }
         if let Some(t) = totals {
             if content_length == 0 && total_size > 0 {
@@ -428,7 +425,9 @@ impl BottleDownloader {
 
             match cloned.send().await {
                 Ok(resp) => {
-                    if !Self::is_retryable_status(resp.status()) || attempt == Self::TRANSIENT_RETRY_ATTEMPTS {
+                    if !Self::is_retryable_status(resp.status())
+                        || attempt == Self::TRANSIENT_RETRY_ATTEMPTS
+                    {
                         return Ok(resp);
                     }
                     let backoff_ms = 300 * attempt as u64;
@@ -700,28 +699,12 @@ impl BottleDownloader {
             };
 
             let placeholder_bytes = placeholder.as_bytes();
-            if replacement.len() > placeholder_bytes.len() {
-                debug!(
-                    "Skipping relocation: replacement ({} bytes) longer than placeholder ({} bytes) in {:?}",
-                    replacement.len(),
-                    placeholder_bytes.len(),
-                    path
-                );
-                continue;
-            }
             let mut i = 0;
             while i + placeholder_bytes.len() <= content.len() {
                 if &content[i..i + placeholder_bytes.len()] == placeholder_bytes {
-                    let pad_len = placeholder_bytes.len() - replacement.len();
-                    content.splice(
-                        i..i + placeholder_bytes.len(),
-                        replacement
-                            .iter()
-                            .copied()
-                            .chain(std::iter::repeat_n(0, pad_len)),
-                    );
+                    content.splice(i..i + placeholder_bytes.len(), replacement.iter().copied());
                     modified = true;
-                    i += placeholder_bytes.len();
+                    i += replacement.len().max(placeholder_bytes.len());
                 } else {
                     i += 1;
                 }
@@ -742,12 +725,10 @@ impl BottleDownloader {
     fn relocate_elf(path: &Path, prefix: &str, cellar: &str) -> Result<()> {
         use std::process::Command;
 
-        let patchelf = which_patchelf();
-        if patchelf.is_none() {
+        let Some(patchelf) = which_patchelf() else {
             debug!("patchelf not found, skipping ELF relocation for {:?}", path);
             return Ok(());
-        }
-        let patchelf = patchelf.unwrap();
+        };
 
         let metadata = std::fs::metadata(path)?;
         let original_permissions = metadata.permissions();
@@ -1213,5 +1194,24 @@ mod tests {
         let path = std::path::Path::new("/tmp/wax-test-nonexistent-file-xyz-123.tar.gz");
         let result = BottleDownloader::verify_checksum(path, "abc123");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn relocate_file_replaces_longer_text_paths() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"exec @@HOMEBREW_CELLAR@@/odin/bin/odin\n")
+            .unwrap();
+
+        BottleDownloader::relocate_file(
+            f.path(),
+            &["@@HOMEBREW_CELLAR@@", "@@HOMEBREW_PREFIX@@"],
+            "/opt/homebrew",
+            "/opt/homebrew/Cellar",
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(f.path()).unwrap();
+        assert!(contents.contains("/opt/homebrew/Cellar/odin/bin/odin"));
+        assert!(!contents.contains("@@HOMEBREW_CELLAR@@"));
     }
 }

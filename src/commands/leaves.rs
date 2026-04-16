@@ -2,7 +2,7 @@ use crate::cache::Cache;
 use crate::error::Result;
 use crate::install::InstallState;
 use console::style;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub async fn leaves(cache: &Cache) -> Result<()> {
     let state = InstallState::new()?;
@@ -18,10 +18,11 @@ pub async fn leaves(cache: &Cache) -> Result<()> {
 
     // Collect all packages that are depended on by other installed packages
     let formulae = cache.load_all_formulae().await?;
+    let formula_index: HashMap<_, _> = formulae.iter().map(|f| (f.name.as_str(), f)).collect();
     let mut depended_on: HashSet<String> = HashSet::new();
 
     for name in &installed_names {
-        if let Some(formula) = formulae.iter().find(|f| &f.name == name) {
+        if let Some(formula) = formula_index.get(name.as_str()) {
             if let Some(deps) = &formula.dependencies {
                 for dep in deps {
                     depended_on.insert(dep.clone());

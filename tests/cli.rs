@@ -42,7 +42,15 @@ fn help_flag_exits_zero() {
 fn help_output_contains_subcommands() {
     let out = wax().arg("--help").output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for cmd in &["install", "search", "update", "list", "info", "upgrade", "uninstall"] {
+    for cmd in &[
+        "install",
+        "search",
+        "update",
+        "list",
+        "info",
+        "upgrade",
+        "uninstall",
+    ] {
         assert!(
             stdout.contains(cmd),
             "help output missing subcommand '{cmd}': {stdout}"
@@ -52,7 +60,15 @@ fn help_output_contains_subcommands() {
 
 #[test]
 fn subcommand_help_exits_zero() {
-    for sub in &["install", "search", "info", "list", "upgrade", "uninstall", "tap"] {
+    for sub in &[
+        "install",
+        "search",
+        "info",
+        "list",
+        "upgrade",
+        "uninstall",
+        "tap",
+    ] {
         let out = wax().args([sub, "--help"]).output().unwrap();
         assert!(
             out.status.success(),
@@ -68,7 +84,10 @@ fn subcommand_help_exits_zero() {
 fn list_exits_zero() {
     // `wax list` works without a populated cache (just shows an empty list).
     let out = wax()
-        .env("WAX_CACHE_DIR", std::env::temp_dir().join("wax-test-cache-list"))
+        .env(
+            "WAX_CACHE_DIR",
+            std::env::temp_dir().join("wax-test-cache-list"),
+        )
         .env("CI", "1")
         .arg("list")
         .output()
@@ -84,7 +103,10 @@ fn list_exits_zero() {
 #[test]
 fn list_with_query_exits_zero() {
     let out = wax()
-        .env("WAX_CACHE_DIR", std::env::temp_dir().join("wax-test-cache-list-q"))
+        .env(
+            "WAX_CACHE_DIR",
+            std::env::temp_dir().join("wax-test-cache-list-q"),
+        )
         .env("CI", "1")
         .args(["list", "rust"])
         .output()
@@ -183,17 +205,17 @@ fn list_plain_no_match_reports_query() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("no installed packages match"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("no installed packages match"), "{stdout}");
     assert!(stdout.contains(needle), "{stdout}");
 }
 
 #[test]
 fn tap_list_exits_zero() {
     let out = wax()
-        .env("WAX_CACHE_DIR", std::env::temp_dir().join("wax-test-cache-tap"))
+        .env(
+            "WAX_CACHE_DIR",
+            std::env::temp_dir().join("wax-test-cache-tap"),
+        )
         .arg("tap")
         .arg("list")
         .output()
@@ -232,7 +254,10 @@ fn search_no_args_does_not_panic() {
 
 #[test]
 fn unknown_subcommand_exits_nonzero() {
-    let out = wax().arg("definitely-not-a-real-subcommand").output().unwrap();
+    let out = wax()
+        .arg("definitely-not-a-real-subcommand")
+        .output()
+        .unwrap();
     assert!(!out.status.success());
 }
 

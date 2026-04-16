@@ -1,6 +1,7 @@
 use crate::cache::Cache;
 use crate::error::{Result, WaxError};
 use console::style;
+use std::collections::HashMap;
 use tracing::instrument;
 
 #[instrument(skip(cache))]
@@ -9,11 +10,18 @@ pub async fn source(cache: &Cache, formula_name: &str) -> Result<()> {
 
     let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_casks().await?;
-
-    if let Some(formula) = formulae
+    let formula_index: HashMap<_, _> = formulae
         .iter()
-        .find(|f| f.name == formula_name || f.full_name == formula_name)
-    {
+        .map(|f| (f.name.as_str(), f))
+        .chain(formulae.iter().map(|f| (f.full_name.as_str(), f)))
+        .collect();
+    let cask_index: HashMap<_, _> = casks
+        .iter()
+        .map(|c| (c.token.as_str(), c))
+        .chain(casks.iter().map(|c| (c.full_token.as_str(), c)))
+        .collect();
+
+    if let Some(formula) = formula_index.get(formula_name) {
         let homepage = &formula.homepage;
         println!(
             "{} → {}",
@@ -34,10 +42,7 @@ pub async fn source(cache: &Cache, formula_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    if let Some(cask) = casks
-        .iter()
-        .find(|c| c.token == formula_name || c.full_token == formula_name)
-    {
+    if let Some(cask) = cask_index.get(formula_name) {
         let homepage = &cask.homepage;
         println!(
             "{} {} → {}",

@@ -9,6 +9,7 @@ use crate::signal::{check_cancelled, CriticalSection};
 use crate::ui::{copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
@@ -39,6 +40,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         }
     }
 
+    // Save discovered packages to InstallState
+    if !installed_packages.is_empty() {
+        state.save(&installed_packages).await?;
+    }
+
     let casks = cache.load_casks().await?;
     let cask_state = CaskState::new()?;
     let mut installed_casks = cask_state.load().await?;
@@ -47,6 +53,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         for (name, cask) in discover_manually_installed_casks(&casks).await? {
             installed_casks.entry(name).or_insert(cask);
         }
+        cask_state.save(&installed_casks).await?;
     }
 
     let current_platform = detect_platform();
@@ -102,14 +109,18 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     // Show diff preview
     if !packages_to_install.is_empty() || !upgrades.is_empty() {
+        let upgrade_index: HashMap<_, _> = upgrades
+            .iter()
+            .map(|(name, old_ver, new_ver)| (name.as_str(), (old_ver.as_str(), new_ver.as_str())))
+            .collect();
         for (name, lock_pkg) in &packages_to_install {
-            if let Some((_, old_ver, new_ver)) = upgrades.iter().find(|(n, _, _)| n == name) {
+            if let Some((old_ver, new_ver)) = upgrade_index.get(name.as_str()) {
                 println!(
                     "  {} {} {} → {}",
                     style("↑").cyan(),
                     style(name).magenta(),
-                    style(old_ver).dim(),
-                    style(new_ver).green()
+                    style(*old_ver).dim(),
+                    style(*new_ver).green()
                 );
             } else {
                 println!(
@@ -123,15 +134,19 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     }
 
     if !casks_to_install.is_empty() || !cask_upgrades.is_empty() {
+        let cask_upgrade_index: HashMap<_, _> = cask_upgrades
+            .iter()
+            .map(|(name, old_ver, new_ver)| (name.as_str(), (old_ver.as_str(), new_ver.as_str())))
+            .collect();
         for name in &casks_to_install {
-            if let Some((_, old_ver, new_ver)) = cask_upgrades.iter().find(|(n, _, _)| n == name) {
+            if let Some((old_ver, new_ver)) = cask_upgrade_index.get(name.as_str()) {
                 println!(
                     "  {} {} {} {} → {}",
                     style("↑").cyan(),
                     style(name).magenta(),
                     style("(cask)").yellow(),
-                    style(old_ver).dim(),
-                    style(new_ver).green()
+                    style(*old_ver).dim(),
+                    style(*new_ver).green()
                 );
             } else {
                 println!(

@@ -2,9 +2,9 @@ use crate::bottle::homebrew_prefix;
 use crate::error::{validate_package_name, Result, WaxError};
 use crate::install::InstallState;
 use console::style;
-use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::path::Path;
+use std::path::PathBuf;
 use tokio::process::Command;
 use tracing::instrument;
 

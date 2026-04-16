@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # wax vs Homebrew benchmark script
 # Run from the repo root: bash benchmark.sh
-# Requires: wax (release build or on PATH), brew, python3
+# Requires: wax (release build or on PATH), brew
 
 set -euo pipefail
 
@@ -15,27 +15,47 @@ die() { echo -e "${RED}error: $*${NC}" >&2; exit 1; }
 
 [ -x "$WAX" ]  || die "wax not found at $WAX — set WAX=/path/to/wax or build with 'cargo build --release'"
 command -v "$BREW" &>/dev/null || die "brew not found — install Homebrew/Linuxbrew first"
-command -v python3 &>/dev/null || die "python3 required"
+command -v bc &>/dev/null || die "bc required for float math"
 
 # ---------- helpers -----------------------------------------------------------
 
 timeit() {
-    # Returns elapsed seconds as a float
     local t
     t=$( { time "$@" >/dev/null 2>&1; } 2>&1 | grep real | sed 's/.*m//;s/s//')
-    echo "$t"
+    # Ensure we have a valid number
+    if [[ -z "$t" || ! "$t" =~ ^[0-9.]+$ ]]; then
+        echo "0.000"
+    else
+        echo "$t"
+    fi
 }
 
 avg() {
-    python3 -c "vals=[$*]; print(f'{sum(vals)/len(vals):.3f}')"
+    local count=$#
+    if [[ $count -eq 0 ]]; then
+        echo "0.000"
+        return
+    fi
+    local sum=0
+    for v in "$@"; do
+        # Skip empty or invalid values
+        if [[ -n "$v" && "$v" =~ ^[0-9.]+$ ]]; then
+            sum=$(echo "scale=3; $sum + $v" | bc)
+        fi
+    done
+    echo "scale=3; $sum / $count" | bc
 }
 
 speedup() {
-    python3 -c "print(f'{float(\"$1\")/float(\"$2\"):.1f}x')"
+    # Handle empty or zero values
+    if [[ -z "$1" || -z "$2" || "$2" == "0" || "$1" == "0" ]]; then
+        echo "N/A"
+        return
+    fi
+    echo "scale=1; $1 / $2" | bc
 }
 
 bench() {
-    # bench <label> cmd...
     local label="$1"; shift
     local times=()
     for i in $(seq 1 "$RUNS"); do
@@ -43,9 +63,9 @@ bench() {
         times+=("$t")
         printf "    run %-2s %ss\n" "$i" "$t"
     done
-    local a; a=$(avg "$(IFS=,; echo "${times[*]}")")
+    local a; a=$(avg "${times[@]}")
     printf "    ${BOLD}avg  %ss${NC}   (%s)\n" "$a" "$label"
-    echo "$a"   # return value for capture
+    echo "$a"
 }
 
 # ---------- system info -------------------------------------------------------
