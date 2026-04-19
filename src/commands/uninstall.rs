@@ -297,9 +297,12 @@ async fn uninstall_cask(
                             .as_secs() as i64,
                         artifact_type: Some("app".to_string()),
                         binary_paths: None,
-                        app_name: Some(app_path.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default()),
+                        app_name: Some(
+                            app_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        ),
                     },
                 );
                 break;
@@ -359,8 +362,7 @@ async fn uninstall_cask(
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
                 .unwrap_or_else(|| {
                     // Try to find the actual app in Caskroom if not stored
-                    find_app_in_caskroom(&cask_name, &cask.version)
-                        .unwrap_or_else(|| app_with_ext)
+                    find_app_in_caskroom(&cask_name, &cask.version).unwrap_or_else(|| app_with_ext)
                 });
 
             // On macOS: check /Applications, then ~/Applications.

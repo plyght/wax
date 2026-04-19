@@ -144,7 +144,9 @@ mod tests {
         let mut lockfile = Lockfile::new();
         lockfile.casks.insert(
             "brave-browser".to_string(),
-            LockfileCask { version: "1.0.0".to_string() },
+            LockfileCask {
+                version: "1.0.0".to_string(),
+            },
         );
         lockfile.remove_cask("brave-browser").await;
         assert!(lockfile.casks.is_empty());
