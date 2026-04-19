@@ -267,10 +267,8 @@ fn cleanup_nightly_artifacts() -> Result<usize> {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("wax-") && path.is_dir() {
-                if std::fs::remove_dir_all(&path).is_ok() {
-                    removed += 1;
-                }
+            if name.starts_with("wax-") && path.is_dir() && std::fs::remove_dir_all(&path).is_ok() {
+                removed += 1;
             }
         }
     }

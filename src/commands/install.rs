@@ -425,6 +425,7 @@ struct InstallArgs<'a> {
 }
 
 #[instrument(skip(cache))]
+#[allow(clippy::too_many_arguments)]
 pub async fn install(
     cache: &Cache,
     package_names: &[String],
@@ -1440,7 +1441,7 @@ async fn install_casks(
     // so download bars appear inside the existing render layer instead of a
     // competing one that causes terminal tearing.
     let multi: Arc<MultiProgress> =
-        Arc::new(crate::signal::clone_active_multi().unwrap_or_else(MultiProgress::new));
+        Arc::new(crate::signal::clone_active_multi().unwrap_or_default());
 
     let casks = cache.load_casks().await?;
     let _state = CaskState::new()?;
@@ -1486,7 +1487,7 @@ async fn install_casks(
     }
 
     if dry_run {
-        let _ = multi.println("dry run - no changes made".to_string());
+        let _ = multi.println("dry run - no changes made");
         return Ok(());
     }
 

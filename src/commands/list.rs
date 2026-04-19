@@ -2,7 +2,6 @@ use crate::bottle::homebrew_prefix;
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::commands::upgrade::{get_outdated_packages, upgrade as run_upgrade};
-use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::install::InstallState;
 use console::style;
@@ -29,7 +28,7 @@ impl std::fmt::Display for InstalledRow {
     }
 }
 
-async fn collect_installed_rows(cache: &Cache) -> Result<Vec<InstalledRow>> {
+async fn collect_installed_rows(_cache: &Cache) -> Result<Vec<InstalledRow>> {
     let test_cellar = std::env::var_os(WAX_TEST_CELLAR_ENV);
 
     let (cellar_path, skip_casks) = if let Some(ref raw) = test_cellar {
@@ -239,7 +238,7 @@ async fn offer_upgrade_for_selection(cache: &Cache, choice: &InstalledRow) -> Re
         .unwrap_or(false);
 
     if should_upgrade {
-        run_upgrade(cache, &[choice.name.clone()], false).await?;
+        run_upgrade(cache, std::slice::from_ref(&choice.name), false).await?;
         println!(
             "\n{} {}",
             style("✓").green(),

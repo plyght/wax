@@ -63,6 +63,7 @@ impl CaskState {
         Ok(casks)
     }
 
+    #[allow(dead_code)]
     async fn scan_cask_version_dir(&self, cask_path: &Path) -> Result<(String, i64)> {
         let mut version = "unknown".to_string();
         let mut install_date = 0;

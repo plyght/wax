@@ -35,6 +35,7 @@ impl Lockfile {
     }
 
     #[instrument]
+    #[allow(dead_code)]
     pub async fn generate() -> Result<Self> {
         debug!("Generating lockfile from installed packages");
 

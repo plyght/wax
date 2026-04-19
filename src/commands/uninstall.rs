@@ -10,7 +10,7 @@ use crate::ui::SPINNER_TICK_CHARS;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Instant;
 
 pub async fn uninstall(
@@ -362,7 +362,7 @@ async fn uninstall_cask(
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
                 .unwrap_or_else(|| {
                     // Try to find the actual app in Caskroom if not stored
-                    find_app_in_caskroom(&cask_name, &cask.version).unwrap_or_else(|| app_with_ext)
+                    find_app_in_caskroom(cask_name, &cask.version).unwrap_or(app_with_ext)
                 });
 
             // On macOS: check /Applications, then ~/Applications.
@@ -383,7 +383,7 @@ async fn uninstall_cask(
             for app_path in &candidates {
                 if app_path.exists() {
                     #[cfg(target_os = "macos")]
-                    if let Err(_) = tokio::fs::remove_dir_all(app_path).await {
+                    if tokio::fs::remove_dir_all(app_path).await.is_err() {
                         // Fall back to sudo for system-installed apps.
                         crate::sudo::sudo_remove(app_path)?;
                         removed = true;
@@ -447,7 +447,7 @@ fn find_app_in_caskroom(cask_name: &str, version: &str) -> Option<String> {
     None
 }
 
-async fn read_app_version_from_plist(path: &PathBuf) -> Option<String> {
+async fn read_app_version_from_plist(path: &Path) -> Option<String> {
     let plist = path.join("Contents/Info.plist");
     if !plist.exists() {
         return None;

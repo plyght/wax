@@ -177,7 +177,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         let multi = MultiProgress::new();
         let downloader = Arc::new(BottleDownloader::new());
         // All packages download simultaneously; the semaphore only caps extreme cases.
-        let concurrent_limit = sync_package_count.max(1).min(32);
+        let concurrent_limit = sync_package_count.clamp(1, 32);
         let semaphore = Arc::new(Semaphore::new(concurrent_limit));
         let temp_dir = Arc::new(TempDir::new()?);
 
