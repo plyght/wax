@@ -253,6 +253,7 @@ See `docs/comparison.md` for detailed methodology and analysis.
 ## Acknowledgments
 
 Huge thanks to [@undivisible](https://github.com/undivisible) on GitHub for being a massive help and contributor to this project. Wax wouldn't be what it is without his support.
+[@undivisible](https://github.com/undivisible): Huge thanks to [@plyght](https://github.com/plyght) for making the original base and contributing with all our projects together. Keep an eye on our org! We are going to make great things together!
 
 ## License
 
