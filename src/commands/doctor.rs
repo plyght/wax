@@ -8,10 +8,13 @@ use crate::error::Result;
 use crate::install::{create_symlinks, InstallMode, InstallState};
 use console::style;
 use futures::future::BoxFuture;
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 #[cfg(target_os = "macos")]
 use rayon::prelude::*;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 struct DiagResult {
     passed: usize,
@@ -67,114 +70,211 @@ impl DiagResult {
     }
 }
 
-fn print_check_result(title: &str, result: &DiagResult) {
-    println!("{}", style(title).bold());
+/// One diagnostic check: a display title and an async function that produces
+/// the result.
+struct Check {
+    title: &'static str,
+    run: BoxFuture<'static, DiagResult>,
+}
+
+fn summary_status(d: &DiagResult) -> (&'static str, console::Style) {
+    if d.failed > 0 {
+        ("fail", console::Style::new().red().bold())
+    } else if d.warned > 0 {
+        ("warn", console::Style::new().yellow().bold())
+    } else {
+        (" ok ", console::Style::new().green().bold())
+    }
+}
+
+fn print_check_result(title: &str, result: &DiagResult, elapsed: Duration) {
+    let (label, st) = summary_status(result);
+    println!(
+        "[{}] {:<22} {}",
+        st.apply_to(label),
+        style(title).bold(),
+        style(format!("({})", format_elapsed(elapsed))).dim()
+    );
     for msg in &result.messages {
-        println!("{}", msg);
+        println!("  {}", msg);
     }
-    if !result.fix && (result.warned > 0 || result.failed > 0) {
-        println!(
-            "  {} run {} to auto-fix issues",
-            style("hint:").dim(),
-            style("wax doctor --fix").yellow()
-        );
-    }
-    println!();
 }
 
 pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
-    let mut d = DiagResult::new(fix);
+    let mut aggregate = DiagResult::new(fix);
     let cache = cache.clone();
+    let start = Instant::now();
 
     if fix {
-        println!("{}", style("wax doctor --fix").bold());
+        println!("{}", style("running wax doctor --fix").bold());
     } else {
-        println!("{}", style("wax doctor").bold());
+        println!("{}", style("running wax doctor").bold());
     }
+
+    let cache_for_check = cache.clone();
+    let checks: Vec<Check> = vec![
+        Check {
+            title: "platform",
+            run: Box::pin(async move {
+                tokio::task::spawn_blocking(move || check_platform(fix))
+                    .await
+                    .unwrap()
+            }),
+        },
+        Check {
+            title: "prefix",
+            run: Box::pin(async move {
+                tokio::task::spawn_blocking(move || check_prefix(fix))
+                    .await
+                    .unwrap()
+            }),
+        },
+        Check {
+            title: "cellar",
+            run: Box::pin(async move { check_cellar(fix).await }),
+        },
+        Check {
+            title: "symlink dirs",
+            run: Box::pin(async move { check_symlink_dirs(fix).await }),
+        },
+        Check {
+            title: "cache",
+            run: Box::pin(async move { check_cache(&cache_for_check, fix).await }),
+        },
+        Check {
+            title: "install state",
+            run: Box::pin(async move { check_install_state(fix).await }),
+        },
+        Check {
+            title: "cask state",
+            run: Box::pin(async move { check_cask_state(fix).await }),
+        },
+        Check {
+            title: "state consistency",
+            run: Box::pin(async move { check_state_consistency(fix).await }),
+        },
+        Check {
+            title: "broken symlinks",
+            run: Box::pin(async move { check_broken_symlinks(fix).await }),
+        },
+        Check {
+            title: "opt symlinks",
+            run: Box::pin(async move { check_opt_symlinks(fix).await }),
+        },
+        Check {
+            title: "unrelocated bottles",
+            run: Box::pin(async move { check_unrelocated_bottles(fix).await }),
+        },
+        Check {
+            title: "code signatures",
+            run: Box::pin(async move { check_invalid_signatures(fix).await }),
+        },
+        Check {
+            title: "tools",
+            run: Box::pin(async move {
+                tokio::task::spawn_blocking(move || check_tools(fix))
+                    .await
+                    .unwrap()
+            }),
+        },
+        Check {
+            title: "glibc",
+            run: Box::pin(async move {
+                tokio::task::spawn_blocking(move || check_glibc_version(fix))
+                    .await
+                    .unwrap()
+            }),
+        },
+        Check {
+            title: "gpu",
+            run: Box::pin(async move {
+                tokio::task::spawn_blocking(move || check_metal_toolchain(fix))
+                    .await
+                    .unwrap()
+            }),
+        },
+    ];
+
+    // One spinner per check, displayed in declaration order while all checks
+    // run in parallel.
+    let mp = MultiProgress::new();
+    let spinner_style = ProgressStyle::default_spinner()
+        .template("{spinner:.cyan} {msg}")
+        .unwrap()
+        .tick_chars(crate::ui::SPINNER_TICK_CHARS);
+
+    let mut spinners: Vec<ProgressBar> = Vec::with_capacity(checks.len());
+    for c in &checks {
+        let pb = mp.add(ProgressBar::new_spinner());
+        pb.set_style(spinner_style.clone());
+        pb.set_message(format!("{} {}", style(c.title).bold(), style("…").dim()));
+        pb.enable_steady_tick(Duration::from_millis(90));
+        spinners.push(pb);
+    }
+
+    let mut fut: FuturesUnordered<BoxFuture<'static, (usize, DiagResult, Duration)>> =
+        FuturesUnordered::new();
+    let mut titles: Vec<&'static str> = Vec::with_capacity(checks.len());
+    for (idx, c) in checks.into_iter().enumerate() {
+        titles.push(c.title);
+        let run = c.run;
+        fut.push(Box::pin(async move {
+            let t0 = Instant::now();
+            let res = run.await;
+            (idx, res, t0.elapsed())
+        }) as BoxFuture<'static, (usize, DiagResult, Duration)>);
+    }
+
+    let mut results: Vec<Option<(DiagResult, Duration)>> = (0..titles.len()).map(|_| None).collect();
+    while let Some((idx, res, elapsed)) = fut.next().await {
+        spinners[idx].finish_and_clear();
+        results[idx] = Some((res, elapsed));
+    }
+    mp.clear().ok();
+
+    for (idx, slot) in results.into_iter().enumerate() {
+        let (res, elapsed) = slot.expect("every check must complete");
+        print_check_result(titles[idx], &res, elapsed);
+        aggregate.add(res);
+    }
+
     println!();
-
-    let mut checks: FuturesUnordered<BoxFuture<'static, (&'static str, DiagResult)>> = vec![
-        Box::pin(async move {
-            let result = tokio::task::spawn_blocking(move || check_platform(fix))
-                .await
-                .unwrap();
-            ("platform", result)
-        }) as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move {
-            let result = tokio::task::spawn_blocking(move || check_prefix(fix))
-                .await
-                .unwrap();
-            ("prefix", result)
-        }) as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("cellar", check_cellar(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("symlink dirs", check_symlink_dirs(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("cache", check_cache(&cache, fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("install state", check_install_state(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("cask state", check_cask_state(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("broken symlinks", check_broken_symlinks(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("opt symlinks", check_opt_symlinks(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("state consistency", check_state_consistency(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("unrelocated bottles", check_unrelocated_bottles(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move { ("code signatures", check_invalid_signatures(fix).await) })
-            as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move {
-            let result = tokio::task::spawn_blocking(move || check_tools(fix))
-                .await
-                .unwrap();
-            ("tools", result)
-        }) as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move {
-            let result = tokio::task::spawn_blocking(move || check_glibc_version(fix))
-                .await
-                .unwrap();
-            ("glibc", result)
-        }) as BoxFuture<'static, (&'static str, DiagResult)>,
-        Box::pin(async move {
-            let result = tokio::task::spawn_blocking(move || check_metal_toolchain(fix))
-                .await
-                .unwrap();
-            ("toolchain", result)
-        }) as BoxFuture<'static, (&'static str, DiagResult)>,
-    ]
-    .into_iter()
-    .collect();
-
-    while let Some((title, result)) = checks.next().await {
-        print_check_result(title, &result);
-        d.add(result);
+    let mut parts = vec![format!("{} passed", style(aggregate.passed).green())];
+    if aggregate.warned > 0 {
+        parts.push(format!("{} warnings", style(aggregate.warned).yellow()));
     }
+    if aggregate.failed > 0 {
+        parts.push(format!("{} errors", style(aggregate.failed).red()));
+    }
+    if aggregate.fixed > 0 {
+        parts.push(format!("{} fixed", style(aggregate.fixed).cyan()));
+    }
+    println!(
+        "{}: {} {}",
+        style("result").bold(),
+        parts.join(", "),
+        style(format!("({:.2}s)", start.elapsed().as_secs_f32())).dim()
+    );
 
-    println!();
-    let mut parts = vec![format!("{} passed", style(d.passed).green())];
-    if d.warned > 0 {
-        parts.push(format!("{} warnings", style(d.warned).yellow()));
-    }
-    if d.failed > 0 {
-        parts.push(format!("{} errors", style(d.failed).red()));
-    }
-    if d.fixed > 0 {
-        parts.push(format!("{} fixed", style(d.fixed).cyan()));
-    }
-    println!("{}: {}", style("result").bold(), parts.join(", "));
-
-    if !fix && (d.warned > 0 || d.failed > 0) {
+    if !fix && (aggregate.warned > 0 || aggregate.failed > 0) {
         println!(
-            "\n  {} run {} to auto-fix issues",
+            "{} run {} to auto-fix issues",
             style("hint:").dim(),
             style("wax doctor --fix").yellow()
         );
     }
 
     Ok(())
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    if elapsed.as_millis() < 10 {
+        "<10ms".to_string()
+    } else if elapsed.as_millis() < 1000 {
+        format!("{}ms", elapsed.as_millis())
+    } else {
+        format!("{:.1}s", elapsed.as_secs_f32())
+    }
 }
 
 fn check_platform(fix: bool) -> DiagResult {
