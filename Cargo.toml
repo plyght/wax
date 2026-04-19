@@ -11,6 +11,15 @@ documentation = "https://docs.rs/waxpkg"
 readme = "README.md"
 keywords = ["package-manager", "homebrew", "macos", "cli", "installer"]
 categories = ["command-line-utilities", "development-tools"]
+exclude = [
+    "build/*",
+    ".poc/*",
+    "assets/*",
+    "docs/*",
+    "benchmark.sh",
+    ".github/*",
+    "tests/*",
+]
 
 [[bin]]
 name = "wax"
