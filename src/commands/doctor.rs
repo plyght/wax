@@ -813,7 +813,8 @@ async fn check_state_consistency(fix: bool) -> DiagResult {
 }
 
 fn check_glibc_version(fix: bool) -> DiagResult {
-    let d = DiagResult::new(fix);
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut d = DiagResult::new(fix);
     #[cfg(target_os = "linux")]
     {
         if let Some(output) = run_command_with_timeout("ldd", &["--version"], 2) {
