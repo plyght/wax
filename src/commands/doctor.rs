@@ -222,10 +222,12 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
             let t0 = Instant::now();
             let res = run.await;
             (idx, res, t0.elapsed())
-        }) as BoxFuture<'static, (usize, DiagResult, Duration)>);
+        })
+            as BoxFuture<'static, (usize, DiagResult, Duration)>);
     }
 
-    let mut results: Vec<Option<(DiagResult, Duration)>> = (0..titles.len()).map(|_| None).collect();
+    let mut results: Vec<Option<(DiagResult, Duration)>> =
+        (0..titles.len()).map(|_| None).collect();
     while let Some((idx, res, elapsed)) = fut.next().await {
         spinners[idx].finish_and_clear();
         results[idx] = Some((res, elapsed));
