@@ -250,6 +250,10 @@ See `docs/comparison.md` for detailed methodology and analysis.
 - **macOS Primary**: Developed for macOS. Linux support is functional but less tested.
 - **No Post-Install Scripts**: Skips formula post-install hooks for security and performance. Some packages may require manual configuration.
 
+## Acknowledgments
+
+Huge thanks to [@undivisible](https://github.com/undivisible) on GitHub for being a massive help and contributor to this project. Wax wouldn't be what it is without his support.
+
 ## License
 
 MIT License
