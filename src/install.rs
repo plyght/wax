@@ -1,4 +1,4 @@
-use crate::bottle::{homebrew_prefix, run_command_with_timeout};
+use crate::bottle::{detect_platform, homebrew_prefix, run_command_with_timeout};
 use crate::error::{Result, WaxError};
 use crate::sudo;
 use crate::ui::dirs;
@@ -289,11 +289,7 @@ impl InstallState {
                             InstalledPackage {
                                 name: package_name,
                                 version,
-                                platform: format!(
-                                    "{}-{}",
-                                    std::env::consts::OS,
-                                    std::env::consts::ARCH
-                                ),
+                                platform: detect_platform(),
                                 install_date: 0,
                                 install_mode: self.detect_install_mode(cellar),
                                 from_source: false,

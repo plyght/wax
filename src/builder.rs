@@ -75,6 +75,47 @@ impl Builder {
                     .await?
             }
             BuildSystem::Make => self.build_make(&source_dir, install_prefix).await?,
+            BuildSystem::Cargo => self.build_cargo(&source_dir, install_prefix).await?,
+            BuildSystem::Unknown => {
+                return Err(WaxError::BuildError(
+                    "Unknown build system - cannot build from source".to_string(),
+                ))
+            }
+        }
+
+        if let Some(pb) = progress {
+            pb.set_message("Build complete");
+        }
+
+        Ok(())
+    }
+
+    /// Build directly from an already-present source directory (e.g. a git clone).
+    #[instrument(skip(self, progress))]
+    pub async fn build_from_directory(
+        &self,
+        formula: &ParsedFormula,
+        source_dir: &Path,
+        install_prefix: &Path,
+        progress: Option<&ProgressBar>,
+    ) -> Result<()> {
+        info!("Building {} from directory {:?}", formula.name, source_dir);
+
+        match formula.build_system {
+            BuildSystem::Autotools => {
+                self.build_autotools(source_dir, install_prefix, &formula.configure_args)
+                    .await?
+            }
+            BuildSystem::CMake => {
+                self.build_cmake(source_dir, install_prefix, &formula.configure_args)
+                    .await?
+            }
+            BuildSystem::Meson => {
+                self.build_meson(source_dir, install_prefix, &formula.configure_args)
+                    .await?
+            }
+            BuildSystem::Make => self.build_make(source_dir, install_prefix).await?,
+            BuildSystem::Cargo => self.build_cargo(source_dir, install_prefix).await?,
             BuildSystem::Unknown => {
                 return Err(WaxError::BuildError(
                     "Unknown build system - cannot build from source".to_string(),
@@ -184,6 +225,7 @@ impl Builder {
             "Unix Makefiles"
         };
 
+        let homebrew_prefix = crate::bottle::homebrew_prefix();
         let mut args = vec![
             "-S".to_string(),
             source_dir.display().to_string(),
@@ -191,6 +233,10 @@ impl Builder {
             build_dir.display().to_string(),
             format!("-DCMAKE_INSTALL_PREFIX={}", prefix.display()),
             format!("-G{}", generator),
+            // Embed Homebrew lib dir in RPATH so installed binaries find .so files
+            // without needing LD_LIBRARY_PATH.
+            format!("-DCMAKE_INSTALL_RPATH={}/lib", homebrew_prefix.display()),
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string(),
         ];
         args.extend(configure_args.iter().cloned());
 
@@ -247,6 +293,24 @@ impl Builder {
             "install".to_string(),
         ];
         self.run_command(source_dir, "ninja", &install_args, "Installing")
+            .await?;
+
+        Ok(())
+    }
+
+    async fn build_cargo(&self, source_dir: &Path, prefix: &Path) -> Result<()> {
+        info!("Building with Cargo");
+
+        let install_args = vec![
+            "install".to_string(),
+            "--path".to_string(),
+            ".".to_string(),
+            "--root".to_string(),
+            prefix.display().to_string(),
+            "--jobs".to_string(),
+            self.num_cores.to_string(),
+        ];
+        self.run_command(source_dir, "cargo", &install_args, "Building")
             .await?;
 
         Ok(())

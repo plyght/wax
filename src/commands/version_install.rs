@@ -283,6 +283,7 @@ pub async fn version_install(
             &tarball_path,
             Some(&pb),
             BottleDownloader::GLOBAL_CONNECTION_POOL,
+            None,
         )
         .await?;
     pb.finish_and_clear();

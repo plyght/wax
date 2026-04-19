@@ -28,6 +28,9 @@ pub struct Formula {
     pub keg_only_reason: Option<serde_json::Value>,
     #[serde(default)]
     pub post_install_defined: bool,
+    /// Path to the local .rb file (set for tap formulae; not serialized).
+    #[serde(skip, default)]
+    pub rb_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-pub const WAX_VERSION: &str = "0.12.1";
+pub const WAX_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrewVersion {

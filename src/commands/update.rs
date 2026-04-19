@@ -92,7 +92,10 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
     }
 
     let new_metadata = CacheMetadata {
-        last_updated: chrono::Utc::now().timestamp(),
+        last_updated: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
         formula_count,
         cask_count,
         formulae_etag: formulae_fetch
@@ -150,22 +153,4 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
     }
 
     Ok(())
-}
-
-mod chrono {
-    pub struct Utc;
-    impl Utc {
-        pub fn now() -> DateTime {
-            DateTime
-        }
-    }
-    pub struct DateTime;
-    impl DateTime {
-        pub fn timestamp(&self) -> i64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64
-        }
-    }
 }

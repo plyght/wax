@@ -2,14 +2,18 @@ use crate::cache::Cache;
 use crate::error::{Result, WaxError};
 use crate::install::InstallState;
 use console::style;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub async fn deps(cache: &Cache, formula: &str, tree: bool, installed: bool) -> Result<()> {
     let formulae = cache.load_all_formulae().await?;
-
-    let target = formulae
+    let formula_index: HashMap<_, _> = formulae
         .iter()
-        .find(|f| f.name == formula || f.full_name == formula)
+        .map(|f| (f.name.as_str(), f))
+        .chain(formulae.iter().map(|f| (f.full_name.as_str(), f)))
+        .collect();
+
+    let target = formula_index
+        .get(formula)
         .ok_or_else(|| WaxError::FormulaNotFound(formula.to_string()))?;
 
     let installed_names: HashSet<String> = if installed {
@@ -37,7 +41,7 @@ pub async fn deps(cache: &Cache, formula: &str, tree: bool, installed: bool) -> 
 
     if tree {
         println!("{}", style(formula).magenta().bold());
-        print_dep_tree(&filtered, &formulae, &mut HashSet::new(), "", true);
+        print_dep_tree(&filtered, &formula_index, &mut HashSet::new(), "", true);
     } else {
         for dep in &filtered {
             println!("{}", style(dep).cyan());
@@ -49,7 +53,7 @@ pub async fn deps(cache: &Cache, formula: &str, tree: bool, installed: bool) -> 
 
 fn print_dep_tree(
     deps: &[&str],
-    formulae: &[crate::api::Formula],
+    formula_index: &HashMap<&str, &crate::api::Formula>,
     seen: &mut HashSet<String>,
     prefix: &str,
     last_group: bool,
@@ -70,7 +74,7 @@ fn print_dep_tree(
         println!("{}", style(dep).cyan());
         seen.insert(dep.to_string());
 
-        if let Some(formula) = formulae.iter().find(|f| f.name == *dep) {
+        if let Some(formula) = formula_index.get(*dep) {
             let child_deps: Vec<&str> = formula
                 .dependencies
                 .as_deref()
@@ -82,7 +86,7 @@ fn print_dep_tree(
             if !child_deps.is_empty() {
                 let extension = if is_last { "   " } else { "│  " };
                 let new_prefix = format!("{}{}", prefix, extension);
-                print_dep_tree(&child_deps, formulae, seen, &new_prefix, is_last);
+                print_dep_tree(&child_deps, formula_index, seen, &new_prefix, is_last);
             }
         }
     }

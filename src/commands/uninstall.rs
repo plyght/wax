@@ -1,12 +1,16 @@
 use crate::cache::Cache;
 use crate::cask::CaskState;
+use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
+use crate::lockfile::Lockfile;
 use crate::signal::{clear_current_op, set_current_op};
-use crate::ui::{OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, SPINNER_TICK_CHARS};
+use crate::ui::dirs;
+use crate::ui::SPINNER_TICK_CHARS;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
+use std::path::Path;
 use std::time::Instant;
 
 pub async fn uninstall(
@@ -39,19 +43,9 @@ pub async fn uninstall(
     let total = names.len();
     let start = Instant::now();
 
-    let overall_pb = if total > 1 {
+    if total > 1 {
         println!("uninstalling {} packages\n", style(total).bold());
-        let pb = ProgressBar::new(total as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(OVERALL_PROGRESS_TEMPLATE)
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    }
 
     for (i, name) in names.iter().enumerate() {
         let prefix = if total > 1 {
@@ -60,13 +54,6 @@ pub async fn uninstall(
             String::new()
         };
         uninstall_impl(cache, name, dry_run, cask, yes, false, &prefix).await?;
-        if let Some(ref pb) = overall_pb {
-            pb.inc(1);
-        }
-    }
-
-    if let Some(pb) = overall_pb {
-        pb.finish_and_clear();
     }
     clear_current_op();
 
@@ -240,6 +227,14 @@ async fn uninstall_package_direct(
 
     state.remove(formula_name).await?;
 
+    let lockfile_path = Lockfile::default_path();
+    if lockfile_path.exists() {
+        if let Ok(mut lockfile) = Lockfile::load(&lockfile_path).await {
+            lockfile.remove_package(formula_name).await;
+            let _ = lockfile.save(&lockfile_path).await;
+        }
+    }
+
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -259,14 +254,61 @@ async fn uninstall_package_direct(
 }
 
 async fn uninstall_cask(
-    _cache: &Cache,
+    cache: &Cache,
     cask_name: &str,
     dry_run: bool,
     start: std::time::Instant,
     quiet: bool,
 ) -> Result<()> {
     let state = CaskState::new()?;
-    let installed_casks = state.load().await?;
+    let mut installed_casks = state.load().await?;
+
+    // If cask not found, try discovering manually installed apps
+    if !installed_casks.contains_key(cask_name) {
+        let casks = cache.load_casks().await?;
+        if let Ok(discovered) = discover_manually_installed_casks(&casks).await {
+            for (name, cask) in discovered {
+                installed_casks.entry(name).or_insert(cask);
+            }
+        }
+    }
+
+    // Last resort: check /Applications for a matching .app bundle
+    if !installed_casks.contains_key(cask_name) {
+        let app_candidates = [
+            std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name)),
+            dirs::home_dir()
+                .map(|h| h.join("Applications").join(format!("{}.app", cask_name)))
+                .unwrap_or_default(),
+        ];
+        for app_path in app_candidates {
+            if app_path.exists() {
+                let version = read_app_version_from_plist(&app_path)
+                    .await
+                    .unwrap_or_else(|| "unknown".to_string());
+                installed_casks.insert(
+                    cask_name.to_string(),
+                    crate::cask::InstalledCask {
+                        name: cask_name.to_string(),
+                        version,
+                        install_date: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64,
+                        artifact_type: Some("app".to_string()),
+                        binary_paths: None,
+                        app_name: Some(
+                            app_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        ),
+                    },
+                );
+                break;
+            }
+        }
+    }
 
     let cask = installed_casks
         .get(cask_name)
@@ -302,29 +344,77 @@ async fn uninstall_cask(
             }
         }
         _ => {
-            #[cfg(target_os = "macos")]
-            {
-                let app_name = cask
-                    .app_name
-                    .clone()
-                    .unwrap_or_else(|| format!("{}.app", cask_name));
-                let app_path = std::path::PathBuf::from("/Applications").join(&app_name);
+            let raw_name = cask
+                .app_name
+                .clone()
+                .unwrap_or_else(|| format!("{}.app", cask_name));
+            let app_with_ext = if raw_name.ends_with(".app") {
+                raw_name.clone()
+            } else {
+                format!("{}.app", raw_name)
+            };
+            let app_basename = std::path::Path::new(&app_with_ext)
+                .components()
+                .find(|c| {
+                    matches!(c, std::path::Component::Normal(n)
+                        if n.to_string_lossy().ends_with(".app"))
+                })
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .unwrap_or_else(|| {
+                    // Try to find the actual app in Caskroom if not stored
+                    find_app_in_caskroom(cask_name, &cask.version).unwrap_or(app_with_ext)
+                });
 
+            // On macOS: check /Applications, then ~/Applications.
+            // On Linux: check ~/Applications only (no system /Applications).
+            #[cfg(target_os = "macos")]
+            let candidates: Vec<std::path::PathBuf> = vec![
+                std::path::PathBuf::from("/Applications").join(&app_basename),
+                dirs::home_dir()
+                    .map(|h| h.join("Applications").join(&app_basename))
+                    .unwrap_or_default(),
+            ];
+            #[cfg(not(target_os = "macos"))]
+            let candidates: Vec<std::path::PathBuf> = vec![dirs::home_dir()
+                .map(|h| h.join("Applications").join(&app_basename))
+                .unwrap_or_default()];
+
+            let mut removed = false;
+            for app_path in &candidates {
                 if app_path.exists() {
-                    tokio::fs::remove_dir_all(&app_path).await?;
+                    #[cfg(target_os = "macos")]
+                    if tokio::fs::remove_dir_all(app_path).await.is_err() {
+                        // Fall back to sudo for system-installed apps.
+                        crate::sudo::sudo_remove(app_path)?;
+                        removed = true;
+                        break;
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    tokio::fs::remove_dir_all(app_path).await?;
+                    removed = true;
+                    break;
                 }
             }
 
-            #[cfg(not(target_os = "macos"))]
-            {
-                return Err(WaxError::PlatformNotSupported(
-                    "Cask uninstallation is only supported on macOS".to_string(),
-                ));
+            if !removed && !quiet {
+                eprintln!(
+                    "warning: could not find {} in Applications — \
+                    you may need to remove it manually",
+                    app_basename
+                );
             }
         }
     }
 
     state.remove(cask_name).await?;
+
+    let lockfile_path = Lockfile::default_path();
+    if lockfile_path.exists() {
+        if let Ok(mut lockfile) = Lockfile::load(&lockfile_path).await {
+            lockfile.remove_cask(cask_name).await;
+            let _ = lockfile.save(&lockfile_path).await;
+        }
+    }
 
     if !quiet {
         println!(
@@ -337,4 +427,62 @@ async fn uninstall_cask(
     }
 
     Ok(())
+}
+
+fn find_app_in_caskroom(cask_name: &str, version: &str) -> Option<String> {
+    let caskroom = CaskState::caskroom_dir();
+    let version_dir = caskroom.join(cask_name).join(version);
+    if !version_dir.exists() {
+        return None;
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&version_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("app") {
+                return path.file_name().map(|n| n.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+async fn read_app_version_from_plist(path: &Path) -> Option<String> {
+    let plist = path.join("Contents/Info.plist");
+    if !plist.exists() {
+        return None;
+    }
+
+    let output = tokio::process::Command::new("plutil")
+        .arg("-extract")
+        .arg("CFBundleShortVersionString")
+        .arg("raw")
+        .arg("-o")
+        .arg("-")
+        .arg(&plist)
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_app_in_caskroom_nonexistent() {
+        let result = find_app_in_caskroom("nonexistent", "1.0.0");
+        assert_eq!(result, None);
+    }
 }

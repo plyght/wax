@@ -1,11 +1,10 @@
 use crate::cache::Cache;
+use crate::cask::CaskState;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
 use crate::signal::{clear_active_multi, clear_current_op, set_active_multi, set_current_op};
-use crate::ui::{
-    OVERALL_PROGRESS_TEMPLATE, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS,
-};
+use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::Instant;
@@ -24,8 +23,16 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     state.sync_from_cellar().await.ok();
     let installed = state.load().await?;
 
+    let cask_state = CaskState::new()?;
+    let installed_casks = cask_state.load().await?;
+
     let resolved: Vec<String> = if all {
         let mut names: Vec<String> = installed.keys().cloned().collect();
+        for name in installed_casks.keys() {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
         names.sort();
         names
     } else {
@@ -43,22 +50,14 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     set_active_multi(multi.clone());
     let _signal_guard = ReinstallSignalGuard;
 
-    // Overall progress bar for multi-package reinstalls, anchored to the bottom
-    let overall_pb = if total > 1 {
+    if total > 1 {
         println!("reinstalling {} packages\n", style(total).bold());
-        let pb = multi.insert_from_back(0, ProgressBar::new(total as u64));
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(OVERALL_PROGRESS_TEMPLATE)
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    }
 
     for (i, name) in resolved.iter().enumerate() {
+        // Determine if this package is a cask (either by explicit flag or by being in cask state)
+        let is_cask = cask || installed_casks.contains_key(name.as_str());
+
         let install_mode = installed.get(name.as_str()).map(|p| p.install_mode);
         let (user_flag, global_flag) = match install_mode {
             Some(InstallMode::User) => (true, false),
@@ -81,40 +80,55 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
                 .tick_chars(SPINNER_TICK_CHARS),
         );
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-        set_current_op(format!("removing {}", name));
-        spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
+        let is_installed =
+            installed.contains_key(name.as_str()) || installed_casks.contains_key(name.as_str());
 
-        if installed.contains_key(name.as_str()) {
-            uninstall::uninstall_quiet(cache, name, cask).await?;
+        if is_installed {
+            set_current_op(format!("removing {}", name));
+            spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
+            uninstall::uninstall_quiet(cache, name, is_cask).await?;
+            spinner.finish_and_clear();
+        } else {
+            spinner.set_message(format!("{}installing {}...", prefix, style(name).magenta()));
+            spinner.finish_and_clear();
         }
-        spinner.finish_and_clear();
-
-        // Progress bar for download/install phase (inserted above the overall bar)
-        let pb = multi.insert_from_back(1, ProgressBar::new(0));
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(&format!("{}{}", prefix, PROGRESS_BAR_TEMPLATE))
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS),
-        );
-        pb.set_message(style(name).magenta().to_string());
 
         let pkg_start = Instant::now();
-        set_current_op(format!("downloading {}", name));
-        install::install_quiet_with_progress(
-            cache,
-            std::slice::from_ref(name),
-            cask,
-            user_flag,
-            global_flag,
-            &pb,
-        )
-        .await?;
-        pb.finish_and_clear();
-        if let Some(ref opb) = overall_pb {
-            opb.inc(1);
-        }
+        if is_cask {
+            set_current_op(format!("installing {}", name));
+            install::install_quiet_force(
+                cache,
+                std::slice::from_ref(name),
+                true,
+                user_flag,
+                global_flag,
+            )
+            .await?;
+        } else {
+            // Formula reinstall keeps the outer package bar because the formula
+            // install path renders into the provided progress bar.
+            let pb = multi.insert_from_back(1, ProgressBar::new(0));
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(&format!("{}{}", prefix, PROGRESS_BAR_TEMPLATE))
+                    .unwrap()
+                    .progress_chars(PROGRESS_BAR_CHARS),
+            );
+            pb.set_message(style(name).magenta().to_string());
 
+            set_current_op(format!("downloading {}", name));
+            install::install_quiet_with_progress(
+                cache,
+                std::slice::from_ref(name),
+                false,
+                user_flag,
+                global_flag,
+                &pb,
+                true,
+            )
+            .await?;
+            pb.finish_and_clear();
+        }
         println!(
             "{} {}{}@{}  {}",
             style("✓").green().bold(),
@@ -129,10 +143,6 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             .dim(),
             style(format!("[{}ms]", pkg_start.elapsed().as_millis())).dim(),
         );
-    }
-
-    if let Some(pb) = overall_pb {
-        pb.finish_and_clear();
     }
 
     println!(

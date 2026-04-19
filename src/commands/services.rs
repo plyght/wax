@@ -2,7 +2,9 @@ use crate::bottle::homebrew_prefix;
 use crate::error::{validate_package_name, Result, WaxError};
 use crate::install::InstallState;
 use console::style;
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::path::Path;
+use std::path::PathBuf;
 use tokio::process::Command;
 use tracing::instrument;
 
@@ -35,6 +37,7 @@ fn services_dir() -> PathBuf {
     prefix.join("opt")
 }
 
+#[cfg(target_os = "macos")]
 fn launchctl_plist_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join("Library/LaunchAgents")

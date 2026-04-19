@@ -29,15 +29,46 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 
 ## Installation
 
-```bash
-# Using Cargo (recommended)
-cargo install waxpkg
+**One-liner (recommended)** — downloads the pre-built binary for your platform:
 
-# From source
-git clone https://github.com/plyght/wax.git
+```bash
+curl -fsSL https://raw.githubusercontent.com/semitechnological/wax/master/install.sh | bash
+```
+
+Installs to `~/.local/bin/wax`. Override the destination with `WAX_INSTALL_DIR=/usr/local/bin`.
+
+**From a git clone** (builds with your Rust toolchain; no GitHub download):
+
+```bash
+git clone https://github.com/semitechnological/wax.git
+cd wax
+./install.sh
+```
+
+To **force** a pre-built release while standing in a clone, set `WAX_USE_RELEASE=1` before `./install.sh`.
+
+GitHub Releases ship **Linux** and **macOS** binaries (`wax-linux-*`, `wax-macos-*`) with `.sha256` sidecars when published by CI.
+
+**Homebrew tap** — builds from source via cargo:
+
+```bash
+brew tap semitechnological/tap
+brew install --HEAD wax
+```
+
+**Cargo:**
+
+```bash
+cargo install waxpkg
+```
+
+**From source (manual)** — equivalent to `./install.sh` from a clone:
+
+```bash
+git clone https://github.com/semitechnological/wax.git
 cd wax
 cargo build --release
-sudo cp target/release/wax /usr/local/bin/
+cp target/release/wax ~/.local/bin/
 ```
 
 ## Usage
@@ -51,6 +82,8 @@ wax update -s            # stable (from crates.io)
 wax update --self        # same as above
 wax update -sn           # nightly (from GitHub)
 wax update -sf           # force reinstall
+wax update -sn --clean   # nightly + clean cargo git cache
+wax update -sn --no-clean  # nightly + keep cargo cache
 
 # Search packages
 wax search nginx
@@ -95,12 +128,15 @@ wax outdated
 wax upgrade              # upgrade all outdated packages
 wax upgrade nginx        # upgrade specific package
 wax upgrade nginx tree   # upgrade multiple packages
+wax upgrade --self       # upgrade wax itself
 wax up nginx             # shorthand
 
 # Generate lockfile
+# Includes packages discovered from manual installs and other package managers when present
 wax lock
 
 # Install from lockfile
+# Uses the same discovery pass to include manual installs / other package managers in the installed view
 wax sync
 ```
 
@@ -208,6 +244,7 @@ See `docs/comparison.md` for detailed methodology and analysis.
 ## Limitations
 
 - **Linux Bottles**: Linux bottles require `patchelf` for ELF binary relocation. Install it first: `wax install patchelf`
+- **Linux GUI / cask flow**: On Linux, GUI-style installs use cask Ruby metadata when an `on_linux` block is present; otherwise Wax may try snap, flatpak, or the native system package manager—not the macOS DMG install path.
 - **Build System Detection**: Source builds use heuristic detection of build systems. Complex or non-standard build configurations may fail.
 - **Formula DSL Subset**: Parses essential Ruby formula syntax. Advanced features (conditional deps, patches, custom install blocks) may not be fully supported.
 - **macOS Primary**: Developed for macOS. Linux support is functional but less tested.

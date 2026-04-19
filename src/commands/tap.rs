@@ -3,12 +3,42 @@ use crate::error::Result;
 use crate::tap::{TapKind, TapManager};
 use console::style;
 
-pub async fn tap(action: Option<crate::TapAction>, cache: Option<&Cache>) -> Result<()> {
+pub async fn tap(
+    action: Option<crate::TapAction>,
+    repair: bool,
+    cache: Option<&Cache>,
+) -> Result<()> {
     let mut manager = TapManager::new()?;
     manager.load().await?;
 
+    if repair {
+        let repaired = manager.repair_all().await?;
+        if repaired.is_empty() {
+            println!("{} all taps OK", style("✓").green());
+        } else {
+            for name in &repaired {
+                println!("{} repaired {}", style("✓").green(), style(name).magenta());
+            }
+        }
+        return Ok(());
+    }
+
     match action {
         Some(crate::TapAction::Add { tap }) => {
+            manager.add_tap(&tap).await?;
+            if let Some(cache) = cache {
+                cache.invalidate_all_tap_caches().await?;
+            }
+            println!("{} tap {}", style("+").green(), style(&tap).magenta());
+        }
+        Some(crate::TapAction::External(args)) => {
+            // `wax tap user/repo` without the `add` subcommand — treat as add.
+            let tap = args.into_iter().next().unwrap_or_default();
+            if tap.is_empty() {
+                return Err(crate::error::WaxError::InvalidInput(
+                    "No tap specified".to_string(),
+                ));
+            }
             manager.add_tap(&tap).await?;
             if let Some(cache) = cache {
                 cache.invalidate_all_tap_caches().await?;

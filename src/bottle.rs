@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -12,11 +13,20 @@ use tar::Archive;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, instrument};
 
+/// Tracks aggregate downloaded / expected bytes across concurrent downloads (e.g. multiple casks).
+#[derive(Clone, Default)]
+pub struct DownloadTotals {
+    pub downloaded: Arc<AtomicU64>,
+    pub expected: Arc<AtomicU64>,
+}
+
 pub struct BottleDownloader {
     client: reqwest::Client,
 }
 
 impl BottleDownloader {
+    const TRANSIENT_RETRY_ATTEMPTS: usize = 3;
+
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -32,7 +42,10 @@ impl BottleDownloader {
     const MULTIPART_THRESHOLD: u64 = 4 * 1024 * 1024; // 4 MB
 
     /// Global connection pool shared across all concurrent downloads.
-    pub const GLOBAL_CONNECTION_POOL: usize = 16;
+    pub const GLOBAL_CONNECTION_POOL: usize = 32;
+
+    /// Maximum connections a single download may use.
+    pub const MAX_CONNECTIONS_PER_DOWNLOAD: usize = 8;
 
     /// Probe a URL to get its download size. Used before starting downloads to
     /// allocate connections proportionally across packages by file size.
@@ -50,7 +63,7 @@ impl BottleDownloader {
 
     /// Returns how many connections to use for a file of the given size,
     /// capped by `max_connections` (the caller's share of the global pool).
-    fn num_connections(size: u64, max_connections: usize) -> usize {
+    pub fn num_connections(size: u64, max_connections: usize) -> usize {
         let ideal = match size {
             s if s < 10 * 1024 * 1024 => 4, // <10 MB → up to 4
             s if s < 50 * 1024 * 1024 => 6, // <50 MB → up to 6
@@ -59,13 +72,14 @@ impl BottleDownloader {
         ideal.min(max_connections).max(1)
     }
 
-    #[instrument(skip(self, progress))]
+    #[instrument(skip(self, progress, totals))]
     pub async fn download(
         &self,
         url: &str,
         dest_path: &Path,
         progress: Option<&ProgressBar>,
         max_connections: usize,
+        totals: Option<&DownloadTotals>,
     ) -> Result<()> {
         debug!("Downloading from {}", url);
 
@@ -84,13 +98,27 @@ impl BottleDownloader {
             .await
             .unwrap_or_else(|_| (url.to_string(), 0, false));
 
+        if let Some(t) = totals {
+            if total_size > 0 {
+                t.expected.fetch_add(total_size, Ordering::Relaxed);
+            }
+        }
+
         debug!(
             "Download probe: size={} bytes, accepts_ranges={}, max_connections={}",
             total_size, accepts_ranges, max_connections
         );
+        let totals_for_multipart = totals.cloned();
         if accepts_ranges && total_size >= Self::MULTIPART_THRESHOLD && max_connections > 1 {
             match self
-                .download_multipart(&cdn_url, dest_path, total_size, progress, max_connections)
+                .download_multipart(
+                    &cdn_url,
+                    dest_path,
+                    total_size,
+                    progress,
+                    max_connections,
+                    totals_for_multipart,
+                )
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -101,7 +129,7 @@ impl BottleDownloader {
             }
         }
 
-        self.download_single(url, dest_path, &auth_token, total_size, progress)
+        self.download_single(url, dest_path, &auth_token, total_size, progress, totals)
             .await
     }
 
@@ -119,7 +147,7 @@ impl BottleDownloader {
             head_req = head_req.header("Authorization", format!("Bearer {}", tok));
         }
 
-        let resp = match head_req.send().await {
+        let resp = match Self::send_with_retry(head_req, "HEAD probe").await {
             Ok(r) if r.status().is_success() || r.status().as_u16() == 206 => r,
             _ => {
                 // HEAD rejected or failed — fall back to a tiny range GET.
@@ -127,7 +155,7 @@ impl BottleDownloader {
                 if let Some(ref tok) = auth_token {
                     get_req = get_req.header("Authorization", format!("Bearer {}", tok));
                 }
-                let r = get_req.send().await?;
+                let r = Self::send_with_retry(get_req, "range probe").await?;
                 // If the server ignored the Range header and returned the full
                 // body (200 instead of 206), abort early to avoid downloading
                 // the entire file during a probe.
@@ -171,12 +199,15 @@ impl BottleDownloader {
         total_size: u64,
         progress: Option<&ProgressBar>,
         max_connections: usize,
+        totals: Option<DownloadTotals>,
     ) -> Result<()> {
         let n = Self::num_connections(total_size, max_connections);
-        let chunk_size = (total_size + n as u64 - 1) / n as u64;
+        let chunk_size = total_size.div_ceil(n as u64);
 
         if let Some(pb) = progress {
-            pb.set_length(total_size);
+            if total_size > 0 {
+                pb.set_length(total_size);
+            }
             // Append "[Nx]" badge to whichever field the caller used for the name.
             // Formula bars use set_message ({msg}); cask bars use set_prefix ({prefix}).
             if n > 1 {
@@ -212,6 +243,7 @@ impl BottleDownloader {
             let url = url.clone();
             let counter = Arc::clone(&downloaded_so_far);
             let dest = dest_path_buf.clone();
+            let totals_chunk = totals.clone();
 
             tasks.push(tokio::spawn(async move {
                 let response = client
@@ -239,7 +271,11 @@ impl BottleDownloader {
                         return Err(WaxError::Interrupted);
                     }
                     let piece = piece.map_err(WaxError::from)?;
-                    counter.fetch_add(piece.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    let n = piece.len() as u64;
+                    counter.fetch_add(n, Ordering::Relaxed);
+                    if let Some(ref t) = totals_chunk {
+                        t.downloaded.fetch_add(n, Ordering::Relaxed);
+                    }
                     data.extend_from_slice(&piece);
                 }
 
@@ -265,7 +301,7 @@ impl BottleDownloader {
             loop {
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 if let Some(ref pb) = pb_poll {
-                    pb.set_position(counter_poll.load(std::sync::atomic::Ordering::Relaxed));
+                    pb.set_position(counter_poll.load(Ordering::Relaxed));
                 }
             }
         });
@@ -285,6 +321,15 @@ impl BottleDownloader {
             }
         }
         poll_handle.abort();
+
+        if err.is_some() {
+            if let Some(ref t) = totals {
+                let partial = downloaded_so_far.load(Ordering::Relaxed);
+                if partial > 0 {
+                    t.downloaded.fetch_sub(partial, Ordering::Relaxed);
+                }
+            }
+        }
 
         if let Some(e) = err {
             return Err(WaxError::InstallError(format!(
@@ -311,13 +356,14 @@ impl BottleDownloader {
         auth_token: &Option<String>,
         content_length: u64,
         progress: Option<&ProgressBar>,
+        totals: Option<&DownloadTotals>,
     ) -> Result<()> {
         let mut request = self.client.get(url);
         if let Some(ref tok) = auth_token {
             request = request.header("Authorization", format!("Bearer {}", tok));
         }
 
-        let response = request.send().await?;
+        let response = Self::send_with_retry(request, "download").await?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
@@ -330,7 +376,14 @@ impl BottleDownloader {
 
         let total_size = response.content_length().unwrap_or(content_length);
         if let Some(pb) = progress {
-            pb.set_length(total_size);
+            if total_size > 0 {
+                pb.set_length(total_size);
+            }
+        }
+        if let Some(t) = totals {
+            if content_length == 0 && total_size > 0 {
+                t.expected.fetch_add(total_size, Ordering::Relaxed);
+            }
         }
 
         let mut file = tokio::fs::File::create(dest_path).await?;
@@ -346,15 +399,73 @@ impl BottleDownloader {
             }
             let chunk = chunk?;
             file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
+            let n = chunk.len() as u64;
+            downloaded += n;
             if let Some(pb) = progress {
                 pb.set_position(downloaded);
+            }
+            if let Some(t) = totals {
+                t.downloaded.fetch_add(n, Ordering::Relaxed);
             }
         }
 
         file.flush().await?;
         debug!("Single-connection download: {} bytes", downloaded);
         Ok(())
+    }
+
+    async fn send_with_retry(
+        request: reqwest::RequestBuilder,
+        op_name: &str,
+    ) -> std::result::Result<reqwest::Response, reqwest::Error> {
+        for attempt in 1..=Self::TRANSIENT_RETRY_ATTEMPTS {
+            let Some(cloned) = request.try_clone() else {
+                return request.send().await;
+            };
+
+            match cloned.send().await {
+                Ok(resp) => {
+                    if !Self::is_retryable_status(resp.status())
+                        || attempt == Self::TRANSIENT_RETRY_ATTEMPTS
+                    {
+                        return Ok(resp);
+                    }
+                    let backoff_ms = 300 * attempt as u64;
+                    tracing::debug!(
+                        "{} got HTTP {}, retrying attempt {}/{} in {}ms",
+                        op_name,
+                        resp.status(),
+                        attempt + 1,
+                        Self::TRANSIENT_RETRY_ATTEMPTS,
+                        backoff_ms
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                }
+                Err(e) => {
+                    if attempt == Self::TRANSIENT_RETRY_ATTEMPTS {
+                        return Err(e);
+                    }
+                    let backoff_ms = 300 * attempt as u64;
+                    tracing::debug!(
+                        "{} network error ({}), retrying attempt {}/{} in {}ms",
+                        op_name,
+                        e,
+                        attempt + 1,
+                        Self::TRANSIENT_RETRY_ATTEMPTS,
+                        backoff_ms
+                    );
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                }
+            }
+        }
+
+        request.send().await
+    }
+
+    fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+        status == reqwest::StatusCode::REQUEST_TIMEOUT
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status.is_server_error()
     }
 
     async fn get_ghcr_token(&self, url: &str) -> Result<String> {
@@ -463,12 +574,20 @@ impl BottleDownloader {
                         // parent and ensure it stays within canonical_dest.
                         if let Some(parent) = full_path.parent() {
                             let resolved = parent.join(&*link_name);
-                            // Normalize away ".." components manually
+                            // Normalize components manually, rejecting
+                            // excessive ".." that would escape the root.
                             let mut normalized = PathBuf::new();
                             for component in resolved.components() {
                                 match component {
+                                    std::path::Component::CurDir => {}
                                     std::path::Component::ParentDir => {
-                                        normalized.pop();
+                                        if !normalized.pop() {
+                                            return Err(WaxError::InstallError(format!(
+                                                "Symlink target escapes destination via parent traversal: {} -> {}",
+                                                path.display(),
+                                                link_name.display()
+                                            )));
+                                        }
                                     }
                                     _ => normalized.push(component),
                                 }
@@ -588,28 +707,12 @@ impl BottleDownloader {
             };
 
             let placeholder_bytes = placeholder.as_bytes();
-            if replacement.len() > placeholder_bytes.len() {
-                debug!(
-                    "Skipping relocation: replacement ({} bytes) longer than placeholder ({} bytes) in {:?}",
-                    replacement.len(),
-                    placeholder_bytes.len(),
-                    path
-                );
-                continue;
-            }
             let mut i = 0;
             while i + placeholder_bytes.len() <= content.len() {
                 if &content[i..i + placeholder_bytes.len()] == placeholder_bytes {
-                    let pad_len = placeholder_bytes.len() - replacement.len();
-                    content.splice(
-                        i..i + placeholder_bytes.len(),
-                        replacement
-                            .iter()
-                            .copied()
-                            .chain(std::iter::repeat_n(0, pad_len)),
-                    );
+                    content.splice(i..i + placeholder_bytes.len(), replacement.iter().copied());
                     modified = true;
-                    i += placeholder_bytes.len();
+                    i += replacement.len().max(placeholder_bytes.len());
                 } else {
                     i += 1;
                 }
@@ -630,12 +733,10 @@ impl BottleDownloader {
     fn relocate_elf(path: &Path, prefix: &str, cellar: &str) -> Result<()> {
         use std::process::Command;
 
-        let patchelf = which_patchelf();
-        if patchelf.is_none() {
+        let Some(patchelf) = which_patchelf() else {
             debug!("patchelf not found, skipping ELF relocation for {:?}", path);
             return Ok(());
-        }
-        let patchelf = patchelf.unwrap();
+        };
 
         let metadata = std::fs::metadata(path)?;
         let original_permissions = metadata.permissions();
@@ -1030,4 +1131,95 @@ pub fn homebrew_prefix() -> PathBuf {
     }
 
     standard_prefix
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // ── num_connections ──────────────────────────────────────────────────────
+
+    #[test]
+    fn num_connections_tiny_file() {
+        // <10 MB → ideally 4, but capped by max_connections
+        assert_eq!(BottleDownloader::num_connections(1024, 8), 4);
+    }
+
+    #[test]
+    fn num_connections_medium_file() {
+        // 20 MB → ideally 6
+        assert_eq!(BottleDownloader::num_connections(20 * 1024 * 1024, 8), 6);
+    }
+
+    #[test]
+    fn num_connections_large_file() {
+        // 60 MB → ideally 8
+        assert_eq!(BottleDownloader::num_connections(60 * 1024 * 1024, 8), 8);
+    }
+
+    #[test]
+    fn num_connections_caps_at_max() {
+        // max_connections=2 caps even if ideal is higher
+        assert_eq!(BottleDownloader::num_connections(60 * 1024 * 1024, 2), 2);
+    }
+
+    #[test]
+    fn num_connections_minimum_one() {
+        // max_connections=0 still returns at least 1
+        assert_eq!(BottleDownloader::num_connections(1024, 0), 1);
+    }
+
+    // ── verify_checksum ──────────────────────────────────────────────────────
+
+    #[test]
+    fn verify_checksum_correct() {
+        use sha2::{Digest, Sha256};
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"hello world").unwrap();
+        let hash = format!("{:x}", Sha256::digest(b"hello world"));
+        let result = BottleDownloader::verify_checksum(f.path(), &hash);
+        assert!(result.is_ok(), "{:?}", result);
+    }
+
+    #[test]
+    fn verify_checksum_mismatch_returns_error() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"hello world").unwrap();
+        let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
+        let result = BottleDownloader::verify_checksum(f.path(), wrong);
+        assert!(result.is_err(), "expected checksum mismatch error");
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("mismatch") || msg.contains("Checksum"),
+            "error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn verify_checksum_missing_file_returns_error() {
+        let path = std::path::Path::new("/tmp/wax-test-nonexistent-file-xyz-123.tar.gz");
+        let result = BottleDownloader::verify_checksum(path, "abc123");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relocate_file_replaces_longer_text_paths() {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b"exec @@HOMEBREW_CELLAR@@/odin/bin/odin\n")
+            .unwrap();
+
+        BottleDownloader::relocate_file(
+            f.path(),
+            &["@@HOMEBREW_CELLAR@@", "@@HOMEBREW_PREFIX@@"],
+            "/opt/homebrew",
+            "/opt/homebrew/Cellar",
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(f.path()).unwrap();
+        assert!(contents.contains("/opt/homebrew/Cellar/odin/bin/odin"));
+        assert!(!contents.contains("@@HOMEBREW_CELLAR@@"));
+    }
 }

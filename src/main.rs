@@ -5,12 +5,14 @@ mod cache;
 mod cask;
 mod commands;
 mod deps;
+mod discovery;
 mod error;
 mod formula_parser;
 mod install;
 mod lockfile;
 mod signal;
 mod sudo;
+mod system_pm;
 mod tap;
 mod ui;
 mod version;
@@ -57,6 +59,13 @@ enum Commands {
             help = "Force reinstall even if on latest version (with --self)"
         )]
         force: bool,
+        #[arg(
+            long,
+            help = "After nightly self-update, clean Cargo git cache for wax"
+        )]
+        clean: bool,
+        #[arg(long, help = "After nightly self-update, keep Cargo git cache")]
+        no_clean: bool,
     },
 
     #[command(about = "Search formulae and casks  [alias: s, find]")]
@@ -74,7 +83,10 @@ enum Commands {
 
     #[command(about = "List installed packages  [alias: ls]")]
     #[command(visible_alias = "ls")]
-    List,
+    List {
+        #[arg(help = "Filter: pre-fills the interactive search (TTY), or limits printed output")]
+        query: Option<String>,
+    },
 
     #[command(about = "Install one or more formulae or casks  [alias: i, add]")]
     #[command(visible_alias = "i")]
@@ -92,6 +104,11 @@ enum Commands {
         global: bool,
         #[arg(long, help = "Build from source even if bottle available")]
         build_from_source: bool,
+        #[arg(
+            long,
+            help = "Install the HEAD version (clones git repo, builds from source)"
+        )]
+        head: bool,
     },
 
     #[command(about = "Install casks  [alias: c]")]
@@ -150,8 +167,21 @@ enum Commands {
     Upgrade {
         #[arg(help = "Package name(s) to upgrade (upgrades all if omitted)")]
         packages: Vec<String>,
+        #[arg(long = "self", help = "Upgrade wax itself")]
+        upgrade_self: bool,
         #[arg(long)]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Also upgrade OS packages via the native package manager (apt/dnf/pacman/apk/…)"
+        )]
+        system: bool,
+    },
+
+    #[command(about = "Manage OS-level packages via the native package manager")]
+    System {
+        #[command(subcommand)]
+        action: SystemAction,
     },
 
     #[command(about = "List packages with available updates")]
@@ -213,8 +243,10 @@ enum Commands {
     #[command(about = "Install packages from lockfile")]
     Sync,
 
-    #[command(about = "Manage custom taps")]
+    #[command(about = "Manage custom taps  [alias: untap]")]
     Tap {
+        #[arg(long, help = "Re-clone missing or broken taps")]
+        repair: bool,
         #[command(subcommand)]
         action: Option<TapAction>,
     },
@@ -273,6 +305,17 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum SystemAction {
+    #[command(about = "Upgrade all OS packages via the native package manager")]
+    Upgrade,
+    #[command(about = "Install packages via the native package manager")]
+    Install {
+        #[arg(required = true, help = "Package name(s) to install")]
+        packages: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum BundleAction {
     #[command(about = "Dump installed packages as a Waxfile")]
     Dump,
@@ -310,18 +353,26 @@ enum TapAction {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
-    #[command(about = "Remove a custom tap")]
+    #[command(
+        about = "Remove a custom tap",
+        visible_alias = "rm",
+        alias = "uninstall",
+        alias = "delete"
+    )]
     Remove {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
-    #[command(about = "List installed taps")]
+    #[command(about = "List installed taps", visible_alias = "ls")]
     List,
-    #[command(about = "Update a tap")]
+    #[command(about = "Update a tap", visible_alias = "up")]
     Update {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
+    /// Bare `wax tap user/repo` — treated as an add.
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 fn init_logging(verbose: bool) -> Result<()> {
@@ -345,6 +396,27 @@ fn init_logging(verbose: bool) -> Result<()> {
     Ok(())
 }
 
+async fn handle_system_upgrade() -> Result<()> {
+    use crate::system_pm::SystemPm;
+    match SystemPm::detect().await {
+        Some(pm) => {
+            println!(
+                "\n{} upgrading OS packages via {}",
+                console::style("→").cyan(),
+                pm.name()
+            );
+            pm.upgrade_all().await
+        }
+        None => {
+            println!(
+                "  {} no supported system package manager found",
+                console::style("!").yellow()
+            );
+            Ok(())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -360,14 +432,32 @@ async fn main() -> Result<()> {
             update_self,
             nightly,
             force,
+            clean,
+            no_clean,
         } => {
             if update_self {
+                if clean && no_clean {
+                    return Err(error::WaxError::InvalidInput(
+                        "Cannot specify both --clean and --no-clean".to_string(),
+                    ));
+                }
                 let channel = if nightly {
                     commands::self_update::Channel::Nightly
                 } else {
                     commands::self_update::Channel::Stable
                 };
-                commands::self_update::self_update(channel, force).await
+                let nightly_cleanup = if channel == commands::self_update::Channel::Nightly {
+                    if clean {
+                        Some(true)
+                    } else if no_clean {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                commands::self_update::self_update(channel, force, nightly_cleanup).await
             } else {
                 commands::update::update(&api_client, &cache).await
             }
@@ -376,7 +466,7 @@ async fn main() -> Result<()> {
         Commands::Info { formula, cask } => {
             commands::info::info(&api_client, &cache, &formula, cask).await
         }
-        Commands::List => commands::list::list().await,
+        Commands::List { query } => commands::list::list(&cache, query).await,
         Commands::Install {
             packages,
             dry_run,
@@ -384,6 +474,7 @@ async fn main() -> Result<()> {
             user,
             global,
             build_from_source,
+            head,
         } => {
             if packages.is_empty() && !cask {
                 // No packages specified — sync from lockfile like `npm install`
@@ -397,6 +488,7 @@ async fn main() -> Result<()> {
                     user,
                     global,
                     build_from_source,
+                    head,
                 )
                 .await
             }
@@ -407,7 +499,8 @@ async fn main() -> Result<()> {
             user,
             global,
         } => {
-            commands::install::install(&cache, &packages, dry_run, true, user, global, false).await
+            commands::install::install(&cache, &packages, dry_run, true, user, global, false, false)
+                .await
         }
         Commands::Uninstall {
             formulae,
@@ -425,9 +518,45 @@ async fn main() -> Result<()> {
             user,
             global,
         } => commands::install::postinstall(&cache, &formulae, user, global).await,
-        Commands::Upgrade { packages, dry_run } => {
-            commands::upgrade::upgrade(&cache, &packages, dry_run).await
+        Commands::Upgrade {
+            packages,
+            upgrade_self,
+            dry_run,
+            system,
+        } => {
+            if upgrade_self {
+                commands::self_update::self_update(
+                    commands::self_update::Channel::Stable,
+                    false,
+                    None,
+                )
+                .await?;
+                return Ok(());
+            }
+            commands::upgrade::upgrade(&cache, &packages, dry_run).await?;
+            if system {
+                handle_system_upgrade().await?;
+            }
+            // Always check for a wax update at the end of upgrade.
+            commands::self_update::self_update(commands::self_update::Channel::Stable, false, None)
+                .await?;
+            Ok(())
         }
+        Commands::System { action } => match action {
+            SystemAction::Upgrade => handle_system_upgrade().await,
+            SystemAction::Install { packages } => {
+                use crate::system_pm::SystemPm;
+                match SystemPm::detect().await {
+                    Some(pm) => {
+                        println!("installing via {}", pm.name());
+                        pm.install(&packages).await
+                    }
+                    None => Err(crate::error::WaxError::PlatformNotSupported(
+                        "No supported system package manager found".to_string(),
+                    )),
+                }
+            }
+        },
         Commands::Outdated => commands::outdated::outdated(&cache).await,
         Commands::Link { packages } => commands::link::link(&packages).await,
         Commands::Unlink { packages } => commands::link::unlink(&packages).await,
@@ -443,9 +572,9 @@ async fn main() -> Result<()> {
         } => commands::show_deps::deps(&cache, &formula, tree, installed).await,
         Commands::Pin { packages } => commands::pin::pin(&packages).await,
         Commands::Unpin { packages } => commands::pin::unpin(&packages).await,
-        Commands::Lock => commands::lock::lock().await,
+        Commands::Lock => commands::lock::lock(&cache).await,
         Commands::Sync => commands::sync::sync(&cache).await,
-        Commands::Tap { action } => commands::tap::tap(action, Some(&cache)).await,
+        Commands::Tap { action, repair } => commands::tap::tap(action, repair, Some(&cache)).await,
         Commands::Doctor { fix } => commands::doctor::doctor(&cache, fix).await,
         Commands::Bundle {
             file,

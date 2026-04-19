@@ -40,7 +40,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     let formula = formulae
         .iter()
         .find(|f| f.name == name || f.full_name == name)
-        .unwrap();
+        .ok_or_else(|| WaxError::FormulaNotFound(name.to_string()))?;
 
     let installed_suffix = if let Some(installed) = &formula.installed {
         if !installed.is_empty() {
@@ -135,6 +135,11 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
         if pkg.pinned {
             println!("  {}", style("pinned").yellow());
         }
+
+        let cellar_path = pkg.install_mode.cellar_path()?;
+        let package_path = cellar_path.join(&pkg.name).join(&pkg.version);
+        println!();
+        println!("{} {}", style("path:").dim(), package_path.display());
     }
 
     Ok(())
@@ -222,6 +227,18 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
             for artifact_type in artifact_types {
                 println!("  {}", artifact_type);
             }
+        }
+
+        if installed_version.is_some() {
+            let user_caskroom = CaskState::user_caskroom_dir()?;
+            let global_caskroom = CaskState::caskroom_dir();
+            let cask_path = if user_caskroom.join(name).exists() {
+                user_caskroom.join(name)
+            } else {
+                global_caskroom.join(name)
+            };
+            println!();
+            println!("{} {}", style("path:").dim(), cask_path.display());
         }
     }
 
