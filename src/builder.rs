@@ -302,11 +302,13 @@ impl Builder {
         info!("Building with Cargo");
 
         let install_args = vec![
+            "install".to_string(),
+            "--path".to_string(),
+            ".".to_string(),
             "--root".to_string(),
             prefix.display().to_string(),
-            "--prefix".to_string(),
-            prefix.display().to_string(),
-            format!("-j{}", self.num_cores),
+            "--jobs".to_string(),
+            self.num_cores.to_string(),
         ];
         self.run_command(source_dir, "cargo", &install_args, "Building")
             .await?;

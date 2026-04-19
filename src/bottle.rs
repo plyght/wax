@@ -574,23 +574,31 @@ impl BottleDownloader {
                         // parent and ensure it stays within canonical_dest.
                         if let Some(parent) = full_path.parent() {
                             let resolved = parent.join(&*link_name);
-                            // Normalize away ".." components manually
+                            // Normalize components manually, rejecting
+                            // excessive ".." that would escape the root.
                             let mut normalized = PathBuf::new();
                             for component in resolved.components() {
                                 match component {
+                                    std::path::Component::CurDir => {}
                                     std::path::Component::ParentDir => {
-                                        normalized.pop();
+                                        if !normalized.pop() {
+                                            return Err(WaxError::InstallError(format!(
+                                                "Symlink target escapes destination via parent traversal: {} -> {}",
+                                                path.display(),
+                                                link_name.display()
+                                            )));
+                                        }
                                     }
                                     _ => normalized.push(component),
                                 }
                             }
-                            // if !normalized.starts_with(&canonical_dest) {
-                            //     return Err(WaxError::InstallError(format!(
-                            //         "Symlink target escapes destination: {} -> {}",
-                            //         path.display(),
-                            //         link_name.display()
-                            //     )));
-                            // }
+                            if !normalized.starts_with(&canonical_dest) {
+                                return Err(WaxError::InstallError(format!(
+                                    "Symlink target escapes destination: {} -> {}",
+                                    path.display(),
+                                    link_name.display()
+                                )));
+                            }
                             std::fs::create_dir_all(parent)?;
                         }
                         if full_path.symlink_metadata().is_ok() {

@@ -83,11 +83,9 @@ fn subcommand_help_exits_zero() {
 #[test]
 fn list_exits_zero() {
     // `wax list` works without a populated cache (just shows an empty list).
+    let tmp = tempfile::tempdir().unwrap();
     let out = wax()
-        .env(
-            "WAX_CACHE_DIR",
-            std::env::temp_dir().join("wax-test-cache-list"),
-        )
+        .env("WAX_CACHE_DIR", tmp.path())
         .env("CI", "1")
         .arg("list")
         .output()
@@ -102,11 +100,9 @@ fn list_exits_zero() {
 
 #[test]
 fn list_with_query_exits_zero() {
+    let tmp = tempfile::tempdir().unwrap();
     let out = wax()
-        .env(
-            "WAX_CACHE_DIR",
-            std::env::temp_dir().join("wax-test-cache-list-q"),
-        )
+        .env("WAX_CACHE_DIR", tmp.path())
         .env("CI", "1")
         .args(["list", "rust"])
         .output()
@@ -211,11 +207,9 @@ fn list_plain_no_match_reports_query() {
 
 #[test]
 fn tap_list_exits_zero() {
+    let tmp = tempfile::tempdir().unwrap();
     let out = wax()
-        .env(
-            "WAX_CACHE_DIR",
-            std::env::temp_dir().join("wax-test-cache-tap"),
-        )
+        .env("WAX_CACHE_DIR", tmp.path())
         .arg("tap")
         .arg("list")
         .output()
