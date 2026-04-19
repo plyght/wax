@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 use std::io::IsTerminal;
 use tracing::{debug, info, instrument};
 
-const GITHUB_REPO: &str = "semitechnological/wax";
-const GITHUB_REPO_URL: &str = "https://github.com/semitechnological/wax";
+const GITHUB_REPO: &str = "plyght/wax";
+const GITHUB_REPO_URL: &str = "https://github.com/plyght/wax";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Channel {
