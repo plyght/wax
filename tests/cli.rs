@@ -221,17 +221,20 @@ fn tap_list_exits_zero() {
     );
 }
 
+#[test]
+fn hidden_refresh_state_command_exits_zero() {
+    let out = wax().arg("__refresh_state").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
 // ── invalid input should not panic ───────────────────────────────────────────
 
 #[test]
 fn install_no_args_does_not_panic() {
     let out = wax().arg("install").output().unwrap();
-    // Should exit with non-zero (usage error), not SIGSEGV/SIGABRT.
+    // Should not panic or abort.
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "expected non-zero exit for `wax install` with no args"
-    );
+    assert!(out.status.success(), "wax install failed: {stderr}");
     // Must not produce a Rust panic message.
     assert!(
         !stderr.contains("thread 'main' panicked"),

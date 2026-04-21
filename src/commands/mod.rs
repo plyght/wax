@@ -10,6 +10,7 @@ pub mod link;
 pub mod list;
 pub mod lock;
 pub mod outdated;
+pub mod refresh;
 pub mod pin;
 pub mod reinstall;
 pub mod search;

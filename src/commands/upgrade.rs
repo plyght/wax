@@ -566,6 +566,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
 
 async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Result<()> {
     let state = InstallState::new()?;
+    state.sync_from_cellar().await?;
     let installed_packages = state.load().await?;
 
     let installed = if let Some(pkg) = installed_packages.get(formula_name) {
@@ -578,7 +579,6 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
             return upgrade_cask_single(cache, formula_name, dry_run).await;
         }
 
-        state.sync_from_cellar().await?;
         let updated_packages = state.load().await?;
 
         if let Some(pkg) = updated_packages.get(formula_name).cloned() {

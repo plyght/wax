@@ -26,6 +26,23 @@ use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use version::WAX_VERSION;
 
+fn should_refresh_state(command: &Commands) -> bool {
+    !matches!(
+        command,
+        Commands::Completions { .. } | Commands::__RefreshState
+    )
+}
+
+async fn refresh_state_in_child_process() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+
+    let _ = std::process::Command::new(exe)
+        .arg("__refresh_state")
+        .status();
+}
+
 #[derive(Parser)]
 #[command(name = "wax")]
 #[command(version = WAX_VERSION)]
@@ -240,6 +257,9 @@ enum Commands {
     #[command(about = "Generate lockfile from installed packages")]
     Lock,
 
+    #[command(name = "__refresh_state", hide = true)]
+    __RefreshState,
+
     #[command(about = "Install packages from lockfile")]
     Sync,
 
@@ -421,6 +441,10 @@ async fn handle_system_upgrade() -> Result<()> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if should_refresh_state(&cli.command) {
+        refresh_state_in_child_process().await;
+    }
+
     signal::install_handler();
     init_logging(cli.verbose)?;
 
@@ -573,6 +597,7 @@ async fn main() -> Result<()> {
         Commands::Pin { packages } => commands::pin::pin(&packages).await,
         Commands::Unpin { packages } => commands::pin::unpin(&packages).await,
         Commands::Lock => commands::lock::lock(&cache).await,
+        Commands::__RefreshState => commands::refresh::refresh(&cache).await,
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action, repair } => commands::tap::tap(action, repair, Some(&cache)).await,
         Commands::Doctor { fix } => commands::doctor::doctor(&cache, fix).await,
