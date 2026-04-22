@@ -32,7 +32,7 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 **One-liner (recommended)** — downloads the pre-built binary for your platform:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/semitechnological/wax/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/plyght/wax/master/install.sh | bash
 ```
 
 Installs to `~/.local/bin/wax`. Override the destination with `WAX_INSTALL_DIR=/usr/local/bin`.
@@ -40,7 +40,7 @@ Installs to `~/.local/bin/wax`. Override the destination with `WAX_INSTALL_DIR=/
 **From a git clone** (builds with your Rust toolchain; no GitHub download):
 
 ```bash
-git clone https://github.com/semitechnological/wax.git
+git clone https://github.com/plyght/wax.git
 cd wax
 ./install.sh
 ```
@@ -65,7 +65,7 @@ cargo install waxpkg
 **From source (manual)** — equivalent to `./install.sh` from a clone:
 
 ```bash
-git clone https://github.com/semitechnological/wax.git
+git clone https://github.com/plyght/wax.git
 cd wax
 cargo build --release
 cp target/release/wax ~/.local/bin/

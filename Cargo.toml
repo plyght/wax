@@ -1,16 +1,25 @@
 [package]
 name = "waxpkg"
-version = "0.15.6"
+version = "0.15.9"
 edition = "2021"
 authors = ["Wax Contributors"]
 description = "Fast Homebrew-compatible package manager"
 license = "MIT"
-repository = "https://github.com/semitechnological/wax"
-homepage = "https://github.com/semitechnological/wax"
+repository = "https://github.com/plyght/wax"
+homepage = "https://github.com/plyght/wax"
 documentation = "https://docs.rs/waxpkg"
 readme = "README.md"
 keywords = ["package-manager", "homebrew", "macos", "cli", "installer"]
 categories = ["command-line-utilities", "development-tools"]
+exclude = [
+    "build/*",
+    ".poc/*",
+    "assets/*",
+    "docs/*",
+    "benchmark.sh",
+    ".github/*",
+    "tests/*",
+]
 
 [[bin]]
 name = "wax"
