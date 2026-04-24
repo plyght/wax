@@ -51,7 +51,17 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
     } else {
         let mut failed_names = Vec::new();
         for package in packages {
-            if let Err(e) = upgrade_single(cache, package, dry_run).await {
+            if let Err(e) = if package == "wax" {
+                upgrade_single(cache, package, dry_run).await
+            } else {
+                let cask_state = CaskState::new()?;
+                let installed_casks = cask_state.load().await?;
+                if installed_casks.contains_key(package) {
+                    upgrade_cask_single(cache, package, dry_run).await
+                } else {
+                    upgrade_single(cache, package, dry_run).await
+                }
+            } {
                 eprintln!(
                     "{} {} failed: {}",
                     style("✗").red(),
@@ -650,13 +660,13 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
     let casks = cache.load_casks().await?;
-    let _cask_summary = casks
+    let cask_summary = casks
         .iter()
         .find(|c| c.token == cask_name || c.full_token == cask_name)
         .ok_or_else(|| WaxError::CaskNotFound(cask_name.to_string()))?;
 
     let api_client = ApiClient::new();
-    let cask_details = api_client.fetch_cask_details(cask_name).await?;
+    let cask_details = api_client.fetch_cask_details(&cask_summary.token).await?;
 
     let latest_version = &cask_details.version;
     let installed_version = &installed.version;
