@@ -3,11 +3,9 @@ use crate::ui::create_spinner;
 use crate::version::WAX_VERSION as CURRENT_VERSION;
 use console::style;
 use inquire::Confirm;
-use sha2::{Digest, Sha256};
 use std::io::IsTerminal;
-use tracing::{debug, info, instrument};
+use tracing::{info, instrument};
 
-const GITHUB_REPO: &str = "plyght/wax";
 const GITHUB_REPO_URL: &str = "https://github.com/plyght/wax";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,113 +43,37 @@ fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-/// Detect the asset name for the current platform/arch.
-fn asset_name() -> Result<String> {
-    let os = match std::env::consts::OS {
-        "linux" => "linux",
-        "macos" => "macos",
-        other => {
-            return Err(WaxError::SelfUpdateError(format!(
-                "Unsupported OS for self-update: {other}"
-            )))
-        }
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x64",
-        "aarch64" => "arm64",
-        other => {
-            return Err(WaxError::SelfUpdateError(format!(
-                "Unsupported architecture for self-update: {other}"
-            )))
-        }
-    };
-    Ok(format!("wax-{os}-{arch}"))
-}
-
-async fn fetch_latest_release_tag(client: &reqwest::Client) -> Result<String> {
-    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
+async fn fetch_latest_crate_version(client: &reqwest::Client) -> Result<String> {
     let resp = client
-        .get(&url)
+        .get("https://crates.io/api/v1/crates/waxpkg")
         .header("User-Agent", "wax-self-update")
         .send()
         .await
-        .map_err(|e| WaxError::SelfUpdateError(format!("GitHub API request failed: {e}")))?;
+        .map_err(|e| WaxError::SelfUpdateError(format!("crates.io API request failed: {e}")))?;
 
     if !resp.status().is_success() {
         return Err(WaxError::SelfUpdateError(format!(
-            "GitHub API returned {}",
+            "crates.io API returned {}",
             resp.status()
         )));
     }
 
     #[derive(serde::Deserialize)]
-    struct Release {
-        tag_name: String,
+    struct CrateInfo {
+        #[serde(rename = "crate")]
+        krate: CrateVersion,
     }
 
-    let release: Release = resp.json().await.map_err(|e| {
-        WaxError::SelfUpdateError(format!("Failed to parse GitHub API response: {e}"))
+    #[derive(serde::Deserialize)]
+    struct CrateVersion {
+        max_stable_version: String,
+    }
+
+    let info: CrateInfo = resp.json().await.map_err(|e| {
+        WaxError::SelfUpdateError(format!("Failed to parse crates.io API response: {e}"))
     })?;
 
-    Ok(release.tag_name)
-}
-
-async fn download_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
-    debug!("Downloading {url}");
-    let resp = client
-        .get(url)
-        .header("User-Agent", "wax-self-update")
-        .send()
-        .await
-        .map_err(|e| WaxError::SelfUpdateError(format!("Download failed: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(WaxError::SelfUpdateError(format!(
-            "HTTP {} downloading {url}",
-            resp.status()
-        )));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to read response: {e}")))?;
-    Ok(bytes.to_vec())
-}
-
-/// Atomically replace the running binary.
-///
-/// We write to a `.tmp` file beside the destination, then rename — which is
-/// atomic on the same filesystem. The old binary is moved aside first so the
-/// rename cannot leave the directory without a working `wax` even if the
-/// process is interrupted.
-fn install_binary(bytes: &[u8]) -> Result<()> {
-    let current_exe = std::env::current_exe().map_err(|e| {
-        WaxError::SelfUpdateError(format!("Cannot determine current binary path: {e}"))
-    })?;
-
-    // Resolve symlinks so we write to the real file.
-    let dest = dunce::canonicalize(&current_exe).unwrap_or(current_exe);
-    let tmp = dest.with_extension("tmp");
-
-    // Write new binary to a temp file in the same directory.
-    std::fs::write(&tmp, bytes)
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to write temporary binary: {e}")))?;
-
-    // Make it executable.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| WaxError::SelfUpdateError(format!("Failed to set permissions: {e}")))?;
-    }
-
-    // Atomic rename — replaces the destination.
-    std::fs::rename(&tmp, &dest)
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to replace binary: {e}")))?;
-
-    debug!("Installed new binary to {:?}", dest);
-    Ok(())
+    Ok(info.krate.max_stable_version)
 }
 
 #[instrument]
@@ -166,22 +88,35 @@ pub async fn self_update(
     );
 
     match channel {
-        Channel::Stable => update_from_release(force).await,
+        Channel::Stable => update_from_crates(force).await,
         Channel::Nightly => update_from_source(force, nightly_cleanup).await,
     }
 }
 
-async fn update_from_release(force: bool) -> Result<()> {
+pub async fn available_stable_update() -> Result<Option<String>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| WaxError::SelfUpdateError(format!("HTTP client error: {e}")))?;
+
+    let latest_version = fetch_latest_crate_version(&client).await?;
+
+    if is_newer(CURRENT_VERSION, &latest_version) {
+        Ok(Some(latest_version))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn update_from_crates(force: bool) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| WaxError::SelfUpdateError(format!("HTTP client error: {e}")))?;
 
     let spinner = create_spinner("Checking for updates…");
-    let latest_tag = fetch_latest_release_tag(&client).await?;
+    let latest_version = fetch_latest_crate_version(&client).await?;
     spinner.finish_and_clear();
-
-    let latest_version = latest_tag.trim_start_matches('v');
 
     println!(
         "  {} {}",
@@ -191,10 +126,10 @@ async fn update_from_release(force: bool) -> Result<()> {
     println!(
         "  {} {}",
         style("latest: ").dim(),
-        style(latest_version).cyan()
+        style(&latest_version).cyan()
     );
 
-    if !is_newer(CURRENT_VERSION, latest_version) && !force {
+    if !is_newer(CURRENT_VERSION, &latest_version) && !force {
         println!("{} already up to date", style("✓").green());
         println!(
             "  {} use {} to reinstall anyway",
@@ -204,43 +139,30 @@ async fn update_from_release(force: bool) -> Result<()> {
         return Ok(());
     }
 
-    let asset = asset_name()?;
-    let base = format!("https://github.com/{GITHUB_REPO}/releases/download/{latest_tag}");
-
-    let download_spinner = create_spinner(&format!("Downloading wax {latest_version}…"));
-
-    // Download binary and optional checksum in parallel.
-    let binary_url = format!("{base}/{asset}");
-    let sha_url = format!("{base}/{asset}.sha256");
-    let (binary_result, sha_result) = tokio::join!(
-        download_bytes(&client, &binary_url),
-        download_bytes(&client, &sha_url),
+    println!(
+        "  {} running {} (live output below)",
+        style("install:").dim(),
+        style("cargo install waxpkg --bin wax --force").yellow()
     );
 
-    let binary = binary_result?;
-
-    // Verify checksum when available (releases ≥ v0.13.3).
-    if let Ok(sha_bytes) = sha_result {
-        let expected = String::from_utf8_lossy(&sha_bytes).trim().to_string();
-        if !expected.is_empty() {
-            let actual = format!("{:x}", Sha256::digest(&binary));
-            if actual != expected {
-                download_spinner.finish_and_clear();
-                return Err(WaxError::SelfUpdateError(format!(
-                    "SHA256 mismatch — download may be corrupted\n  expected: {expected}\n  actual:   {actual}"
-                )));
-            }
-            debug!("Checksum verified: {actual}");
-        }
-    } else {
-        debug!("No checksum file for {latest_tag} — skipping verification");
+    let mut args = vec!["install", "waxpkg", "--bin", "wax"];
+    if force || is_newer(CURRENT_VERSION, &latest_version) {
+        args.push("--force");
     }
 
-    download_spinner.finish_and_clear();
+    let status = std::process::Command::new("cargo")
+        .args(&args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to run cargo: {e}")))?;
 
-    let install_spinner = create_spinner("Installing…");
-    install_binary(&binary)?;
-    install_spinner.finish_and_clear();
+    if !status.success() {
+        return Err(WaxError::SelfUpdateError(
+            "cargo install failed".to_string(),
+        ));
+    }
 
     println!(
         "{} updated to {}",
@@ -384,12 +306,5 @@ mod tests {
     fn is_newer_same_or_older() {
         assert!(!is_newer("0.13.3", "0.13.3"));
         assert!(!is_newer("0.13.3", "0.13.2"));
-    }
-
-    #[test]
-    fn asset_name_returns_valid_string() {
-        let name = asset_name().unwrap();
-        assert!(name.starts_with("wax-"));
-        assert!(name.contains('-'));
     }
 }

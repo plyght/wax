@@ -77,6 +77,19 @@ struct Check {
     run: BoxFuture<'static, DiagResult>,
 }
 
+async fn check_wax_update(fix: bool) -> DiagResult {
+    let mut d = DiagResult::new(fix);
+    match crate::commands::self_update::available_stable_update().await {
+        Ok(Some(version)) => d.warn(&format!(
+            "wax {} is available — run `wax update self`",
+            style(format!("v{version}")).cyan()
+        )),
+        Ok(None) => d.pass("wax is up to date"),
+        Err(e) => d.warn(&format!("could not check wax update: {e}")),
+    }
+    d
+}
+
 fn summary_status(d: &DiagResult) -> (&'static str, console::Style) {
     if d.failed > 0 {
         ("fail", console::Style::new().red().bold())
@@ -140,6 +153,10 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
         Check {
             title: "cache",
             run: Box::pin(async move { check_cache(&cache_for_check, fix).await }),
+        },
+        Check {
+            title: "wax update",
+            run: Box::pin(async move { check_wax_update(fix).await }),
         },
         Check {
             title: "install state",

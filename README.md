@@ -25,7 +25,7 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 - **Minimal Resource Usage**: Single compiled binary with async I/O, no Ruby runtime overhead
 - **Smart Caching**: Local formula index for offline search and instant lookups
 - **Flexible Installation**: User-local (`~/.local/wax`) or system-wide deployment options
-- **Built-in Self-Updater**: Update wax itself from crates.io (stable) or GitHub (nightly)
+- **Built-in Self-Updater**: Update wax itself from crates.io (stable) or GitHub HEAD (nightly)
 
 ## Installation
 
@@ -78,12 +78,16 @@ cp target/release/wax ~/.local/bin/
 wax update
 
 # Update wax itself
-wax update -s            # stable (from crates.io)
+wax update s             # stable (from crates.io)
+wax update self          # same as above
+wax update -s            # same as above
 wax update --self        # same as above
-wax update -sn           # nightly (from GitHub)
-wax update -sf           # force reinstall
-wax update -sn --clean   # nightly + clean cargo git cache
-wax update -sn --no-clean  # nightly + keep cargo cache
+wax update sn            # nightly (from GitHub HEAD)
+wax update self-nightly  # same as above
+wax update -sn           # same as above
+wax update -sf           # force reinstall stable
+wax update sn --clean    # nightly + clean cargo git cache
+wax update sn --no-clean # nightly + keep cargo cache
 
 # Search packages
 wax search nginx

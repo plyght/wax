@@ -84,6 +84,10 @@ enum Commands {
     #[command(about = "Update formula index or wax itself")]
     Update {
         #[arg(
+            help = "Optional shorthand: s/self for stable self-update, sn/self-nightly for GitHub HEAD"
+        )]
+        action: Option<String>,
+        #[arg(
             short = 's',
             long = "self",
             help = "Update wax itself instead of formula index"
@@ -474,12 +478,28 @@ async fn main() -> Result<()> {
 
     let result = match cli.command {
         Commands::Update {
-            update_self,
-            nightly,
+            action,
+            mut update_self,
+            mut nightly,
             force,
             clean,
             no_clean,
         } => {
+            if let Some(action) = action {
+                match action.as_str() {
+                    "s" | "self" => update_self = true,
+                    "sn" | "self-nightly" => {
+                        update_self = true;
+                        nightly = true;
+                    }
+                    other => {
+                        return Err(error::WaxError::InvalidInput(format!(
+                            "Unknown update shorthand '{other}' (use s/self or sn/self-nightly)"
+                        )));
+                    }
+                }
+            }
+
             if update_self {
                 if clean && no_clean {
                     return Err(error::WaxError::InvalidInput(
