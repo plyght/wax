@@ -639,6 +639,18 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
     let latest_version = formula.full_version();
     let installed_version = &installed.version;
 
+    if is_same_or_newer(installed_version, &latest_version) {
+        println!(
+            "{} is already on the latest version ({}).",
+            style(formula_name).magenta(),
+            style(installed_version).dim()
+        );
+        if dry_run {
+            println!("\ndry run - no changes made");
+        }
+        return Ok(());
+    }
+
     if dry_run {
         println!(
             "{}: {} → {}",
@@ -647,15 +659,6 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
             style(&latest_version).magenta()
         );
         println!("\ndry run - no changes made");
-        return Ok(());
-    }
-
-    if is_same_or_newer(installed_version, &latest_version) {
-        println!(
-            "{} is already on the latest version ({}).",
-            style(formula_name).magenta(),
-            style(installed_version).dim()
-        );
         return Ok(());
     }
 
@@ -697,6 +700,19 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
     let latest_version = &cask_details.version;
     let installed_version = &installed.version;
 
+    if is_same_or_newer(installed_version, latest_version) {
+        println!(
+            "{} {} is already on the latest version ({}).",
+            style(cask_name).magenta(),
+            style("(cask)").yellow(),
+            style(installed_version).dim()
+        );
+        if dry_run {
+            println!("\ndry run - no changes made");
+        }
+        return Ok(());
+    }
+
     if dry_run {
         println!(
             "{} {}: {} → {}",
@@ -706,16 +722,6 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
             style(latest_version).magenta()
         );
         println!("\ndry run - no changes made");
-        return Ok(());
-    }
-
-    if is_same_or_newer(installed_version, latest_version) {
-        println!(
-            "{} {} is already on the latest version ({}).",
-            style(cask_name).magenta(),
-            style("(cask)").yellow(),
-            style(installed_version).dim()
-        );
         return Ok(());
     }
 

@@ -29,7 +29,25 @@ use version::WAX_VERSION;
 fn should_refresh_state(command: &Commands) -> bool {
     !matches!(
         command,
-        Commands::Completions { .. } | Commands::__RefreshState
+        Commands::Completions { .. }
+            | Commands::__RefreshState
+            | Commands::Install { .. }
+            | Commands::InstallCask { .. }
+            | Commands::Uninstall { .. }
+            | Commands::Reinstall { .. }
+            | Commands::Postinstall { .. }
+            | Commands::Upgrade { .. }
+            | Commands::System { .. }
+            | Commands::Lock
+            | Commands::Sync
+            | Commands::Link { .. }
+            | Commands::Unlink { .. }
+            | Commands::Cleanup { .. }
+            | Commands::Pin { .. }
+            | Commands::Unpin { .. }
+            | Commands::Tap { repair: true, .. }
+            | Commands::Doctor { fix: true }
+            | Commands::Bundle { dry_run: false, .. }
     )
 }
 

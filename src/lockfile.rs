@@ -4,6 +4,7 @@ use crate::install::InstallState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tracing::{debug, instrument, warn};
 
@@ -80,7 +81,11 @@ impl Lockfile {
         let toml_string = toml::to_string_pretty(&self)
             .map_err(|e| WaxError::LockfileError(format!("Failed to serialize lockfile: {}", e)))?;
 
-        fs::write(path, toml_string).await?;
+        let temp_path = temp_path_for(path);
+        fs::write(&temp_path, toml_string).await?;
+        fs::rename(&temp_path, path).await.inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp_path);
+        })?;
 
         debug!("Lockfile saved successfully");
         Ok(())
@@ -134,6 +139,19 @@ impl Default for Lockfile {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn temp_path_for(path: &Path) -> PathBuf {
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("wax.lock");
+    path.with_file_name(format!(".{}.{}.{}.tmp", file_name, pid, nanos))
 }
 
 #[cfg(test)]
