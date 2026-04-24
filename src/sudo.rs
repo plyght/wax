@@ -195,16 +195,9 @@ pub fn sudo_symlink(src: &Path, dst: &Path) -> Result<()> {
 pub fn get_current_user() -> String {
     #[cfg(unix)]
     {
-        use std::ffi::CStr;
-        let uid = nix::unistd::getuid().as_raw();
-        // SAFETY: getpwuid is thread-safe on POSIX systems and returns either
-        // a valid pointer to a struct passwd or null.
-        let passwd = unsafe { libc::getpwuid(uid) };
-        if !passwd.is_null() {
-            // SAFETY: passwd is non-null and points to a valid struct passwd.
-            // pw_name is a valid null-terminated C string managed by the system.
-            let name = unsafe { CStr::from_ptr((*passwd).pw_name) };
-            return name.to_string_lossy().into_owned();
+        let uid = nix::unistd::getuid();
+        if let Ok(Some(user)) = nix::unistd::User::from_uid(uid) {
+            return user.name;
         }
     }
     std::env::var("USER").unwrap_or_else(|_| "root".to_string())

@@ -30,7 +30,10 @@ impl std::fmt::Display for InstalledRow {
 
 /// Validates that a path does not contain parent-directory traversal components.
 fn validate_cellar_path(path: &std::path::Path) -> Result<PathBuf> {
-    if path.components().any(|c| c == std::path::Component::ParentDir) {
+    if path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
         return Err(WaxError::InvalidInput(format!(
             "Cellar path contains parent-directory traversal: {}",
             path.display()

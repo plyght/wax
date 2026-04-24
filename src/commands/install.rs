@@ -1313,20 +1313,24 @@ pub async fn install_extracted_bottle(
         tokio::fs::remove_dir_all(&formula_cellar)
             .await
             .or_else(|_| crate::sudo::sudo_remove(&formula_cellar).map(|_| ()))
-            .map_err(|e| WaxError::InstallError(format!(
-                "Failed to clean old version at {}: {}",
-                formula_cellar.display(),
-                e
-            )))?;
+            .map_err(|e| {
+                WaxError::InstallError(format!(
+                    "Failed to clean old version at {}: {}",
+                    formula_cellar.display(),
+                    e
+                ))
+            })?;
     }
     tokio::fs::create_dir_all(&formula_cellar)
         .await
         .or_else(|_| crate::sudo::sudo_mkdir(&formula_cellar))
-        .map_err(|e| WaxError::InstallError(format!(
-            "Failed to create cellar directory {}: {}",
-            formula_cellar.display(),
-            e
-        )))?;
+        .map_err(|e| {
+            WaxError::InstallError(format!(
+                "Failed to create cellar directory {}: {}",
+                formula_cellar.display(),
+                e
+            ))
+        })?;
 
     step!("copying to cellar...");
     let actual_content_dir = name_dir.join(&cellar_version);

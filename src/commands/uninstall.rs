@@ -265,10 +265,14 @@ async fn resolve_cask_app_name(
     stored_app_name: Option<&str>,
 ) -> String {
     if let Some(name) = stored_app_name {
-        return if name.ends_with(".app") {
-            name.to_string()
+        let basename = std::path::Path::new(name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(name);
+        return if basename.ends_with(".app") {
+            basename.to_string()
         } else {
-            format!("{}.app", name)
+            format!("{}.app", basename)
         };
     }
 
@@ -276,7 +280,10 @@ async fn resolve_cask_app_name(
         return app_name;
     }
 
-    if let Ok(details) = crate::api::ApiClient::new().fetch_cask_details(cask_name).await {
+    if let Ok(details) = crate::api::ApiClient::new()
+        .fetch_cask_details(cask_name)
+        .await
+    {
         if let Some(artifacts) = details.artifacts {
             for artifact in artifacts {
                 if let crate::api::CaskArtifact::App { app } = artifact {

@@ -115,8 +115,7 @@ impl BottleDownloader {
         );
         let totals_for_multipart = totals.cloned();
         if accepts_ranges
-            && total_size >= Self::MULTIPART_THRESHOLD
-            && total_size <= Self::MULTIPART_MAX_SIZE
+            && (Self::MULTIPART_THRESHOLD..=Self::MULTIPART_MAX_SIZE).contains(&total_size)
             && max_connections > 1
         {
             match self

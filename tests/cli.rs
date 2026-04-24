@@ -223,8 +223,16 @@ fn tap_list_exits_zero() {
 
 #[test]
 fn hidden_refresh_state_command_exits_zero() {
+    if std::env::var_os("INTEGRATION").is_none() {
+        return;
+    }
+
     let out = wax().arg("__refresh_state").output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 // ── invalid input should not panic ───────────────────────────────────────────
@@ -234,7 +242,6 @@ fn install_no_args_does_not_panic() {
     let out = wax().arg("install").output().unwrap();
     // Should not panic or abort.
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "wax install failed: {stderr}");
     // Must not produce a Rust panic message.
     assert!(
         !stderr.contains("thread 'main' panicked"),

@@ -341,18 +341,48 @@ impl Drop for RollbackContext {
 
 /// Maximum allowed size for a cask staging directory after extraction (5 GB).
 const MAX_STAGING_SIZE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+const MAX_STAGING_DIRS_VISITED: usize = 100_000;
+const MAX_STAGING_ENTRIES_VISITED: usize = 1_000_000;
 
 fn dir_size(path: &Path) -> std::io::Result<u64> {
     let mut total = 0u64;
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            total += dir_size(&entry.path())?;
-        } else {
-            total += metadata.len();
+    let mut dirs_to_visit = vec![path.to_path_buf()];
+    let mut dirs_visited = 0usize;
+    let mut entries_visited = 0usize;
+
+    while let Some(dir) = dirs_to_visit.pop() {
+        dirs_visited += 1;
+        if dirs_visited > MAX_STAGING_DIRS_VISITED {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "staging directory scan exceeded directory traversal limit",
+            ));
+        }
+
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            entries_visited += 1;
+            if entries_visited > MAX_STAGING_ENTRIES_VISITED {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "staging directory scan exceeded entry traversal limit",
+                ));
+            }
+
+            let entry_path = entry.path();
+            let metadata = std::fs::symlink_metadata(&entry_path)?;
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                dirs_to_visit.push(entry_path);
+            } else if file_type.is_file() {
+                total += metadata.len();
+            }
         }
     }
+
     Ok(total)
 }
 
@@ -502,7 +532,12 @@ impl StagingContext {
         };
 
         // Guard against zip-bomb / archive-bomb resource exhaustion.
-        match dir_size(&actual_staging_root) {
+        let staging_root_for_size = actual_staging_root.clone();
+        match tokio::task::spawn_blocking(move || dir_size(&staging_root_for_size))
+            .await
+            .map_err(|e| {
+                WaxError::InstallError(format!("Failed to scan staging directory: {}", e))
+            })? {
             Ok(size) if size > MAX_STAGING_SIZE_BYTES => {
                 return Err(WaxError::InstallError(format!(
                     "Extracted cask staging directory exceeds size limit ({} > {} bytes)",
@@ -609,6 +644,21 @@ impl CaskInstaller {
             staging.staging_root.join(&path)
         };
 
+        if p.components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            tracing::warn!(
+                "Rejecting source path with parent-directory traversal: {} (resolved: {:?})",
+                source_rel,
+                resolved
+            );
+            return staging.staging_root.join(
+                Path::new(source_rel)
+                    .file_name()
+                    .unwrap_or(std::ffi::OsStr::new("unknown")),
+            );
+        }
+
         // For absolute paths, only allow known-safe directories.
         if p.is_absolute() {
             let allowed_prefixes: Vec<PathBuf> = vec![
@@ -617,7 +667,9 @@ impl CaskInstaller {
                 #[cfg(target_os = "macos")]
                 PathBuf::from("/Applications"),
                 #[cfg(not(target_os = "macos"))]
-                dirs::home_dir().unwrap_or_else(|_| PathBuf::from("/tmp")).join("Applications"),
+                dirs::home_dir()
+                    .unwrap_or_else(|_| PathBuf::from("/tmp"))
+                    .join("Applications"),
             ];
             let is_allowed = allowed_prefixes.iter().any(|allowed| {
                 let Ok(normalized) = dunce::canonicalize(&resolved).or_else(|_| {

@@ -40,7 +40,10 @@ async fn refresh_state_in_child_process() {
 
     let _ = std::process::Command::new(exe)
         .arg("__refresh_state")
-        .status();
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 #[derive(Parser)]
