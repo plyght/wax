@@ -628,15 +628,6 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
     let latest_version = formula.full_version();
     let installed_version = &installed.version;
 
-    if is_same_or_newer(installed_version, &latest_version) {
-        println!(
-            "{}@{} is already up to date",
-            style(formula_name).magenta(),
-            style(installed_version).dim()
-        );
-        return Ok(());
-    }
-
     if dry_run {
         println!(
             "{}: {} → {}",
@@ -648,7 +639,22 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
         return Ok(());
     }
 
-    upgrade_formula_internal(cache, formula_name, Some(installed.install_mode)).await
+    println!(
+        "upgrading {}: {} → {}",
+        style(formula_name).magenta(),
+        style(installed_version).dim(),
+        style(&latest_version).green()
+    );
+
+    upgrade_formula_internal(cache, formula_name, Some(installed.install_mode)).await?;
+
+    println!(
+        "{} {} upgraded",
+        style("✓").green(),
+        style(formula_name).magenta()
+    );
+
+    Ok(())
 }
 
 async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
@@ -671,16 +677,6 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
     let latest_version = &cask_details.version;
     let installed_version = &installed.version;
 
-    if is_same_or_newer(installed_version, latest_version) {
-        println!(
-            "{}@{} {} is already up to date",
-            style(cask_name).magenta(),
-            style(installed_version).dim(),
-            style("(cask)").yellow()
-        );
-        return Ok(());
-    }
-
     if dry_run {
         println!(
             "{} {}: {} → {}",
@@ -693,7 +689,24 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
         return Ok(());
     }
 
-    upgrade_cask_internal(cache, cask_name).await
+    println!(
+        "upgrading {} {}: {} → {}",
+        style(cask_name).magenta(),
+        style("(cask)").yellow(),
+        style(installed_version).dim(),
+        style(latest_version).green()
+    );
+
+    upgrade_cask_internal(cache, cask_name).await?;
+
+    println!(
+        "{} {} {} upgraded",
+        style("✓").green(),
+        style(cask_name).magenta(),
+        style("(cask)").yellow()
+    );
+
+    Ok(())
 }
 
 async fn upgrade_formula_internal(
@@ -797,7 +810,7 @@ async fn reinstall_dependents(cache: &Cache, upgraded_package: &str) -> Result<(
 async fn upgrade_cask_internal(cache: &Cache, cask_name: &str) -> Result<()> {
     let _critical = CriticalSection::new();
 
-    install::install_quiet(cache, &[cask_name.to_string()], true, false, false).await?;
+    install::install_quiet_force(cache, &[cask_name.to_string()], true, false, false).await?;
 
     Ok(())
 }
