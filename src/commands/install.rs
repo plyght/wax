@@ -25,7 +25,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, info, instrument};
 
@@ -596,6 +596,7 @@ async fn install_impl(
         formulae.iter().map(|f| (f.full_name.as_str(), f)).collect();
 
     let mut all_to_install = Vec::new();
+    let mut all_to_install_set = HashSet::new();
     let mut already_installed = Vec::new();
     let mut errors = Vec::new();
     let mut detected_casks: Vec<String> = Vec::new();
@@ -687,7 +688,7 @@ async fn install_impl(
             Ok(deps) => {
                 user_direct_formula_names.insert(formula.name.clone());
                 for dep in deps {
-                    if !all_to_install.contains(&dep) {
+                    if all_to_install_set.insert(dep.clone()) {
                         all_to_install.push(dep);
                     }
                 }
@@ -1311,11 +1312,21 @@ pub async fn install_extracted_bottle(
         step!("cleaning old version...");
         tokio::fs::remove_dir_all(&formula_cellar)
             .await
-            .or_else(|_| crate::sudo::sudo_remove(&formula_cellar).map(|_| ()))?;
+            .or_else(|_| crate::sudo::sudo_remove(&formula_cellar).map(|_| ()))
+            .map_err(|e| WaxError::InstallError(format!(
+                "Failed to clean old version at {}: {}",
+                formula_cellar.display(),
+                e
+            )))?;
     }
     tokio::fs::create_dir_all(&formula_cellar)
         .await
-        .or_else(|_| crate::sudo::sudo_mkdir(&formula_cellar))?;
+        .or_else(|_| crate::sudo::sudo_mkdir(&formula_cellar))
+        .map_err(|e| WaxError::InstallError(format!(
+            "Failed to create cellar directory {}: {}",
+            formula_cellar.display(),
+            e
+        )))?;
 
     step!("copying to cellar...");
     let actual_content_dir = name_dir.join(&cellar_version);
@@ -1560,8 +1571,6 @@ async fn install_casks(
         crate::signal::set_active_multi((*multi).clone());
     }
 
-    let state_lock = Arc::new(Mutex::new(()));
-
     let cask_count = resolved.len();
 
     // Aggregate download progress on the top row; per-cask rows sit below and switch to
@@ -1619,7 +1628,6 @@ async fn install_casks(
     for (name, details, artifact_type) in resolved {
         let multi = Arc::clone(&multi);
         let installer = Arc::clone(&installer);
-        let state_lock = Arc::clone(&state_lock);
         let dl_totals = pipeline_totals.clone();
         let pipeline_sem = Arc::clone(&pipeline_sem);
         let hide_dl = Arc::clone(&hide_overall_downloads);
@@ -1683,20 +1691,6 @@ async fn install_casks(
 
             match installed_cask {
                 Ok(installed_cask) => {
-                    let state = CaskState::new().map_err(|e| CaskPipelineFail::Install {
-                        name: name.clone(),
-                        err: e,
-                    })?;
-                    {
-                        let _guard = state_lock.lock().await;
-                        state
-                            .add(installed_cask)
-                            .await
-                            .map_err(|e| CaskPipelineFail::Install {
-                                name: name.clone(),
-                                err: e,
-                            })?;
-                    }
                     if !quiet {
                         let _ = multi.println(format!(
                             "{} {} (cask) {}",
@@ -1705,7 +1699,7 @@ async fn install_casks(
                             style(&details.version).dim()
                         ));
                     }
-                    Ok(())
+                    Ok((name, installed_cask))
                 }
                 Err(e) => Err(CaskPipelineFail::Install { name, err: e }),
             }
@@ -1713,10 +1707,26 @@ async fn install_casks(
     }
 
     let mut pipeline_outcomes = Vec::new();
+    let mut successful_casks: Vec<(String, InstalledCask)> = Vec::new();
     while let Some(join_res) = pipeline_tasks.join_next().await {
         match join_res {
-            Ok(outcome) => pipeline_outcomes.push(outcome),
+            Ok(Ok((name, installed_cask))) => {
+                successful_casks.push((name, installed_cask));
+            }
+            Ok(Err(e)) => pipeline_outcomes.push(Err(e)),
             Err(e) => eprintln!("{} task error: {}", style("✗").red(), e),
+        }
+    }
+
+    // Serialize cask state updates to avoid file corruption from concurrent writes.
+    if !successful_casks.is_empty() {
+        let cask_state = CaskState::new().map_err(|e| WaxError::InstallError(e.to_string()))?;
+        for (name, installed_cask) in successful_casks {
+            if let Err(e) = cask_state.add(installed_cask).await {
+                pipeline_outcomes.push(Err(CaskPipelineFail::Install { name, err: e }));
+            } else {
+                pipeline_outcomes.push(Ok(()));
+            }
         }
     }
 

@@ -31,12 +31,22 @@ pub struct OutdatedPackage {
     pub install_mode: Option<InstallMode>,
 }
 
-struct UpgradeMultiGuard;
+struct UpgradeMultiGuard {
+    owns_multi: bool,
+}
+
+impl UpgradeMultiGuard {
+    fn new(owns_multi: bool) -> Self {
+        Self { owns_multi }
+    }
+}
 
 impl Drop for UpgradeMultiGuard {
     fn drop(&mut self) {
         clear_current_op();
-        clear_active_multi();
+        if self.owns_multi {
+            clear_active_multi();
+        }
     }
 }
 
@@ -167,8 +177,11 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     }
 
     let multi = MultiProgress::new();
-    set_active_multi(multi.clone());
-    let _guard = UpgradeMultiGuard;
+    let owns_multi_globals = crate::signal::clone_active_multi().is_none();
+    if owns_multi_globals {
+        set_active_multi(multi.clone());
+    }
+    let _guard = UpgradeMultiGuard::new(owns_multi_globals);
 
     // --- Phase 0: pre-download all formula bottles concurrently ---
     let platform = detect_platform();

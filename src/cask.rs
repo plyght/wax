@@ -339,6 +339,23 @@ impl Drop for RollbackContext {
     }
 }
 
+/// Maximum allowed size for a cask staging directory after extraction (5 GB).
+const MAX_STAGING_SIZE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+fn dir_size(path: &Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += metadata.len();
+        }
+    }
+    Ok(total)
+}
+
 impl StagingContext {
     /// Returns the permanent on-disk directory for this cask version.
     /// For DMG installs the staging root is a temporary mount point; the parent
@@ -484,6 +501,20 @@ impl StagingContext {
             staging_root
         };
 
+        // Guard against zip-bomb / archive-bomb resource exhaustion.
+        match dir_size(&actual_staging_root) {
+            Ok(size) if size > MAX_STAGING_SIZE_BYTES => {
+                return Err(WaxError::InstallError(format!(
+                    "Extracted cask staging directory exceeds size limit ({} > {} bytes)",
+                    size, MAX_STAGING_SIZE_BYTES
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("Unable to compute staging directory size: {}", e);
+            }
+        }
+
         Ok(Self {
             staging_root: actual_staging_root,
             mount_point,
@@ -578,15 +609,68 @@ impl CaskInstaller {
             staging.staging_root.join(&path)
         };
 
-        // Reject path traversal attempts (e.g. "../../etc/passwd")
-        if resolved
-            .components()
-            .any(|c| c == std::path::Component::ParentDir)
-        {
+        // For absolute paths, only allow known-safe directories.
+        if p.is_absolute() {
+            let allowed_prefixes: Vec<PathBuf> = vec![
+                crate::bottle::homebrew_prefix(),
+                staging.staging_root.clone(),
+                #[cfg(target_os = "macos")]
+                PathBuf::from("/Applications"),
+                #[cfg(not(target_os = "macos"))]
+                dirs::home_dir().unwrap_or_else(|_| PathBuf::from("/tmp")).join("Applications"),
+            ];
+            let is_allowed = allowed_prefixes.iter().any(|allowed| {
+                let Ok(normalized) = dunce::canonicalize(&resolved).or_else(|_| {
+                    // If canonicalize fails, do a simple prefix check
+                    Ok::<_, std::io::Error>(resolved.clone())
+                }) else {
+                    return false;
+                };
+                normalized.starts_with(allowed)
+            });
+            if !is_allowed {
+                tracing::warn!(
+                    "Rejecting absolute source path outside safe directories: {} (resolved: {:?})",
+                    source_rel,
+                    resolved
+                );
+                return staging.staging_root.join(
+                    Path::new(source_rel)
+                        .file_name()
+                        .unwrap_or(std::ffi::OsStr::new("unknown")),
+                );
+            }
+            return resolved;
+        }
+
+        // For relative paths, normalize and ensure it stays inside staging_root.
+        let mut normalized = PathBuf::new();
+        for component in resolved.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    if !normalized.pop() {
+                        tracing::warn!(
+                            "Rejecting source path that escapes staging root: {} (resolved: {:?})",
+                            source_rel,
+                            resolved
+                        );
+                        return staging.staging_root.join(
+                            Path::new(source_rel)
+                                .file_name()
+                                .unwrap_or(std::ffi::OsStr::new("unknown")),
+                        );
+                    }
+                }
+                std::path::Component::CurDir => {}
+                other => normalized.push(other),
+            }
+        }
+
+        if !normalized.starts_with(&staging.staging_root) {
             tracing::warn!(
-                "Rejecting source path with traversal: {} (resolved: {:?})",
+                "Rejecting source path that escapes staging root: {} (normalized: {:?})",
                 source_rel,
-                resolved
+                normalized
             );
             return staging.staging_root.join(
                 Path::new(source_rel)
@@ -595,7 +679,7 @@ impl CaskInstaller {
             );
         }
 
-        resolved
+        normalized
     }
 
     /// Probe a URL via HEAD request to detect artifact type from response headers.
@@ -702,6 +786,20 @@ impl CaskInstaller {
         }
 
         debug!("Checksum verified: {}", hash);
+        Ok(())
+    }
+
+    /// Rejects paths that contain parent-directory traversal components.
+    fn reject_traversal(path: &Path) -> Result<()> {
+        if path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            return Err(WaxError::InstallError(format!(
+                "Path contains directory traversal: {}",
+                path.display()
+            )));
+        }
         Ok(())
     }
 
@@ -836,6 +934,8 @@ impl CaskInstaller {
                 .and_then(|n| n.to_str())
                 .unwrap_or(source_rel)
         });
+
+        Self::reject_traversal(Path::new(name))?;
 
         info!("Installing binary: {} from {:?}", name, source);
 
@@ -1001,6 +1101,7 @@ impl CaskInstaller {
     ) -> Result<()> {
         let source = self.resolve_source_path(staging, source_rel);
         let dest = PathBuf::from(target_path);
+        Self::reject_traversal(&dest)?;
 
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -1115,6 +1216,8 @@ impl CaskInstaller {
                 .and_then(|n| n.to_str())
                 .unwrap_or(token)
         });
+
+        Self::reject_traversal(Path::new(filename))?;
 
         let dest = dest_dir.join(filename);
 
@@ -1243,13 +1346,26 @@ mod tests {
         let res = installer.resolve_source_path(&staging, "$APPDIR/Contents/MacOS/qux");
         assert_eq!(res, staging_root.join("Contents/MacOS/qux"));
 
-        // Test absolute path
+        // Test absolute path outside safe directories — should fall back to staging root
         let res = installer.resolve_source_path(&staging, "/usr/bin/true");
-        assert_eq!(res, PathBuf::from("/usr/bin/true"));
+        assert_eq!(res, staging_root.join("true"));
 
         // Test relative path
         let res = installer.resolve_source_path(&staging, "relative/path");
         assert_eq!(res, staging_root.join("relative/path"));
+
+        // Test path traversal is rejected
+        let res = installer.resolve_source_path(&staging, "../../etc/passwd");
+        assert_eq!(res, staging_root.join("passwd"));
+
+        // Test absolute path within homebrew prefix is allowed
+        let res = installer.resolve_source_path(&staging, &format!("{}/bin/brew", prefix));
+        assert_eq!(res, PathBuf::from(format!("{}/bin/brew", prefix)));
+
+        // Test absolute path within staging root is allowed
+        let abs_in_staging = staging_root.join("foo/bar");
+        let res = installer.resolve_source_path(&staging, abs_in_staging.to_str().unwrap());
+        assert_eq!(res, abs_in_staging);
     }
 
     #[test]

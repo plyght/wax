@@ -222,7 +222,13 @@ async fn uninstall_package_direct(
     }
     let formula_dir = cellar.join(formula_name);
     if formula_dir.exists() {
-        tokio::fs::remove_dir_all(&formula_dir).await?;
+        tokio::fs::remove_dir_all(&formula_dir).await.map_err(|e| {
+            crate::error::WaxError::InstallError(format!(
+                "Failed to remove formula directory {}: {}",
+                formula_dir.display(),
+                e
+            ))
+        })?;
     }
 
     state.remove(formula_name).await?;

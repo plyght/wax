@@ -38,8 +38,7 @@ pub fn is_running_as_root() -> bool {
     *IS_ROOT.get_or_init(|| {
         #[cfg(unix)]
         {
-            // Use getuid() for better performance and reliability
-            unsafe { libc::getuid() == 0 }
+            nix::unistd::getuid().is_root()
         }
         #[cfg(not(unix))]
         {
@@ -197,9 +196,13 @@ pub fn get_current_user() -> String {
     #[cfg(unix)]
     {
         use std::ffi::CStr;
-        let uid = unsafe { libc::getuid() };
+        let uid = nix::unistd::getuid().as_raw();
+        // SAFETY: getpwuid is thread-safe on POSIX systems and returns either
+        // a valid pointer to a struct passwd or null.
         let passwd = unsafe { libc::getpwuid(uid) };
         if !passwd.is_null() {
+            // SAFETY: passwd is non-null and points to a valid struct passwd.
+            // pw_name is a valid null-terminated C string managed by the system.
             let name = unsafe { CStr::from_ptr((*passwd).pw_name) };
             return name.to_string_lossy().into_owned();
         }
