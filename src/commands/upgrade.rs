@@ -31,12 +31,22 @@ pub struct OutdatedPackage {
     pub install_mode: Option<InstallMode>,
 }
 
-struct UpgradeMultiGuard;
+struct UpgradeMultiGuard {
+    owns_multi: bool,
+}
+
+impl UpgradeMultiGuard {
+    fn new(owns_multi: bool) -> Self {
+        Self { owns_multi }
+    }
+}
 
 impl Drop for UpgradeMultiGuard {
     fn drop(&mut self) {
         clear_current_op();
-        clear_active_multi();
+        if self.owns_multi {
+            clear_active_multi();
+        }
     }
 }
 
@@ -49,9 +59,17 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
     if packages.is_empty() {
         upgrade_all(cache, dry_run, start).await
     } else {
+        let cask_state = CaskState::new()?;
+        let installed_casks = cask_state.load().await?;
         let mut failed_names = Vec::new();
         for package in packages {
-            if let Err(e) = upgrade_single(cache, package, dry_run).await {
+            if let Err(e) = if package == "wax" {
+                upgrade_single(cache, package, dry_run).await
+            } else if installed_casks.contains_key(package) {
+                upgrade_cask_single(cache, package, dry_run).await
+            } else {
+                upgrade_single(cache, package, dry_run).await
+            } {
                 eprintln!(
                     "{} {} failed: {}",
                     style("✗").red(),
@@ -157,8 +175,11 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     }
 
     let multi = MultiProgress::new();
-    set_active_multi(multi.clone());
-    let _guard = UpgradeMultiGuard;
+    let owns_multi_globals = crate::signal::clone_active_multi().is_none();
+    if owns_multi_globals {
+        set_active_multi(multi.clone());
+    }
+    let _guard = UpgradeMultiGuard::new(owns_multi_globals);
 
     // --- Phase 0: pre-download all formula bottles concurrently ---
     let platform = detect_platform();
@@ -566,6 +587,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
 
 async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Result<()> {
     let state = InstallState::new()?;
+    state.sync_from_cellar().await?;
     let installed_packages = state.load().await?;
 
     let installed = if let Some(pkg) = installed_packages.get(formula_name) {
@@ -578,7 +600,6 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
             return upgrade_cask_single(cache, formula_name, dry_run).await;
         }
 
-        state.sync_from_cellar().await?;
         let updated_packages = state.load().await?;
 
         if let Some(pkg) = updated_packages.get(formula_name).cloned() {
@@ -620,10 +641,13 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
 
     if is_same_or_newer(installed_version, &latest_version) {
         println!(
-            "{}@{} is already up to date",
+            "{} is already on the latest version ({}).",
             style(formula_name).magenta(),
             style(installed_version).dim()
         );
+        if dry_run {
+            println!("\ndry run - no changes made");
+        }
         return Ok(());
     }
 
@@ -638,7 +662,22 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
         return Ok(());
     }
 
-    upgrade_formula_internal(cache, formula_name, Some(installed.install_mode)).await
+    println!(
+        "upgrading {}: {} → {}",
+        style(formula_name).magenta(),
+        style(installed_version).dim(),
+        style(&latest_version).green()
+    );
+
+    upgrade_formula_internal(cache, formula_name, Some(installed.install_mode)).await?;
+
+    println!(
+        "{} {} upgraded",
+        style("✓").green(),
+        style(formula_name).magenta()
+    );
+
+    Ok(())
 }
 
 async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
@@ -650,24 +689,27 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
     let casks = cache.load_casks().await?;
-    let _cask_summary = casks
+    let cask_summary = casks
         .iter()
         .find(|c| c.token == cask_name || c.full_token == cask_name)
         .ok_or_else(|| WaxError::CaskNotFound(cask_name.to_string()))?;
 
     let api_client = ApiClient::new();
-    let cask_details = api_client.fetch_cask_details(cask_name).await?;
+    let cask_details = api_client.fetch_cask_details(&cask_summary.token).await?;
 
     let latest_version = &cask_details.version;
     let installed_version = &installed.version;
 
     if is_same_or_newer(installed_version, latest_version) {
         println!(
-            "{}@{} {} is already up to date",
+            "{} {} is already on the latest version ({}).",
             style(cask_name).magenta(),
-            style(installed_version).dim(),
-            style("(cask)").yellow()
+            style("(cask)").yellow(),
+            style(installed_version).dim()
         );
+        if dry_run {
+            println!("\ndry run - no changes made");
+        }
         return Ok(());
     }
 
@@ -683,7 +725,24 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
         return Ok(());
     }
 
-    upgrade_cask_internal(cache, cask_name).await
+    println!(
+        "upgrading {} {}: {} → {}",
+        style(cask_name).magenta(),
+        style("(cask)").yellow(),
+        style(installed_version).dim(),
+        style(latest_version).green()
+    );
+
+    upgrade_cask_internal(cache, cask_name).await?;
+
+    println!(
+        "{} {} {} upgraded",
+        style("✓").green(),
+        style(cask_name).magenta(),
+        style("(cask)").yellow()
+    );
+
+    Ok(())
 }
 
 async fn upgrade_formula_internal(
@@ -787,7 +846,7 @@ async fn reinstall_dependents(cache: &Cache, upgraded_package: &str) -> Result<(
 async fn upgrade_cask_internal(cache: &Cache, cask_name: &str) -> Result<()> {
     let _critical = CriticalSection::new();
 
-    install::install_quiet(cache, &[cask_name.to_string()], true, false, false).await?;
+    install::install_quiet_force(cache, &[cask_name.to_string()], true, false, false).await?;
 
     Ok(())
 }

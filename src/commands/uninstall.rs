@@ -222,7 +222,13 @@ async fn uninstall_package_direct(
     }
     let formula_dir = cellar.join(formula_name);
     if formula_dir.exists() {
-        tokio::fs::remove_dir_all(&formula_dir).await?;
+        tokio::fs::remove_dir_all(&formula_dir).await.map_err(|e| {
+            crate::error::WaxError::InstallError(format!(
+                "Failed to remove formula directory {}: {}",
+                formula_dir.display(),
+                e
+            ))
+        })?;
     }
 
     state.remove(formula_name).await?;
@@ -253,6 +259,53 @@ async fn uninstall_package_direct(
     Ok(())
 }
 
+async fn resolve_cask_app_name(
+    cask_name: &str,
+    version: &str,
+    stored_app_name: Option<&str>,
+) -> String {
+    if let Some(name) = stored_app_name {
+        let basename = std::path::Path::new(name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(name);
+        return if basename.ends_with(".app") {
+            basename.to_string()
+        } else {
+            format!("{}.app", basename)
+        };
+    }
+
+    if let Some(app_name) = find_app_in_caskroom(cask_name, version) {
+        return app_name;
+    }
+
+    if let Ok(details) = crate::api::ApiClient::new()
+        .fetch_cask_details(cask_name)
+        .await
+    {
+        if let Some(artifacts) = details.artifacts {
+            for artifact in artifacts {
+                if let crate::api::CaskArtifact::App { app } = artifact {
+                    if let Some(source) = app.first().and_then(|v| v.as_str()) {
+                        let basename = std::path::Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        return if basename.ends_with(".app") {
+                            basename.to_string()
+                        } else {
+                            format!("{}.app", basename)
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    format!("{}.app", cask_name)
+}
+
 async fn uninstall_cask(
     cache: &Cache,
     cask_name: &str,
@@ -275,10 +328,11 @@ async fn uninstall_cask(
 
     // Last resort: check /Applications for a matching .app bundle
     if !installed_casks.contains_key(cask_name) {
+        let app_name = resolve_cask_app_name(cask_name, "unknown", None).await;
         let app_candidates = [
-            std::path::PathBuf::from("/Applications").join(format!("{}.app", cask_name)),
+            std::path::PathBuf::from("/Applications").join(&app_name),
             dirs::home_dir()
-                .map(|h| h.join("Applications").join(format!("{}.app", cask_name)))
+                .map(|h| h.join("Applications").join(&app_name))
                 .unwrap_or_default(),
         ];
         for app_path in app_candidates {
@@ -344,26 +398,8 @@ async fn uninstall_cask(
             }
         }
         _ => {
-            let raw_name = cask
-                .app_name
-                .clone()
-                .unwrap_or_else(|| format!("{}.app", cask_name));
-            let app_with_ext = if raw_name.ends_with(".app") {
-                raw_name.clone()
-            } else {
-                format!("{}.app", raw_name)
-            };
-            let app_basename = std::path::Path::new(&app_with_ext)
-                .components()
-                .find(|c| {
-                    matches!(c, std::path::Component::Normal(n)
-                        if n.to_string_lossy().ends_with(".app"))
-                })
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .unwrap_or_else(|| {
-                    // Try to find the actual app in Caskroom if not stored
-                    find_app_in_caskroom(cask_name, &cask.version).unwrap_or(app_with_ext)
-                });
+            let app_basename =
+                resolve_cask_app_name(cask_name, &cask.version, cask.app_name.as_deref()).await;
 
             // On macOS: check /Applications, then ~/Applications.
             // On Linux: check ~/Applications only (no system /Applications).

@@ -70,31 +70,36 @@ impl InstallMode {
 fn is_writable(path: &Path) -> bool {
     #[cfg(unix)]
     {
+        use nix::unistd::{getgid, getuid};
         use std::os::unix::fs::MetadataExt;
         if let Ok(metadata) = std::fs::metadata(path) {
             let mode = metadata.mode();
-            let uid = unsafe { libc::getuid() };
+            let uid = getuid();
 
-            if uid == 0 {
+            if uid.is_root() {
                 return true;
             }
 
+            let uid_raw = uid.as_raw();
+
             // Owner write
-            if metadata.uid() == uid {
+            if metadata.uid() == uid_raw {
                 return mode & 0o200 != 0;
             }
 
             // Check primary and supplementary groups
             if mode & 0o020 != 0 {
                 let file_gid = metadata.gid();
-                let primary_gid = unsafe { libc::getgid() };
+                let primary_gid = getgid().as_raw();
                 if file_gid == primary_gid {
                     return true;
                 }
-                // Check supplementary groups
+                // Check supplementary groups using libc (nix getgroups is not available on macOS).
+                // SAFETY: getgroups with a zero-length buffer and null pointer is a valid probe.
                 let ngroups = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
                 if ngroups > 0 {
                     let mut groups = vec![0u32; ngroups as usize];
+                    // SAFETY: groups vector is correctly sized and its pointer is valid for writes.
                     let n = unsafe { libc::getgroups(ngroups, groups.as_mut_ptr()) };
                     if n > 0 && groups[..n as usize].contains(&file_gid) {
                         return true;

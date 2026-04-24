@@ -1,6 +1,6 @@
 [package]
 name = "waxpkg"
-version = "0.15.9"
+version = "0.15.11"
 edition = "2021"
 authors = ["Wax Contributors"]
 description = "Fast Homebrew-compatible package manager"
@@ -54,6 +54,7 @@ sha2 = "0.10"
 tempfile = "3"
 regex = "1"
 libc = "0.2"
+nix = { version = "0.29", features = ["user", "process"] }
 
 dunce = "1"
 ctrlc = "3"

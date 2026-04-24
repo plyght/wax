@@ -28,11 +28,27 @@ impl std::fmt::Display for InstalledRow {
     }
 }
 
+/// Validates that a path does not contain parent-directory traversal components.
+fn validate_cellar_path(path: &std::path::Path) -> Result<PathBuf> {
+    if path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return Err(WaxError::InvalidInput(format!(
+            "Cellar path contains parent-directory traversal: {}",
+            path.display()
+        )));
+    }
+    Ok(path.to_path_buf())
+}
+
 async fn collect_installed_rows(_cache: &Cache) -> Result<Vec<InstalledRow>> {
     let test_cellar = std::env::var_os(WAX_TEST_CELLAR_ENV);
 
     let (cellar_path, skip_casks) = if let Some(ref raw) = test_cellar {
-        (PathBuf::from(raw), true)
+        let pb = PathBuf::from(raw);
+        validate_cellar_path(&pb)?;
+        (pb, true)
     } else {
         let candidates = [
             homebrew_prefix().join("Cellar"),

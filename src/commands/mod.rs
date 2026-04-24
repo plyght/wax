@@ -11,6 +11,7 @@ pub mod list;
 pub mod lock;
 pub mod outdated;
 pub mod pin;
+pub mod refresh;
 pub mod reinstall;
 pub mod search;
 pub mod self_update;

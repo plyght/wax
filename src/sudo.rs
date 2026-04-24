@@ -38,8 +38,7 @@ pub fn is_running_as_root() -> bool {
     *IS_ROOT.get_or_init(|| {
         #[cfg(unix)]
         {
-            // Use getuid() for better performance and reliability
-            unsafe { libc::getuid() == 0 }
+            nix::unistd::getuid().is_root()
         }
         #[cfg(not(unix))]
         {
@@ -196,12 +195,9 @@ pub fn sudo_symlink(src: &Path, dst: &Path) -> Result<()> {
 pub fn get_current_user() -> String {
     #[cfg(unix)]
     {
-        use std::ffi::CStr;
-        let uid = unsafe { libc::getuid() };
-        let passwd = unsafe { libc::getpwuid(uid) };
-        if !passwd.is_null() {
-            let name = unsafe { CStr::from_ptr((*passwd).pw_name) };
-            return name.to_string_lossy().into_owned();
+        let uid = nix::unistd::getuid();
+        if let Ok(Some(user)) = nix::unistd::User::from_uid(uid) {
+            return user.name;
         }
     }
     std::env::var("USER").unwrap_or_else(|_| "root".to_string())

@@ -47,6 +47,11 @@ impl BottleDownloader {
     /// Maximum connections a single download may use.
     pub const MAX_CONNECTIONS_PER_DOWNLOAD: usize = 8;
 
+    /// Maximum total file size to use multipart download (2 GB).
+    /// Larger files fall back to single-connection streaming to avoid
+    /// excessive per-chunk memory usage.
+    const MULTIPART_MAX_SIZE: u64 = 2 * 1024 * 1024 * 1024;
+
     /// Probe a URL to get its download size. Used before starting downloads to
     /// allocate connections proportionally across packages by file size.
     pub async fn probe_size(&self, url: &str) -> u64 {
@@ -109,7 +114,10 @@ impl BottleDownloader {
             total_size, accepts_ranges, max_connections
         );
         let totals_for_multipart = totals.cloned();
-        if accepts_ranges && total_size >= Self::MULTIPART_THRESHOLD && max_connections > 1 {
+        if accepts_ranges
+            && (Self::MULTIPART_THRESHOLD..=Self::MULTIPART_MAX_SIZE).contains(&total_size)
+            && max_connections > 1
+        {
             match self
                 .download_multipart(
                     &cdn_url,
