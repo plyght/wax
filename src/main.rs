@@ -557,13 +557,26 @@ async fn main() -> Result<()> {
                 .await?;
                 return Ok(());
             }
+
+            let explicit_packages_requested = !packages.is_empty();
+
             commands::upgrade::upgrade(&cache, &packages, dry_run).await?;
             if system {
                 handle_system_upgrade().await?;
             }
-            // Always check for a wax update at the end of upgrade.
-            commands::self_update::self_update(commands::self_update::Channel::Stable, false, None)
+
+            // Only check for wax self-update after a full upgrade run.
+            // For explicit package upgrades (e.g. `wax up codex`), skip this
+            // to avoid unrelated self-update output in command results.
+            if !explicit_packages_requested {
+                commands::self_update::self_update(
+                    commands::self_update::Channel::Stable,
+                    false,
+                    None,
+                )
                 .await?;
+            }
+
             Ok(())
         }
         Commands::System { action } => match action {
