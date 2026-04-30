@@ -1,0 +1,3 @@
+- ri will just create packages that dont exist for no reason
+- wax i should check linkages if a package is already installed
+- 
