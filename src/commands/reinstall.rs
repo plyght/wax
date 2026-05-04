@@ -27,12 +27,17 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     let installed_casks = cask_state.load().await?;
 
     let resolved: Vec<String> = if all {
-        let mut names: Vec<String> = installed.keys().cloned().collect();
-        for name in installed_casks.keys() {
-            if !names.contains(name) {
-                names.push(name.clone());
+        let mut names: Vec<String> = if cask {
+            installed_casks.keys().cloned().collect()
+        } else {
+            let mut names: Vec<String> = installed.keys().cloned().collect();
+            for name in installed_casks.keys() {
+                if !names.contains(name) {
+                    names.push(name.clone());
+                }
             }
-        }
+            names
+        };
         names.sort();
         names
     } else {
@@ -43,6 +48,21 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         }
         packages.to_vec()
     };
+
+    let missing: Vec<&str> = resolved
+        .iter()
+        .map(String::as_str)
+        .filter(|name| {
+            if cask {
+                !installed_casks.contains_key(*name)
+            } else {
+                !installed.contains_key(*name) && !installed_casks.contains_key(*name)
+            }
+        })
+        .collect();
+    if !missing.is_empty() {
+        return Err(WaxError::NotInstalled(missing.join(", ")));
+    }
 
     let total = resolved.len();
     let start = Instant::now();

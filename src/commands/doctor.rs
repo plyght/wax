@@ -79,13 +79,19 @@ struct Check {
 
 async fn check_wax_update(fix: bool) -> DiagResult {
     let mut d = DiagResult::new(fix);
-    match crate::commands::self_update::available_stable_update().await {
-        Ok(Some(version)) => d.warn(&format!(
+    match tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::commands::self_update::available_stable_update(),
+    )
+    .await
+    {
+        Ok(Ok(Some(version))) => d.warn(&format!(
             "wax {} is available — run `wax update self`",
             style(format!("v{version}")).cyan()
         )),
-        Ok(None) => d.pass("wax is up to date"),
-        Err(e) => d.warn(&format!("could not check wax update: {e}")),
+        Ok(Ok(None)) => d.pass("wax is up to date"),
+        Ok(Err(e)) => d.warn(&format!("could not check wax update: {e}")),
+        Err(_) => d.warn("wax update check timed out"),
     }
     d
 }
@@ -113,19 +119,23 @@ fn print_check_result(title: &str, result: &DiagResult, elapsed: Duration) {
     }
 }
 
-pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
+pub async fn doctor(cache: &Cache, fix: bool, deep: bool) -> Result<()> {
     let mut aggregate = DiagResult::new(fix);
     let cache = cache.clone();
     let start = Instant::now();
 
+    let run_deep_checks = fix || deep;
+
     if fix {
         println!("{}", style("running wax doctor --fix").bold());
+    } else if deep {
+        println!("{}", style("running wax doctor --deep").bold());
     } else {
-        println!("{}", style("running wax doctor").bold());
+        println!("{}", style("running wax doctor (quick)").bold());
     }
 
     let cache_for_check = cache.clone();
-    let checks: Vec<Check> = vec![
+    let mut checks: Vec<Check> = vec![
         Check {
             title: "platform",
             run: Box::pin(async move {
@@ -155,10 +165,6 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
             run: Box::pin(async move { check_cache(&cache_for_check, fix).await }),
         },
         Check {
-            title: "wax update",
-            run: Box::pin(async move { check_wax_update(fix).await }),
-        },
-        Check {
             title: "install state",
             run: Box::pin(async move { check_install_state(fix).await }),
         },
@@ -177,14 +183,6 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
         Check {
             title: "opt symlinks",
             run: Box::pin(async move { check_opt_symlinks(fix).await }),
-        },
-        Check {
-            title: "unrelocated bottles",
-            run: Box::pin(async move { check_unrelocated_bottles(fix).await }),
-        },
-        Check {
-            title: "code signatures",
-            run: Box::pin(async move { check_invalid_signatures(fix).await }),
         },
         Check {
             title: "tools",
@@ -211,6 +209,29 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
             }),
         },
     ];
+
+    if run_deep_checks {
+        checks.push(Check {
+            title: "wax update",
+            run: Box::pin(async move { check_wax_update(fix).await }),
+        });
+        checks.push(Check {
+            title: "unrelocated bottles",
+            run: Box::pin(async move {
+                tokio::task::spawn_blocking(move || check_unrelocated_bottles(fix))
+                    .await
+                    .unwrap()
+            }),
+        });
+        checks.push(Check {
+            title: "code signatures",
+            run: Box::pin(async move {
+                tokio::task::spawn_blocking(move || check_invalid_signatures(fix))
+                    .await
+                    .unwrap()
+            }),
+        });
+    }
 
     // One spinner per check, displayed in declaration order while all checks
     // run in parallel.
@@ -274,12 +295,26 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
         parts.join(", "),
         style(format!("({:.2}s)", start.elapsed().as_secs_f32())).dim()
     );
+    if !run_deep_checks {
+        println!(
+            "{} {} slow checks skipped",
+            style("skipped:").dim(),
+            style(3).yellow()
+        );
+    }
 
     if !fix && (aggregate.warned > 0 || aggregate.failed > 0) {
         println!(
             "{} run {} to auto-fix issues",
             style("hint:").dim(),
             style("wax doctor --fix").yellow()
+        );
+    }
+    if !run_deep_checks {
+        println!(
+            "{} run {} for self-update, bottle relocation, and code-signature scans",
+            style("hint:").dim(),
+            style("wax doctor --deep").yellow()
         );
     }
 
@@ -861,7 +896,7 @@ fn check_metal_toolchain(fix: bool) -> DiagResult {
     #[cfg(target_os = "macos")]
     {
         if let Some(output) =
-            run_command_with_timeout("system_profiler", &["SPDisplaysDataType"], 5)
+            run_command_with_timeout("system_profiler", &["SPDisplaysDataType"], 2)
         {
             let has_metal = output.contains("Metal Support") || output.contains("Metal Family");
             if has_metal {
@@ -914,7 +949,7 @@ fn check_metal_toolchain(fix: bool) -> DiagResult {
     d
 }
 
-async fn check_unrelocated_bottles(fix: bool) -> DiagResult {
+fn check_unrelocated_bottles(fix: bool) -> DiagResult {
     let mut d = DiagResult::new(fix);
     #[cfg(target_os = "macos")]
     {
@@ -1135,7 +1170,7 @@ fn is_mach_o_with_placeholders(path: &Path) -> bool {
         .any(|w| w == placeholder)
 }
 
-async fn check_invalid_signatures(fix: bool) -> DiagResult {
+fn check_invalid_signatures(fix: bool) -> DiagResult {
     let mut d = DiagResult::new(fix);
     #[cfg(target_os = "macos")]
     {

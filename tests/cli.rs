@@ -78,6 +78,14 @@ fn subcommand_help_exits_zero() {
     }
 }
 
+#[test]
+fn doctor_help_mentions_deep_flag() {
+    let out = wax().args(["doctor", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--deep"), "{stdout}");
+}
+
 // ── list / tap list work offline ─────────────────────────────────────────────
 
 #[test]
@@ -85,6 +93,7 @@ fn list_exits_zero() {
     // `wax list` works without a populated cache (just shows an empty list).
     let tmp = tempfile::tempdir().unwrap();
     let out = wax()
+        .env("HOME", tmp.path())
         .env("WAX_CACHE_DIR", tmp.path())
         .env("CI", "1")
         .arg("list")
@@ -102,6 +111,7 @@ fn list_exits_zero() {
 fn list_with_query_exits_zero() {
     let tmp = tempfile::tempdir().unwrap();
     let out = wax()
+        .env("HOME", tmp.path())
         .env("WAX_CACHE_DIR", tmp.path())
         .env("CI", "1")
         .args(["list", "rust"])
@@ -125,6 +135,7 @@ fn list_plain_shows_test_cellar_formulae() {
     std::fs::create_dir_all(&cache).unwrap();
 
     let out = wax()
+        .env("HOME", tmp.path())
         .env("WAX_CACHE_DIR", &cache)
         .env("WAX_TEST_CELLAR", &cellar)
         .env("CI", "1")
@@ -157,6 +168,7 @@ fn list_plain_filter_excludes_non_matching() {
     std::fs::create_dir_all(&cache).unwrap();
 
     let out = wax()
+        .env("HOME", tmp.path())
         .env("WAX_CACHE_DIR", &cache)
         .env("WAX_TEST_CELLAR", &cellar)
         .env("CI", "1")
@@ -189,6 +201,7 @@ fn list_plain_no_match_reports_query() {
 
     let needle = "zzz-nope-match";
     let out = wax()
+        .env("HOME", tmp.path())
         .env("WAX_CACHE_DIR", &cache)
         .env("WAX_TEST_CELLAR", &cellar)
         .env("CI", "1")
@@ -209,6 +222,7 @@ fn list_plain_no_match_reports_query() {
 fn tap_list_exits_zero() {
     let tmp = tempfile::tempdir().unwrap();
     let out = wax()
+        .env("HOME", tmp.path())
         .env("WAX_CACHE_DIR", tmp.path())
         .arg("tap")
         .arg("list")
@@ -263,6 +277,24 @@ fn unknown_subcommand_exits_nonzero() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+}
+
+#[test]
+fn reinstall_missing_package_exits_nonzero_without_installing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = wax()
+        .env("HOME", tmp.path())
+        .env("CI", "1")
+        .args(["reinstall", "definitely-no-such-package"])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("definitely-no-such-package is not installed"),
+        "{stderr}"
+    );
 }
 
 // ── network integration tests (skipped unless INTEGRATION=1) ─────────────────

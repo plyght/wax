@@ -46,7 +46,7 @@ fn should_refresh_state(command: &Commands) -> bool {
             | Commands::Pin { .. }
             | Commands::Unpin { .. }
             | Commands::Tap { repair: true, .. }
-            | Commands::Doctor { fix: true }
+            | Commands::Doctor { fix: true, .. }
             | Commands::Bundle { dry_run: false, .. }
     )
 }
@@ -301,6 +301,8 @@ enum Commands {
     Doctor {
         #[arg(long, help = "Automatically fix detected issues")]
         fix: bool,
+        #[arg(long, help = "Run slower deep bottle and code-signature scans")]
+        deep: bool,
     },
 
     #[command(about = "Install packages from a Waxfile (formulae, casks, cargo, uv)")]
@@ -654,7 +656,7 @@ async fn main() -> Result<()> {
         Commands::__RefreshState => commands::refresh::refresh(&cache).await,
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action, repair } => commands::tap::tap(action, repair, Some(&cache)).await,
-        Commands::Doctor { fix } => commands::doctor::doctor(&cache, fix).await,
+        Commands::Doctor { fix, deep } => commands::doctor::doctor(&cache, fix, deep).await,
         Commands::Bundle {
             file,
             dry_run,

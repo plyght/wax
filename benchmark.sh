@@ -15,47 +15,51 @@ die() { echo -e "${RED}error: $*${NC}" >&2; exit 1; }
 
 [ -x "$WAX" ]  || die "wax not found at $WAX — set WAX=/path/to/wax or build with 'cargo build --release'"
 command -v "$BREW" &>/dev/null || die "brew not found — install Homebrew/Linuxbrew first"
-command -v bc &>/dev/null || die "bc required for float math"
+command -v awk &>/dev/null || die "awk required for float math"
 
 # ---------- helpers -----------------------------------------------------------
 
 timeit() {
-    local t
-    t=$( { time "$@" >/dev/null 2>&1; } 2>&1 | grep real | sed 's/.*m//;s/s//')
-    # Ensure we have a valid number
-    if [[ -z "$t" || ! "$t" =~ ^[0-9.]+$ ]]; then
-        echo "0.000"
-    else
-        echo "$t"
+    local t status
+    local TIMEFORMAT='%3R'
+    set +e
+    t=$( { time "$@" >/dev/null 2>&1; } 2>&1 )
+    status=$?
+    set -e
+    if [[ $status -ne 0 || -z "$t" || ! "$t" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        die "benchmark command failed or timing was invalid: $*"
     fi
+    echo "$t"
 }
 
 avg() {
-    local count=$#
-    if [[ $count -eq 0 ]]; then
-        echo "0.000"
-        return
-    fi
-    local sum=0
-    for v in "$@"; do
-        # Skip empty or invalid values
-        if [[ -n "$v" && "$v" =~ ^[0-9.]+$ ]]; then
-            sum=$(echo "scale=3; $sum + $v" | bc)
-        fi
-    done
-    echo "scale=3; $sum / $count" | bc
+    awk '
+        BEGIN { count = 0; sum = 0 }
+        /^[0-9]+([.][0-9]+)?$/ { count++; sum += $1 }
+        END {
+            if (count == 0) {
+                print "0.000"
+            } else {
+                printf "%.3f\n", sum / count
+            }
+        }
+    ' <<< "$(printf "%s\n" "$@")"
 }
 
 speedup() {
-    # Handle empty or zero values
-    if [[ -z "$1" || -z "$2" || "$2" == "0" || "$1" == "0" ]]; then
-        echo "N/A"
-        return
-    fi
-    echo "scale=1; $1 / $2" | bc
+    awk -v base="$1" -v candidate="$2" '
+        BEGIN {
+            if (base <= 0 || candidate <= 0) {
+                print "N/A"
+            } else {
+                printf "%.1f\n", base / candidate
+            }
+        }
+    '
 }
 
 bench() {
+    local __out="$1"; shift
     local label="$1"; shift
     local times=()
     for i in $(seq 1 "$RUNS"); do
@@ -65,14 +69,14 @@ bench() {
     done
     local a; a=$(avg "${times[@]}")
     printf "    ${BOLD}avg  %ss${NC}   (%s)\n" "$a" "$label"
-    echo "$a"
+    printf -v "$__out" '%s' "$a"
 }
 
 # ---------- system info -------------------------------------------------------
 
 echo -e "\n${BOLD}=== System ===${NC}"
 if command -v fastfetch &>/dev/null; then
-    fastfetch --logo none 2>/dev/null | grep -E "OS:|Kernel:|CPU:|Memory:|Host:" | sed 's/^\s*/  /'
+    fastfetch --logo none 2>/dev/null | grep -E "OS:|Kernel:|CPU:|Memory:|Host:" | sed 's/^[[:space:]]*/  /'
 else
     echo "  OS:     $(uname -sr)"
     echo "  CPU:    $(grep 'model name' /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || sysctl -n machdep.cpu.brand_string 2>/dev/null)"
@@ -88,11 +92,11 @@ echo -e "\n${BOLD}=== 1. Update (index/formula sync) ===${NC}"
 
 echo -e "\n  ${CYAN}wax update (warm cache)${NC}"
 "$WAX" update >/dev/null 2>&1   # prime
-wax_update=$(bench "wax warm" "$WAX" update)
+bench wax_update "wax warm" "$WAX" update
 
 echo -e "\n  ${CYAN}brew update (warm cache)${NC}"
 "$BREW" update >/dev/null 2>&1  # prime
-brew_update=$(bench "brew warm" "$BREW" update)
+bench brew_update "brew warm" "$BREW" update
 
 echo -e "\n  speedup: ${GREEN}$(speedup "$brew_update" "$wax_update") faster${NC}"
 
@@ -101,10 +105,10 @@ echo -e "\n  speedup: ${GREEN}$(speedup "$brew_update" "$wax_update") faster${NC
 echo -e "\n${BOLD}=== 2. Search (nginx) ===${NC}"
 
 echo -e "\n  ${CYAN}wax search nginx${NC}"
-wax_search=$(bench "wax" "$WAX" search nginx)
+bench wax_search "wax" "$WAX" search nginx
 
 echo -e "\n  ${CYAN}brew search nginx${NC}"
-brew_search=$(bench "brew" "$BREW" search nginx)
+bench brew_search "brew" "$BREW" search nginx
 
 echo -e "\n  speedup: ${GREEN}$(speedup "$brew_search" "$wax_search") faster${NC}"
 
@@ -113,10 +117,10 @@ echo -e "\n  speedup: ${GREEN}$(speedup "$brew_search" "$wax_search") faster${NC
 echo -e "\n${BOLD}=== 3. Info (nginx) ===${NC}"
 
 echo -e "\n  ${CYAN}wax info nginx${NC}"
-wax_info=$(bench "wax" "$WAX" info nginx)
+bench wax_info "wax" "$WAX" info nginx
 
 echo -e "\n  ${CYAN}brew info nginx${NC}"
-brew_info=$(bench "brew" "$BREW" info nginx)
+bench brew_info "brew" "$BREW" info nginx
 
 echo -e "\n  speedup: ${GREEN}$(speedup "$brew_info" "$wax_info") faster${NC}"
 
@@ -132,7 +136,7 @@ for i in $(seq 1 "$RUNS"); do
     wax_tree_times+=("$t")
     printf "    run %-2s %ss\n" "$i" "$t"
 done
-wax_tree=$(avg "$(IFS=,; echo "${wax_tree_times[*]}")")
+wax_tree=$(avg "${wax_tree_times[@]}")
 printf "    ${BOLD}avg  %ss${NC}   (wax --user)\n" "$wax_tree"
 
 echo -e "\n  ${CYAN}brew install tree (cold)${NC}"
@@ -143,7 +147,7 @@ for i in $(seq 1 "$RUNS"); do
     brew_tree_times+=("$t")
     printf "    run %-2s %ss\n" "$i" "$t"
 done
-brew_tree=$(avg "$(IFS=,; echo "${brew_tree_times[*]}")")
+brew_tree=$(avg "${brew_tree_times[@]}")
 printf "    ${BOLD}avg  %ss${NC}   (brew)\n" "$brew_tree"
 
 echo -e "\n  speedup: ${GREEN}$(speedup "$brew_tree" "$wax_tree") faster${NC}"
@@ -159,7 +163,7 @@ for i in $(seq 1 "$RUNS"); do
     wax_multi_times+=("$t")
     printf "    run %-2s %ss\n" "$i" "$t"
 done
-wax_multi=$(avg "$(IFS=,; echo "${wax_multi_times[*]}")")
+wax_multi=$(avg "${wax_multi_times[@]}")
 printf "    ${BOLD}avg  %ss${NC}   (wax --user, parallel)\n" "$wax_multi"
 
 echo -e "\n  ${CYAN}brew install ripgrep bat fd (cold)${NC}"
@@ -170,7 +174,7 @@ for i in $(seq 1 "$RUNS"); do
     brew_multi_times+=("$t")
     printf "    run %-2s %ss\n" "$i" "$t"
 done
-brew_multi=$(avg "$(IFS=,; echo "${brew_multi_times[*]}")")
+brew_multi=$(avg "${brew_multi_times[@]}")
 printf "    ${BOLD}avg  %ss${NC}   (brew, sequential)\n" "$brew_multi"
 
 echo -e "\n  speedup: ${GREEN}$(speedup "$brew_multi" "$wax_multi") faster${NC}"
