@@ -190,7 +190,7 @@ enum Commands {
         packages: Vec<String>,
         #[arg(long)]
         cask: bool,
-        #[arg(long, help = "Reinstall all installed formulae")]
+        #[arg(long, help = "Reinstall all installed formulae and casks")]
         all: bool,
     },
 

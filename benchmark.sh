@@ -2,12 +2,14 @@
 # wax vs Homebrew benchmark script
 # Run from the repo root: bash benchmark.sh
 # Requires: wax (release build or on PATH), brew
+# Install benchmarks are destructive; enable with WAX_BENCH_INSTALLS=1.
 
 set -euo pipefail
 
 WAX="${WAX:-$(command -v wax 2>/dev/null || echo ./target/release/wax)}"
 BREW="${BREW:-$(command -v brew 2>/dev/null || echo brew)}"
 RUNS="${RUNS:-3}"
+WAX_BENCH_INSTALLS="${WAX_BENCH_INSTALLS:-0}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -49,13 +51,26 @@ avg() {
 speedup() {
     awk -v base="$1" -v candidate="$2" '
         BEGIN {
-            if (base <= 0 || candidate <= 0) {
+            number = "^[0-9]+([.][0-9]+)?$"
+            if (base !~ number || candidate !~ number || base <= 0 || candidate <= 0) {
                 print "N/A"
             } else {
                 printf "%.1f\n", base / candidate
             }
         }
     '
+}
+
+is_number() {
+    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
+
+fmt_time() {
+    if is_number "$1"; then
+        printf "%ss" "$1"
+    else
+        printf "%s" "$1"
+    fi
 }
 
 bench() {
@@ -85,6 +100,7 @@ fi
 echo "  wax:    $("$WAX" --version 2>/dev/null | head -1)"
 echo "  brew:   $("$BREW" --version | head -1)"
 echo "  runs:   $RUNS per benchmark"
+echo "  installs: $([[ "$WAX_BENCH_INSTALLS" == "1" ]] && echo enabled || echo skipped)"
 
 # ---------- 1. update ---------------------------------------------------------
 
@@ -123,6 +139,8 @@ echo -e "\n  ${CYAN}brew info nginx${NC}"
 bench brew_info "brew" "$BREW" info nginx
 
 echo -e "\n  speedup: ${GREEN}$(speedup "$brew_info" "$wax_info") faster${NC}"
+
+if [[ "$WAX_BENCH_INSTALLS" == "1" ]]; then
 
 # ---------- 4. single-package install ----------------------------------------
 
@@ -179,14 +197,23 @@ printf "    ${BOLD}avg  %ss${NC}   (brew, sequential)\n" "$brew_multi"
 
 echo -e "\n  speedup: ${GREEN}$(speedup "$brew_multi" "$wax_multi") faster${NC}"
 
+else
+    echo -e "\n${BOLD}=== 4-5. Install benchmarks skipped ===${NC}"
+    echo "  Set WAX_BENCH_INSTALLS=1 to allow uninstall/reinstall benchmarks."
+    wax_tree="skipped"
+    brew_tree="skipped"
+    wax_multi="skipped"
+    brew_multi="skipped"
+fi
+
 # ---------- summary -----------------------------------------------------------
 
 echo -e "\n${BOLD}=== Summary ===${NC}"
 printf "\n  %-35s %10s %10s %10s\n" "Benchmark" "wax" "brew" "speedup"
 printf  "  %-35s %10s %10s %10s\n" "---------" "---" "----" "-------"
-printf  "  %-35s %9ss %9ss %10s\n" "update (warm)"     "$wax_update" "$brew_update" "$(speedup "$brew_update" "$wax_update")"
-printf  "  %-35s %9ss %9ss %10s\n" "search nginx"      "$wax_search" "$brew_search" "$(speedup "$brew_search" "$wax_search")"
-printf  "  %-35s %9ss %9ss %10s\n" "info nginx"        "$wax_info"   "$brew_info"   "$(speedup "$brew_info"   "$wax_info")"
-printf  "  %-35s %9ss %9ss %10s\n" "install tree"      "$wax_tree"   "$brew_tree"   "$(speedup "$brew_tree"   "$wax_tree")"
-printf  "  %-35s %9ss %9ss %10s\n" "install ripgrep+bat+fd" "$wax_multi" "$brew_multi" "$(speedup "$brew_multi" "$wax_multi")"
+printf  "  %-35s %10s %10s %10s\n" "update (warm)"     "$(fmt_time "$wax_update")" "$(fmt_time "$brew_update")" "$(speedup "$brew_update" "$wax_update")"
+printf  "  %-35s %10s %10s %10s\n" "search nginx"      "$(fmt_time "$wax_search")" "$(fmt_time "$brew_search")" "$(speedup "$brew_search" "$wax_search")"
+printf  "  %-35s %10s %10s %10s\n" "info nginx"        "$(fmt_time "$wax_info")"   "$(fmt_time "$brew_info")"   "$(speedup "$brew_info"   "$wax_info")"
+printf  "  %-35s %10s %10s %10s\n" "install tree"      "$(fmt_time "$wax_tree")"   "$(fmt_time "$brew_tree")"   "$(speedup "$brew_tree"   "$wax_tree")"
+printf  "  %-35s %10s %10s %10s\n" "install ripgrep+bat+fd" "$(fmt_time "$wax_multi")" "$(fmt_time "$brew_multi")" "$(speedup "$brew_multi" "$wax_multi")"
 echo ""

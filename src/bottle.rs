@@ -582,8 +582,6 @@ impl BottleDownloader {
                         // parent and ensure it stays within canonical_dest.
                         if let Some(parent) = full_path.parent() {
                             let resolved = parent.join(&*link_name);
-                            // Normalize components manually, rejecting
-                            // excessive ".." that would escape the root.
                             let mut normalized = PathBuf::new();
                             for component in resolved.components() {
                                 match component {
@@ -601,18 +599,24 @@ impl BottleDownloader {
                                 }
                             }
                             if !normalized.starts_with(&canonical_dest) {
-                                return Err(WaxError::InstallError(format!(
-                                    "Symlink target escapes destination: {} -> {}",
+                                tracing::warn!(
+                                    "Skipping symlink that points outside bottle: {} -> {}",
                                     path.display(),
                                     link_name.display()
-                                )));
+                                );
+                            } else {
+                                std::fs::create_dir_all(parent)?;
+                                if full_path.symlink_metadata().is_ok() {
+                                    std::fs::remove_file(&full_path)?;
+                                }
+                                std::os::unix::fs::symlink(&*link_name, &full_path)?;
                             }
-                            std::fs::create_dir_all(parent)?;
+                        } else {
+                            if full_path.symlink_metadata().is_ok() {
+                                std::fs::remove_file(&full_path)?;
+                            }
+                            std::os::unix::fs::symlink(&*link_name, &full_path)?;
                         }
-                        if full_path.symlink_metadata().is_ok() {
-                            std::fs::remove_file(&full_path)?;
-                        }
-                        std::os::unix::fs::symlink(&*link_name, &full_path)?;
                     }
                     #[cfg(not(unix))]
                     {
@@ -1147,6 +1151,27 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
+    #[cfg(unix)]
+    fn archive_with_symlink(link_path: &str, target: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let tarball = temp.path().join("archive.tar.gz");
+        let file = std::fs::File::create(&tarball).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_mode(0o777);
+        header.set_size(0);
+        header.set_cksum();
+        builder.append_link(&mut header, link_path, target).unwrap();
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+
+        (temp, tarball)
+    }
+
     // ── num_connections ──────────────────────────────────────────────────────
 
     #[test]
@@ -1210,6 +1235,45 @@ mod tests {
         let path = std::path::Path::new("/tmp/wax-test-nonexistent-file-xyz-123.tar.gz");
         let result = BottleDownloader::verify_checksum(path, "abc123");
         assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_keeps_safe_relative_symlink() {
+        let (_archive_dir, tarball) = archive_with_symlink("bin/tool", "../lib/tool");
+        let dest = tempfile::tempdir().unwrap();
+
+        BottleDownloader::extract(&tarball, dest.path()).unwrap();
+
+        let link = dest.path().join("bin/tool");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(link).unwrap(),
+            PathBuf::from("../lib/tool")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_skips_relative_symlink_that_escapes_destination() {
+        let (_archive_dir, tarball) = archive_with_symlink("bin/tool", "../../outside");
+        let dest = tempfile::tempdir().unwrap();
+
+        BottleDownloader::extract(&tarball, dest.path()).unwrap();
+
+        assert!(dest.path().join("bin/tool").symlink_metadata().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_rejects_absolute_symlink_target() {
+        let (_archive_dir, tarball) = archive_with_symlink("bin/tool", "/tmp/outside");
+        let dest = tempfile::tempdir().unwrap();
+
+        let result = BottleDownloader::extract(&tarball, dest.path());
+
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("absolute"));
     }
 
     #[test]

@@ -312,7 +312,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         None
     };
 
-    let mut download_tasks: JoinSet<Result<PreDownloaded>> = JoinSet::new();
+    let mut download_tasks: JoinSet<(String, Result<PreDownloaded>)> = JoinSet::new();
     for pkg in outdated.iter().filter(|pkg| !pkg.is_cask) {
         let Some(formula) = formula_by_name.get(pkg.name.as_str()) else {
             continue;
@@ -341,53 +341,70 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         let totals = Arc::clone(&formula_totals);
 
         download_tasks.spawn(async move {
-            let permit = sem.acquire().await.unwrap();
-            crate::signal::check_cancelled()?;
+            let task_name = name.clone();
+            let result = async {
+                let permit = sem.acquire().await.unwrap();
+                crate::signal::check_cancelled()?;
 
-            let tarball = tmp.path().join(format!("{}-{}.tar.gz", name, version));
-            let pb = multi_ref.insert_from_back(1, ProgressBar::new(0));
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template(PROGRESS_BAR_TEMPLATE)
-                    .unwrap()
-                    .progress_chars(PROGRESS_BAR_CHARS),
-            );
-            pb.set_message(name.clone());
+                let tarball = tmp.path().join(format!("{}-{}.tar.gz", name, version));
+                let pb = multi_ref.insert_from_back(1, ProgressBar::new(0));
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(PROGRESS_BAR_TEMPLATE)
+                        .unwrap()
+                        .progress_chars(PROGRESS_BAR_CHARS),
+                );
+                pb.set_message(name.clone());
 
-            dl.download(&url, &tarball, Some(&pb), conns, Some(totals.as_ref()))
-                .await?;
-            pb.finish_and_clear();
+                let download_result = dl
+                    .download(&url, &tarball, Some(&pb), conns, Some(totals.as_ref()))
+                    .await;
+                pb.finish_and_clear();
+                download_result?;
 
-            // Release the download permit before extraction.
-            drop(permit);
+                // Release the download permit before extraction.
+                drop(permit);
 
-            BottleDownloader::verify_checksum(&tarball, &sha256)?;
+                BottleDownloader::verify_checksum(&tarball, &sha256)?;
 
-            let extract_dir = tmp.path().join(&name);
-            BottleDownloader::extract(&tarball, &extract_dir)?;
+                let extract_dir = tmp.path().join(&name);
+                BottleDownloader::extract(&tarball, &extract_dir)?;
 
-            Ok::<_, WaxError>(PreDownloaded {
-                name,
-                version,
-                extract_dir,
-                bottle_sha: sha256,
-                bottle_rebuild: rebuild,
-                _temp_dir: tmp,
-            })
+                Ok::<_, WaxError>(PreDownloaded {
+                    name,
+                    version,
+                    extract_dir,
+                    bottle_sha: sha256,
+                    bottle_rebuild: rebuild,
+                    _temp_dir: tmp,
+                })
+            }
+            .await;
+            (task_name, result)
         });
     }
 
     let mut pre_downloaded: HashMap<String, PreDownloaded> = HashMap::new();
+    let mut failed_predownloads: HashSet<String> = HashSet::new();
     while let Some(task) = download_tasks.join_next().await {
         match task {
-            Ok(Ok(d)) => {
+            Ok((_, Ok(d))) => {
                 pre_downloaded.insert(d.name.clone(), d);
             }
-            Ok(Err(e)) => {
-                let _ = multi.println(format!("{} download failed: {}", style("✗").red(), e));
+            Ok((name, Err(e))) => {
+                failed_predownloads.insert(name.clone());
+                let _ = multi.println(format!(
+                    "{} {} download failed: {}",
+                    style("✗").red(),
+                    style(&name).magenta(),
+                    e
+                ));
             }
             Err(e) => {
-                let _ = multi.println(format!("{} task error: {}", style("✗").red(), e));
+                return Err(WaxError::InstallError(format!(
+                    "download worker failed before upgrade started: {}",
+                    e
+                )));
             }
         }
     }
@@ -417,6 +434,17 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         let _critical = CriticalSection::new();
 
         let label = format!("({}/{}) {}", i + 1, formula_total, pkg.name);
+
+        if failed_predownloads.contains(&pkg.name) {
+            fail_count += 1;
+            let _ = multi.println(format!(
+                "{} {} skipped: pre-download failed, leaving installed version in place",
+                style("✗").red(),
+                style(&pkg.name).magenta()
+            ));
+            failed_names.push(pkg.name);
+            continue;
+        }
 
         let spinner = multi.insert_from_back(1, ProgressBar::new_spinner());
         spinner.set_style(
@@ -650,12 +678,14 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                     ));
                 }
                 Err(e) => {
+                    fail_count += 1;
                     let _ = multi.println(format!(
                         "  {} {} reinstall failed: {}",
                         style("✗").red(),
                         style(dep_name).magenta(),
                         e
                     ));
+                    failed_names.push(dep_name.clone());
                 }
             }
         }
