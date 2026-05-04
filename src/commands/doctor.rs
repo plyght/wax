@@ -119,17 +119,17 @@ fn print_check_result(title: &str, result: &DiagResult, elapsed: Duration) {
     }
 }
 
-pub async fn doctor(cache: &Cache, fix: bool, deep: bool) -> Result<()> {
+pub async fn doctor(cache: &Cache, fix: bool, full: bool) -> Result<()> {
     let mut aggregate = DiagResult::new(fix);
     let cache = cache.clone();
     let start = Instant::now();
 
-    let run_deep_checks = fix || deep;
+    let run_full_checks = fix || full;
 
     if fix {
         println!("{}", style("running wax doctor --fix").bold());
-    } else if deep {
-        println!("{}", style("running wax doctor --deep").bold());
+    } else if full {
+        println!("{}", style("running wax doctor --full").bold());
     } else {
         println!("{}", style("running wax doctor (quick)").bold());
     }
@@ -210,7 +210,7 @@ pub async fn doctor(cache: &Cache, fix: bool, deep: bool) -> Result<()> {
         },
     ];
 
-    if run_deep_checks {
+    if run_full_checks {
         checks.push(Check {
             title: "wax update",
             run: Box::pin(async move { check_wax_update(fix).await }),
@@ -295,7 +295,7 @@ pub async fn doctor(cache: &Cache, fix: bool, deep: bool) -> Result<()> {
         parts.join(", "),
         style(format!("({:.2}s)", start.elapsed().as_secs_f32())).dim()
     );
-    if !run_deep_checks {
+    if !run_full_checks {
         println!(
             "{} {} slow checks skipped",
             style("skipped:").dim(),
@@ -310,11 +310,11 @@ pub async fn doctor(cache: &Cache, fix: bool, deep: bool) -> Result<()> {
             style("wax doctor --fix").yellow()
         );
     }
-    if !run_deep_checks {
+    if !run_full_checks {
         println!(
             "{} run {} for self-update, bottle relocation, and code-signature scans",
             style("hint:").dim(),
-            style("wax doctor --deep").yellow()
+            style("wax doctor --full").yellow()
         );
     }
 

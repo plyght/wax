@@ -301,8 +301,12 @@ enum Commands {
     Doctor {
         #[arg(long, help = "Automatically fix detected issues")]
         fix: bool,
-        #[arg(long, help = "Run slower deep bottle and code-signature scans")]
-        deep: bool,
+        #[arg(
+            long,
+            alias = "deep",
+            help = "Run full diagnostics, including slower network, bottle, and code-signature scans"
+        )]
+        full: bool,
     },
 
     #[command(about = "Install packages from a Waxfile (formulae, casks, cargo, uv)")]
@@ -656,7 +660,7 @@ async fn main() -> Result<()> {
         Commands::__RefreshState => commands::refresh::refresh(&cache).await,
         Commands::Sync => commands::sync::sync(&cache).await,
         Commands::Tap { action, repair } => commands::tap::tap(action, repair, Some(&cache)).await,
-        Commands::Doctor { fix, deep } => commands::doctor::doctor(&cache, fix, deep).await,
+        Commands::Doctor { fix, full } => commands::doctor::doctor(&cache, fix, full).await,
         Commands::Bundle {
             file,
             dry_run,

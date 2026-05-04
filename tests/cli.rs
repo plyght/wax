@@ -79,11 +79,11 @@ fn subcommand_help_exits_zero() {
 }
 
 #[test]
-fn doctor_help_mentions_deep_flag() {
+fn doctor_help_mentions_full_flag() {
     let out = wax().args(["doctor", "--help"]).output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("--deep"), "{stdout}");
+    assert!(stdout.contains("--full"), "{stdout}");
 }
 
 // ── list / tap list work offline ─────────────────────────────────────────────
