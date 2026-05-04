@@ -42,10 +42,14 @@ impl Tap {
             }
         }
 
-        if expanded.starts_with("http://")
-            || expanded.starts_with("https://")
-            || expanded.starts_with("git@")
-        {
+        if expanded.starts_with("http://") {
+            return Err(WaxError::TapError(
+                "Insecure tap URLs are not supported; use https://, git@, or a local path"
+                    .to_string(),
+            ));
+        }
+
+        if expanded.starts_with("https://") || expanded.starts_with("git@") {
             return Self::new_git(&expanded);
         }
 
