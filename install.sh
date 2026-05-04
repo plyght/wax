@@ -100,16 +100,17 @@ install_from_release() {
     elif command -v shasum &>/dev/null; then
       ACTUAL="$(shasum -a 256 "$TMP" | awk '{print $1}')"
     else
-      warn "sha256sum/shasum not found — skipping integrity check"
-      ACTUAL="$EXPECTED"
+      die "sha256sum or shasum is required to verify release integrity"
     fi
 
     [ "$ACTUAL" = "$EXPECTED" ] || die "SHA256 mismatch — download may be corrupted or tampered with
   expected: $EXPECTED
   actual:   $ACTUAL"
     ok "checksum verified"
+  elif [ "${WAX_NO_VERIFY:-}" = "1" ]; then
+    warn "WAX_NO_VERIFY=1 set — skipping integrity verification"
   else
-    warn "No checksum file for ${VERSION} — skipping integrity verification"
+    die "No checksum file for ${VERSION}; set WAX_NO_VERIFY=1 to install without integrity verification"
   fi
 
   chmod +x "$TMP"
