@@ -13,6 +13,8 @@ BREW="$(command -v brew 2>/dev/null || echo brew)"
 RUNS=3
 WITH_INSTALLS=0
 DOWNLOAD_PROBE=1
+CURL_CONNECT_TIMEOUT=10
+CURL_MAX_TIME=120
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -26,6 +28,7 @@ Options:
   --wax PATH            wax binary to benchmark (default: PATH wax or ./target/release/wax).
   --brew PATH           brew binary to benchmark (default: PATH brew).
   --no-download-probe   Skip bottle CDN download-only probes.
+  --curl-timeout SECS   Max seconds for each download probe (default: 120).
   -h, --help            Show this help.
 
 Install benchmarks uninstall/reinstall tree, ripgrep, bat, and fd.
@@ -59,6 +62,11 @@ while [[ $# -gt 0 ]]; do
             DOWNLOAD_PROBE=0
             shift
             ;;
+        --curl-timeout)
+            [[ $# -ge 2 ]] || die "--curl-timeout requires a value"
+            CURL_MAX_TIME="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -70,6 +78,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$RUNS" =~ ^[0-9]+$ && "$RUNS" -gt 0 ]] || die "--runs must be a positive integer"
+[[ "$CURL_MAX_TIME" =~ ^[0-9]+$ && "$CURL_MAX_TIME" -gt 0 ]] || die "--curl-timeout must be a positive integer"
 [ -x "$WAX" ] || die "wax not found at $WAX - set --wax /path/to/wax or build with 'cargo build --release'"
 command -v "$BREW" &>/dev/null || die "brew not found - install Homebrew/Linuxbrew first"
 command -v awk &>/dev/null || die "awk required for float math"
@@ -167,9 +176,11 @@ bench() {
     local label="$1"; shift
     local times=()
     for i in $(seq 1 "$RUNS"); do
-        local t; t=$(timeit "$@")
+        local t
+        printf "    run %-2s running..." "$i"
+        t=$(timeit "$@")
         times+=("$t")
-        printf "    run %-2s %ss\n" "$i" "$t"
+        printf "\r    run %-2s %ss       \n" "$i" "$t"
     done
     local a; a=$(avg "${times[@]}")
     printf "    ${BOLD}avg  %ss${NC}   (%s)\n" "$a" "$label"
@@ -276,27 +287,29 @@ measure_download_group() {
     echo -e "\n  ${CYAN}download-only probe: ${label}${NC}"
     for formula in "$@"; do
         local url token stats seconds bytes
+        printf "    %-12s resolving bottle..." "$formula"
         url="$(formula_bottle_url "$formula" | head -1 || true)"
         if [[ -z "$url" ]]; then
-            printf "    %-12s %s\n" "$formula" "N/A (no bottle URL)"
+            printf "\r    %-12s %s              \n" "$formula" "N/A (no bottle URL)"
             continue
         fi
         token="$(ghcr_token_for_url "$url" || true)"
+        printf "\r    %-12s downloading..." "$formula"
         if [[ -n "$token" ]]; then
-            stats="$(curl -fL -H "Authorization: Bearer ${token}" --output /dev/null --write-out '%{time_total} %{size_download}' "$url" 2>/dev/null || true)"
+            stats="$(curl -fL --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" -H "Authorization: Bearer ${token}" --output /dev/null --write-out '%{time_total} %{size_download}' "$url" 2>/dev/null || true)"
         else
-            stats="$(curl -fL --output /dev/null --write-out '%{time_total} %{size_download}' "$url" 2>/dev/null || true)"
+            stats="$(curl -fL --connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time "$CURL_MAX_TIME" --output /dev/null --write-out '%{time_total} %{size_download}' "$url" 2>/dev/null || true)"
         fi
         seconds="${stats%% *}"
         bytes="${stats##* }"
         if ! is_number "$seconds" || ! is_number "$bytes" || [[ "$bytes" == "0" ]]; then
-            printf "    %-12s %s\n" "$formula" "N/A (download failed)"
+            printf "\r    %-12s %s              \n" "$formula" "N/A (download failed or timed out)"
             continue
         fi
         total_time="$(calc "$total_time + $seconds")"
         total_bytes="$(calc "$total_bytes + $bytes")"
         measured=1
-        printf "    %-12s %8s in %7s @ %s\n" "$formula" "$(fmt_bytes "$bytes")" "$(fmt_time "$seconds")" "$(fmt_speed "$bytes" "$seconds")"
+        printf "\r    %-12s %8s in %7s @ %s              \n" "$formula" "$(fmt_bytes "$bytes")" "$(fmt_time "$seconds")" "$(fmt_speed "$bytes" "$seconds")"
     done
 
     if [[ "$measured" != "1" ]]; then
@@ -332,6 +345,9 @@ printf "  brew:    %s (%s)\n" "$BREW_VERSION" "$BREW"
 printf "  runs:    %s per benchmark\n" "$RUNS"
 printf "  installs: %s\n" "$INSTALL_MODE"
 printf "  download probe: %s\n" "$DOWNLOAD_MODE"
+if [[ "$DOWNLOAD_PROBE" == "1" ]]; then
+    printf "  download timeout: %ss per bottle\n" "$CURL_MAX_TIME"
+fi
 
 # ---------- 1. update ---------------------------------------------------------
 
@@ -383,9 +399,10 @@ measure_download_group tree_dl_time tree_dl_bytes "tree" tree
 wax_tree_times=()
 for i in $(seq 1 "$RUNS"); do
     "$WAX" uninstall tree >/dev/null 2>&1 || true
+    printf "    wax run %-2s installing..." "$i"
     t=$(timeit "$WAX" install tree --user)
     wax_tree_times+=("$t")
-    printf "    wax run %-2s %ss\n" "$i" "$t"
+    printf "\r    wax run %-2s %ss       \n" "$i" "$t"
 done
 wax_tree=$(avg "${wax_tree_times[@]}")
 wax_tree_adj=$(sub_nonnegative "$wax_tree" "$tree_dl_time")
@@ -394,9 +411,10 @@ printf "    ${BOLD}wax avg   %ss wall, %s download-adjusted${NC}\n" "$wax_tree" 
 brew_tree_times=()
 for i in $(seq 1 "$RUNS"); do
     "$BREW" uninstall --force tree >/dev/null 2>&1 || true
+    printf "    brew run %-2s installing..." "$i"
     t=$(timeit "$BREW" install tree)
     brew_tree_times+=("$t")
-    printf "    brew run %-2s %ss\n" "$i" "$t"
+    printf "\r    brew run %-2s %ss       \n" "$i" "$t"
 done
 brew_tree=$(avg "${brew_tree_times[@]}")
 brew_tree_adj=$(sub_nonnegative "$brew_tree" "$tree_dl_time")
@@ -415,9 +433,10 @@ measure_download_group multi_dl_time multi_dl_bytes "ripgrep + bat + fd" ripgrep
 wax_multi_times=()
 for i in $(seq 1 "$RUNS"); do
     "$WAX" uninstall ripgrep bat fd >/dev/null 2>&1 || true
+    printf "    wax run %-2s installing..." "$i"
     t=$(timeit "$WAX" install ripgrep bat fd --user)
     wax_multi_times+=("$t")
-    printf "    wax run %-2s %ss\n" "$i" "$t"
+    printf "\r    wax run %-2s %ss       \n" "$i" "$t"
 done
 wax_multi=$(avg "${wax_multi_times[@]}")
 wax_multi_adj=$(sub_nonnegative "$wax_multi" "$multi_dl_time")
@@ -426,9 +445,10 @@ printf "    ${BOLD}wax avg   %ss wall, %s download-adjusted${NC}\n" "$wax_multi"
 brew_multi_times=()
 for i in $(seq 1 "$RUNS"); do
     "$BREW" uninstall --force ripgrep bat fd >/dev/null 2>&1 || true
+    printf "    brew run %-2s installing..." "$i"
     t=$(timeit "$BREW" install ripgrep bat fd)
     brew_multi_times+=("$t")
-    printf "    brew run %-2s %ss\n" "$i" "$t"
+    printf "\r    brew run %-2s %ss       \n" "$i" "$t"
 done
 brew_multi=$(avg "${brew_multi_times[@]}")
 brew_multi_adj=$(sub_nonnegative "$brew_multi" "$multi_dl_time")
@@ -473,6 +493,7 @@ brew: $BREW_VERSION ($BREW)
 runs: $RUNS
 install_benchmarks: $INSTALL_MODE
 download_probe: $DOWNLOAD_MODE
+download_timeout_seconds: $([[ "$DOWNLOAD_PROBE" == "1" ]] && echo "$CURL_MAX_TIME" || echo "N/A")
 download_tree: $(fmt_bytes "$tree_dl_bytes") in $(fmt_time "$tree_dl_time") @ $(fmt_speed "$tree_dl_bytes" "$tree_dl_time")
 download_ripgrep_bat_fd: $(fmt_bytes "$multi_dl_bytes") in $(fmt_time "$multi_dl_time") @ $(fmt_speed "$multi_dl_bytes" "$multi_dl_time")
 
