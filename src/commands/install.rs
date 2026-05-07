@@ -615,13 +615,20 @@ async fn install_impl(
         let mut tapped = HashSet::new();
         for package_name in package_names {
             if let Some(tap_name) = tap_name_from_qualified_package(package_name) {
-                if tapped.contains(&tap_name) || tap_manager.has_tap(&tap_name).await {
+                if tapped.contains(&tap_name) {
                     continue;
                 }
-                if !quiet {
-                    println!("tapping {}", style(&tap_name).cyan());
+                if tap_manager.has_tap(&tap_name).await {
+                    if !quiet {
+                        println!("updating tap {}", style(&tap_name).cyan());
+                    }
+                    tap_manager.update_tap(&tap_name).await?;
+                } else {
+                    if !quiet {
+                        println!("tapping {}", style(&tap_name).cyan());
+                    }
+                    tap_manager.add_tap(&tap_name).await?;
                 }
-                tap_manager.add_tap(&tap_name).await?;
                 cache.invalidate_tap_cache(&tap_name).await?;
                 tapped.insert(tap_name);
             }
