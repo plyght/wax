@@ -11,6 +11,7 @@ use crate::signal::{
     check_cancelled, clear_active_multi, clear_current_op, set_active_multi, set_current_op,
     CriticalSection,
 };
+use crate::tap::TapManager;
 use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
 use crate::version::{is_same_or_newer, WAX_VERSION};
 use console::style;
@@ -56,6 +57,7 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
     let start = std::time::Instant::now();
 
     cache.ensure_fresh().await?;
+    refresh_taps(cache).await?;
 
     if packages.is_empty() {
         upgrade_all(cache, dry_run, start).await
@@ -90,6 +92,27 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
         }
         Ok(())
     }
+}
+
+async fn refresh_taps(cache: &Cache) -> Result<()> {
+    let mut tap_manager = TapManager::new()?;
+    tap_manager.load().await?;
+    let taps = tap_manager
+        .list_taps()
+        .iter()
+        .map(|tap| tap.full_name.clone())
+        .collect::<Vec<_>>();
+
+    for tap in taps {
+        tap_manager.update_tap(&tap).await?;
+        cache.invalidate_tap_cache(&tap).await?;
+    }
+
+    Ok(())
+}
+
+fn package_name_from_qualified_name(package_name: &str) -> &str {
+    package_name.rsplit('/').next().unwrap_or(package_name)
 }
 
 async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) -> Result<()> {
@@ -709,20 +732,30 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
     let state = InstallState::new()?;
     state.sync_from_cellar().await?;
     let installed_packages = state.load().await?;
+    let installed_name = package_name_from_qualified_name(formula_name);
 
-    let installed = if let Some(pkg) = installed_packages.get(formula_name) {
+    let installed = if let Some(pkg) = installed_packages
+        .get(formula_name)
+        .or_else(|| installed_packages.get(installed_name))
+    {
         pkg.clone()
     } else {
         let cask_state = CaskState::new()?;
         let installed_casks = cask_state.load().await?;
 
-        if installed_casks.contains_key(formula_name) {
-            return upgrade_cask_single(cache, formula_name, dry_run).await;
+        if installed_casks.contains_key(formula_name)
+            || installed_casks.contains_key(installed_name)
+        {
+            return upgrade_cask_single(cache, installed_name, dry_run).await;
         }
 
         let updated_packages = state.load().await?;
 
-        if let Some(pkg) = updated_packages.get(formula_name).cloned() {
+        if let Some(pkg) = updated_packages
+            .get(formula_name)
+            .or_else(|| updated_packages.get(installed_name))
+            .cloned()
+        {
             pkg
         } else if formula_name == "wax" {
             if dry_run {
@@ -745,7 +778,7 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
             "{}@{} is pinned — skipping (run `wax unpin {}` to allow upgrades)",
             style(formula_name).magenta(),
             style(&installed.version).dim(),
-            formula_name
+            installed_name
         );
         return Ok(());
     }
@@ -789,7 +822,13 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
         style(&latest_version).green()
     );
 
-    upgrade_formula_internal(cache, formula_name, Some(installed.install_mode)).await?;
+    upgrade_formula_internal(
+        cache,
+        &installed.name,
+        &formula.full_name,
+        Some(installed.install_mode),
+    )
+    .await?;
 
     println!(
         "{} {} upgraded",
@@ -867,12 +906,13 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
 
 async fn upgrade_formula_internal(
     cache: &Cache,
+    installed_name: &str,
     formula_name: &str,
     install_mode: Option<InstallMode>,
 ) -> Result<()> {
     let _critical = CriticalSection::new();
 
-    uninstall::uninstall_quiet(cache, formula_name, false).await?;
+    uninstall::uninstall_quiet(cache, installed_name, false).await?;
 
     let (user_flag, global_flag) = match install_mode {
         Some(InstallMode::User) => (true, false),
@@ -1052,4 +1092,18 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
     outdated.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(outdated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::package_name_from_qualified_name;
+
+    #[test]
+    fn package_name_from_qualified_name_uses_last_segment() {
+        assert_eq!(
+            package_name_from_qualified_name("undivisible/tap/vro"),
+            "vro"
+        );
+        assert_eq!(package_name_from_qualified_name("vro"), "vro");
+    }
 }
