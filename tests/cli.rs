@@ -46,6 +46,7 @@ fn help_output_contains_subcommands() {
         "install",
         "search",
         "update",
+        "self-update",
         "list",
         "info",
         "upgrade",
@@ -63,6 +64,7 @@ fn subcommand_help_exits_zero() {
     for sub in &[
         "install",
         "search",
+        "self-update",
         "info",
         "list",
         "upgrade",
@@ -110,6 +112,16 @@ fn upgrade_help_mentions_self_nightly_shorts() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("-s"), "{stdout}");
     assert!(stdout.contains("-n"), "{stdout}");
+    assert!(stdout.contains("--clean"), "{stdout}");
+}
+
+#[test]
+fn self_update_help_mentions_stable_and_nightly_flags() {
+    let out = wax().args(["self-update", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--nightly"), "{stdout}");
+    assert!(stdout.contains("--force"), "{stdout}");
     assert!(stdout.contains("--clean"), "{stdout}");
 }
 

@@ -89,6 +89,8 @@ wax update -sn           # same as above
 wax update -sf           # force reinstall stable
 wax update sn --clean    # nightly + clean cargo git cache
 wax update sn --no-clean # nightly + keep cargo cache
+wax self-update          # stable self-update
+wax self-update --nightly # nightly self-update from GitHub HEAD
 
 # Search packages
 wax search nginx
