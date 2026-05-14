@@ -8,6 +8,17 @@ use console::style;
 use std::collections::HashSet;
 use tracing::instrument;
 
+fn tap_slug_from_qualified_name(qualified: &str) -> Option<String> {
+    let parts: Vec<&str> = qualified.split('/').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    if parts[0] == "homebrew" && matches!(parts[1], "core" | "cask" | "services") {
+        return None;
+    }
+    Some(format!("{}/{}", parts[0], parts[1]))
+}
+
 #[instrument(skip(api_client, cache))]
 pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool) -> Result<()> {
     cache.ensure_fresh().await?;
@@ -69,6 +80,10 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
         style(&installed_suffix).dim()
     );
 
+    if let Some(ref tap) = tap_slug_from_qualified_name(&formula.full_name) {
+        println!("{} {}", style("tap:").dim(), style(tap).cyan());
+    }
+
     if let Some(desc) = &formula.desc {
         println!("{}", desc);
     }
@@ -104,7 +119,11 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     // Show "why installed" section if the package is installed locally
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
-    if let Some(pkg) = installed_packages.get(name) {
+    let installed_pkg = installed_packages
+        .get(name)
+        .or_else(|| installed_packages.get(formula.full_name.as_str()))
+        .or_else(|| installed_packages.get(&formula.name));
+    if let Some(pkg) = installed_pkg {
         println!();
         let installed_names: HashSet<String> = installed_packages.keys().cloned().collect();
         let dependents: Vec<&str> = formulae
@@ -151,7 +170,7 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
 
     let casks = cache.load_casks().await?;
 
-    let _cask_summary = casks
+    let cask_summary = casks
         .iter()
         .find(|c| c.token == name || c.full_token == name)
         .ok_or_else(|| WaxError::CaskNotFound(name.to_string()))?;
@@ -162,7 +181,11 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
 
     let state = CaskState::new()?;
     let installed_casks = state.load().await?;
-    let installed_version = installed_casks.get(name).map(|i| &i.version);
+    let installed_version = installed_casks
+        .get(name)
+        .or_else(|| installed_casks.get(cask_summary.full_token.as_str()))
+        .or_else(|| installed_casks.get(&cask_summary.token))
+        .map(|i| &i.version);
 
     let installed_suffix = if let Some(installed_ver) = installed_version {
         if installed_ver == &cask.version {
@@ -182,6 +205,10 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
         style("(cask)").yellow(),
         style(installed_suffix).dim()
     );
+
+    if let Some(ref tap) = tap_slug_from_qualified_name(&cask_summary.full_token) {
+        println!("{} {}", style("tap:").dim(), style(tap).cyan());
+    }
 
     if let Some(desc) = &cask.desc {
         println!("{}", desc);
@@ -243,4 +270,30 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tap_slug_from_qualified_name;
+
+    #[test]
+    fn tap_slug_from_user_tap_formula() {
+        assert_eq!(
+            tap_slug_from_qualified_name("user/repo/pkg"),
+            Some("user/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn tap_slug_from_homebrew_core_is_none() {
+        assert_eq!(
+            tap_slug_from_qualified_name("homebrew/core/openssl@3"),
+            None
+        );
+    }
+
+    #[test]
+    fn tap_slug_from_short_name_is_none() {
+        assert_eq!(tap_slug_from_qualified_name("tree"), None);
+    }
 }
