@@ -1,6 +1,8 @@
 use crate::error::{Result, WaxError};
+use crate::signal;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tracing::debug;
@@ -66,28 +68,72 @@ pub fn has_sudo_cached() -> bool {
     cached
 }
 
-pub fn acquire_sudo() -> Result<()> {
+fn sudo_password_prompt() -> String {
+    "[wax] Password for %p: ".to_string()
+}
+
+fn interactive_terminal_available() -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .open("/dev/tty")
+        .map(|f| f.is_terminal())
+        .unwrap_or_else(|_| std::io::stdin().is_terminal())
+}
+
+/// Prompt for administrator credentials when needed.
+///
+/// `reason` is shown above the password prompt (e.g. why sudo is required).
+pub fn acquire_sudo_for(reason: Option<&str>) -> Result<()> {
     if is_running_as_root() || has_sudo_cached() {
         return Ok(());
     }
 
-    let status = Command::new("sudo")
-        .args(["-v"])
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| WaxError::InstallError(format!("failed to run sudo: {}", e)))?;
-
-    if !status.success() {
+    if !interactive_terminal_available() {
         return Err(WaxError::InstallError(
-            "sudo authentication failed".to_string(),
+            "Administrator privileges are required but no interactive terminal is available. \
+             Use `wax install --user` for a user-local install, or run from a terminal."
+                .to_string(),
         ));
     }
 
-    SUDO_VALIDATED.store(true, Ordering::SeqCst);
-    debug!("sudo credentials acquired");
-    Ok(())
+    signal::with_suspended_progress(|| {
+        if let Some(reason) = reason {
+            eprintln!();
+            eprintln!("{}", reason);
+        }
+        eprintln!();
+        eprintln!("Administrator privileges are required. Enter your password when prompted.");
+
+        let mut cmd = Command::new("sudo");
+        cmd.args(["-v", "-p", &sudo_password_prompt()]);
+
+        if let Ok(tty) = std::fs::File::open("/dev/tty") {
+            cmd.stdin(Stdio::from(tty.try_clone().map_err(WaxError::IoError)?))
+                .stderr(Stdio::from(tty));
+        } else {
+            cmd.stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
+        }
+
+        let status = cmd
+            .status()
+            .map_err(|e| WaxError::InstallError(format!("failed to run sudo: {}", e)))?;
+
+        if !status.success() {
+            return Err(WaxError::InstallError(
+                "sudo authentication failed or was cancelled".to_string(),
+            ));
+        }
+
+        SUDO_VALIDATED.store(true, Ordering::SeqCst);
+        debug!("sudo credentials acquired");
+        Ok(())
+    })
+}
+
+pub fn acquire_sudo() -> Result<()> {
+    acquire_sudo_for(None)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -190,6 +236,18 @@ pub fn sudo_symlink(src: &Path, dst: &Path) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sudo_password_prompt;
+
+    #[test]
+    fn sudo_password_prompt_is_wax_branded() {
+        let prompt = sudo_password_prompt();
+        assert!(prompt.contains("wax"));
+        assert!(prompt.contains("%p"));
+    }
 }
 
 pub fn get_current_user() -> String {

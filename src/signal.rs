@@ -37,6 +37,19 @@ pub fn clone_active_multi() -> Option<MultiProgress> {
         .and_then(|guard| guard.as_ref().cloned())
 }
 
+/// Run `f` while indicatif progress rendering is paused so interactive prompts
+/// (e.g. `sudo` password) are visible on the terminal.
+pub fn with_suspended_progress<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    if let Some(m) = clone_active_multi() {
+        m.suspend(f)
+    } else {
+        f()
+    }
+}
+
 /// Print a line through the active multi-progress layer when one is registered
 /// (e.g. cask preflight notes). Falls back to `println!` otherwise.
 pub fn println_through_active_multi(msg: impl Into<String>) {

@@ -11,7 +11,9 @@ use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::formula_parser::{BuildSystem, FormulaParser};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
-use crate::signal::{check_cancelled, CriticalSection};
+use crate::signal::{
+    check_cancelled, clear_active_multi, set_active_multi, CriticalSection,
+};
 use crate::system_pm::SystemPm;
 use crate::tap::TapManager;
 use crate::ui::{
@@ -855,6 +857,10 @@ async fn install_impl(
     let cellar = install_mode.cellar_path()?;
 
     let multi = MultiProgress::new();
+    let owns_formula_multi = crate::signal::clone_active_multi().is_none();
+    if owns_formula_multi {
+        set_active_multi(multi.clone());
+    }
 
     let packages_to_install: Vec<_> = all_to_install
         .iter()
@@ -1162,7 +1168,7 @@ async fn install_impl(
                 let spinner = if quiet {
                     ProgressBar::hidden()
                 } else {
-                    let pb = ProgressBar::new_spinner();
+                    let pb = multi.add(ProgressBar::new_spinner());
                     pb.set_style(
                         ProgressStyle::default_spinner()
                             .template("{spinner:.cyan} {msg}")
@@ -1237,6 +1243,9 @@ async fn install_impl(
     }
 
     check_cancelled()?;
+    if owns_formula_multi {
+        clear_active_multi();
+    }
     drop(multi);
 
     let state_snapshot = state.load().await?;

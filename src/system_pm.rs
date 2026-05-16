@@ -367,6 +367,12 @@ async fn which(bin: &str) -> bool {
 /// Run a command, inheriting stdin/stdout/stderr so the user sees all output
 /// and can interact (e.g. sudo password prompt).
 async fn run_visible(program: &str, args: &[&str]) -> Result<()> {
+    if program == "sudo" {
+        tokio::task::spawn_blocking(crate::sudo::acquire_sudo)
+            .await
+            .map_err(|e| WaxError::InstallError(e.to_string()))??;
+    }
+
     println!(
         "  {} {} {}",
         style("→").cyan(),
