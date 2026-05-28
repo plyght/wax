@@ -2,11 +2,12 @@ use crate::api::{Cask, CaskDetails};
 use crate::bottle::{homebrew_prefix, BottleDownloader, DownloadTotals};
 use crate::error::{Result, WaxError};
 use crate::ui::dirs;
+use crate::version::sort_versions;
 use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -69,6 +70,115 @@ fn normalize_existing_prefix(path: &Path) -> PathBuf {
     }
 
     path.to_path_buf()
+}
+
+fn path_modified_unix_seconds(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn latest_version_dir(cask_path: &Path) -> Option<(String, i64)> {
+    let mut version_dates = HashMap::new();
+    let entries = std::fs::read_dir(cask_path).ok()?;
+
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        version_dates.insert(name, path_modified_unix_seconds(&entry.path()));
+    }
+
+    let mut versions = version_dates.keys().cloned().collect::<Vec<_>>();
+    if versions.is_empty() {
+        return None;
+    }
+    sort_versions(&mut versions);
+    let version = versions.pop()?;
+    let install_date = version_dates.get(&version).copied().unwrap_or(0);
+    Some((version, install_date))
+}
+
+fn latest_metadata_version(cask_path: &Path) -> Option<(String, i64)> {
+    let metadata_dir = cask_path.join(".metadata");
+    let mut latest: Option<(String, String, i64)> = None;
+    let version_entries = std::fs::read_dir(metadata_dir).ok()?;
+
+    for version_entry in version_entries.filter_map(|entry| entry.ok()) {
+        let version = version_entry.file_name().to_string_lossy().to_string();
+        if version.starts_with('.') {
+            continue;
+        }
+        let Ok(version_type) = version_entry.file_type() else {
+            continue;
+        };
+        if !version_type.is_dir() {
+            continue;
+        }
+
+        let Ok(timestamp_entries) = std::fs::read_dir(version_entry.path()) else {
+            continue;
+        };
+        for timestamp_entry in timestamp_entries.filter_map(|entry| entry.ok()) {
+            let timestamp = timestamp_entry.file_name().to_string_lossy().to_string();
+            if timestamp.starts_with('.') {
+                continue;
+            }
+            let Ok(timestamp_type) = timestamp_entry.file_type() else {
+                continue;
+            };
+            if !timestamp_type.is_dir() {
+                continue;
+            }
+
+            let install_date = path_modified_unix_seconds(&timestamp_entry.path());
+            let replace = latest
+                .as_ref()
+                .map(|(_, latest_timestamp, _)| timestamp > *latest_timestamp)
+                .unwrap_or(true);
+            if replace {
+                latest = Some((version.clone(), timestamp, install_date));
+            }
+        }
+    }
+
+    latest.map(|(version, _, install_date)| (version, install_date))
+}
+
+fn latest_caskroom_version(cask_path: &Path) -> Option<(String, i64)> {
+    latest_metadata_version(cask_path).or_else(|| latest_version_dir(cask_path))
+}
+
+fn merge_caskroom_entry(
+    casks: &mut HashMap<String, InstalledCask>,
+    name: String,
+    version: String,
+    install_date: i64,
+) {
+    let existing = casks.get(&name).cloned();
+    casks.insert(
+        name.clone(),
+        InstalledCask {
+            name,
+            version,
+            install_date,
+            artifact_type: existing
+                .as_ref()
+                .and_then(|cask| cask.artifact_type.clone()),
+            binary_paths: existing.as_ref().and_then(|cask| cask.binary_paths.clone()),
+            app_name: existing.and_then(|cask| cask.app_name),
+        },
+    );
 }
 
 pub fn cask_path_has_homebrew_metadata(cask_path: &Path) -> bool {
@@ -300,30 +410,48 @@ impl CaskState {
 
     #[allow(dead_code)]
     async fn scan_cask_version_dir(&self, cask_path: &Path) -> Result<(String, i64)> {
-        let mut version = "unknown".to_string();
-        let mut install_date = 0;
+        Ok(latest_caskroom_version(cask_path).unwrap_or_else(|| ("unknown".to_string(), 0)))
+    }
 
-        let mut ver_entries = tokio::fs::read_dir(cask_path).await?;
-        while let Some(ver_entry) = ver_entries.next_entry().await? {
-            let ver_name = ver_entry.file_name().to_string_lossy().to_string();
-            if ver_name.starts_with('.') {
-                continue;
-            }
+    pub async fn sync_from_caskrooms(&self) -> Result<HashSet<String>> {
+        let mut casks = self.load().await?;
+        let mut synced_names = HashSet::new();
+        let mut roots = vec![Self::caskroom_dir()];
+        if let Ok(user_dir) = Self::user_caskroom_dir() {
+            roots.push(user_dir);
+        }
 
-            let t = ver_entry.file_type().await?;
-            if t.is_dir() {
-                version = ver_name;
-                if let Ok(metadata) = ver_entry.metadata().await {
-                    if let Ok(modified) = metadata.modified() {
-                        if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                            install_date = duration.as_secs() as i64;
-                        }
-                    }
+        for root in roots {
+            let entries = match std::fs::read_dir(&root) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+
+            for entry in entries.filter_map(|entry| entry.ok()) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') {
+                    continue;
                 }
-                break;
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_dir() || file_type.is_symlink() {
+                    continue;
+                }
+
+                let Some((version, install_date)) = latest_caskroom_version(&entry.path()) else {
+                    continue;
+                };
+                if version == "unknown" {
+                    continue;
+                }
+                synced_names.insert(name.clone());
+                merge_caskroom_entry(&mut casks, name, version, install_date);
             }
         }
-        Ok((version, install_date))
+
+        self.save(&casks).await?;
+        Ok(synced_names)
     }
 
     pub async fn save(&self, casks: &HashMap<String, InstalledCask>) -> Result<()> {
@@ -1794,5 +1922,42 @@ mod tests {
         assert_eq!(source["tap"], "homebrew/cask");
         assert_eq!(source["ruby_source_path"], "Casks/e/example-app.rb");
         assert_eq!(source["artifacts"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn latest_caskroom_version_prefers_homebrew_metadata() {
+        let temp = tempdir().unwrap();
+        let cask_dir = temp.path().join("example-cask");
+        std::fs::create_dir_all(cask_dir.join("1.0.0")).unwrap();
+        std::fs::create_dir_all(cask_dir.join("2.0.0")).unwrap();
+        std::fs::create_dir_all(cask_dir.join(".metadata/3.0.0/20260101000000.000")).unwrap();
+
+        let (version, _) = latest_caskroom_version(&cask_dir).unwrap();
+
+        assert_eq!(version, "3.0.0");
+    }
+
+    #[test]
+    fn latest_caskroom_version_uses_latest_version_dir_without_metadata() {
+        let temp = tempdir().unwrap();
+        let cask_dir = temp.path().join("example-cask");
+        std::fs::create_dir_all(cask_dir.join("1.0.0")).unwrap();
+        std::fs::create_dir_all(cask_dir.join("2.0.0")).unwrap();
+
+        let (version, _) = latest_caskroom_version(&cask_dir).unwrap();
+
+        assert_eq!(version, "2.0.0");
+    }
+
+    #[test]
+    fn latest_caskroom_version_uses_metadata_without_version_dirs() {
+        let temp = tempdir().unwrap();
+        let cask_dir = temp.path().join("example-cask");
+        std::fs::create_dir_all(cask_dir.join(".metadata/1.0.0/20260101000000.000")).unwrap();
+        std::fs::create_dir_all(cask_dir.join(".metadata/2.0.0/20260201000000.000")).unwrap();
+
+        let (version, _) = latest_caskroom_version(&cask_dir).unwrap();
+
+        assert_eq!(version, "2.0.0");
     }
 }

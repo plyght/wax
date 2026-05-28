@@ -1,10 +1,11 @@
 use crate::api::ApiClient;
 use crate::bottle::{detect_platform, BottleDownloader, DownloadTotals};
 use crate::cache::Cache;
-use crate::cask::CaskState;
+use crate::cask::{CaskState, InstalledCask};
 use crate::commands::self_update::{self_update, Channel};
 use crate::commands::{install, uninstall};
 use crate::deps::find_installed_reverse_dependencies;
+use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
 use crate::signal::{
@@ -55,9 +56,6 @@ enum FormulaUpgradeMsg {
     },
 }
 
-type CaskUpgradeJoinItem =
-    std::result::Result<(OutdatedPackage, std::result::Result<(), WaxError>), WaxError>;
-
 struct UpgradeMultiGuard {
     owns_multi: bool,
 }
@@ -87,8 +85,7 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
     if packages.is_empty() {
         upgrade_all(cache, dry_run, start).await
     } else {
-        let cask_state = CaskState::new()?;
-        let installed_casks = cask_state.load().await?;
+        let installed_casks = sync_cask_state(cache).await?;
         let mut failed_names = Vec::new();
         for package in packages {
             if let Err(e) = if package == "wax" {
@@ -134,6 +131,54 @@ async fn refresh_taps(cache: &Cache) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn merge_discovered_casks(
+    installed_casks: &mut HashMap<String, InstalledCask>,
+    discovered_casks: HashMap<String, InstalledCask>,
+    caskroom_synced_names: &HashSet<String>,
+) {
+    for (name, discovered) in discovered_casks {
+        installed_casks
+            .entry(name.clone())
+            .and_modify(|installed| {
+                if !caskroom_synced_names.contains(&name) && discovered.version != "unknown" {
+                    installed.version = discovered.version.clone();
+                }
+                if !caskroom_synced_names.contains(&name) && discovered.install_date > 0 {
+                    installed.install_date = discovered.install_date;
+                }
+                if installed.artifact_type.is_none() {
+                    installed.artifact_type = discovered.artifact_type.clone();
+                }
+                if installed.binary_paths.is_none() {
+                    installed.binary_paths = discovered.binary_paths.clone();
+                }
+                if installed.app_name.is_none() {
+                    installed.app_name = discovered.app_name.clone();
+                }
+            })
+            .or_insert(discovered);
+    }
+}
+
+async fn sync_cask_state(cache: &Cache) -> Result<HashMap<String, InstalledCask>> {
+    let cask_state = CaskState::new()?;
+    let caskroom_synced_names = cask_state.sync_from_caskrooms().await?;
+
+    let mut installed_casks = cask_state.load().await?;
+    if cfg!(target_os = "macos") {
+        let casks = cache.load_casks().await?;
+        let discovered_casks = discover_manually_installed_casks(&casks).await?;
+        merge_discovered_casks(
+            &mut installed_casks,
+            discovered_casks,
+            &caskroom_synced_names,
+        );
+        cask_state.save(&installed_casks).await?;
+    }
+
+    Ok(installed_casks)
 }
 
 fn package_name_from_qualified_name(package_name: &str) -> &str {
@@ -496,9 +541,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
                 .get(&pkg.name)
                 .copied()
                 .unwrap_or(1);
-            let formula_opt = upgrade_formulae_for_producer
-                .get(&pkg.name)
-                .cloned();
+            let formula_opt = upgrade_formulae_for_producer.get(&pkg.name).cloned();
 
             if formula_opt.is_none() {
                 producer_js.spawn(async move {
@@ -606,6 +649,7 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
 
         Ok::<(), WaxError>(())
     });
+    drop(tx);
 
     let formula_stats = {
         let cache = cache.clone();
@@ -709,55 +753,43 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         let cache = cache.clone();
         let multi = multi.clone();
         async move {
-            let mut cask_js: JoinSet<CaskUpgradeJoinItem> = JoinSet::new();
-            for (i, pkg) in cask_packages.into_iter().enumerate() {
-                let cache = cache.clone();
-                let multi = multi.clone();
-                cask_js.spawn(async move {
-                    check_cancelled()?;
-                    let label = format!(
-                        "({}/{}) {}",
-                        i + 1,
-                        cask_only_total_display.max(1),
-                        pkg.name
-                    );
-                    let spinner = multi.insert_from_back(1, ProgressBar::new_spinner());
-                    spinner.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{spinner:.cyan} {msg}")
-                            .unwrap()
-                            .tick_chars(SPINNER_TICK_CHARS),
-                    );
-                    spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-                    set_current_op(format!("upgrading {}", pkg.name));
-                    spinner.set_message(format!(
-                        "{} upgrading {}...",
-                        style(&label).dim(),
-                        style(&pkg.name).magenta()
-                    ));
-
-                    let r = install::install_quiet_with_progress(
-                        &cache,
-                        std::slice::from_ref(&pkg.name),
-                        true,
-                        false,
-                        false,
-                        &ProgressBar::hidden(),
-                        true,
-                    )
-                    .await;
-                    spinner.finish_and_clear();
-                    clear_current_op();
-                    Ok((pkg, r))
-                });
-            }
             let mut c_succ = 0usize;
             let mut c_fail = 0usize;
             let mut c_failed: Vec<String> = Vec::new();
-            while let Some(joined) = cask_js.join_next().await {
-                let (pkg, r) = joined.map_err(|e| {
-                    WaxError::InstallError(format!("cask upgrade worker failed: {}", e))
-                })??;
+            for (i, pkg) in cask_packages.into_iter().enumerate() {
+                check_cancelled()?;
+                let label = format!(
+                    "({}/{}) {}",
+                    i + 1,
+                    cask_only_total_display.max(1),
+                    pkg.name
+                );
+                let spinner = multi.insert_from_back(1, ProgressBar::new_spinner());
+                spinner.set_style(
+                    ProgressStyle::default_spinner()
+                        .template("{spinner:.cyan} {msg}")
+                        .unwrap()
+                        .tick_chars(SPINNER_TICK_CHARS),
+                );
+                spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+                set_current_op(format!("upgrading {}", pkg.name));
+                spinner.set_message(format!(
+                    "{} upgrading {}...",
+                    style(&label).dim(),
+                    style(&pkg.name).magenta()
+                ));
+
+                let r = install::install_quiet_force(
+                    &cache,
+                    std::slice::from_ref(&pkg.name),
+                    true,
+                    false,
+                    false,
+                )
+                .await;
+                spinner.finish_and_clear();
+                clear_current_op();
+
                 match r {
                     Ok(()) => {
                         c_succ += 1;
@@ -894,8 +926,7 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
     {
         pkg.clone()
     } else {
-        let cask_state = CaskState::new()?;
-        let installed_casks = cask_state.load().await?;
+        let installed_casks = sync_cask_state(cache).await?;
 
         if installed_casks.contains_key(formula_name)
             || installed_casks.contains_key(installed_name)
@@ -994,8 +1025,7 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
 }
 
 async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
-    let cask_state = CaskState::new()?;
-    let installed_casks = cask_state.load().await?;
+    let installed_casks = sync_cask_state(cache).await?;
 
     let installed = installed_casks
         .get(cask_name)
@@ -1170,8 +1200,7 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
     state.sync_from_cellar().await?;
     let installed_packages = state.load().await?;
 
-    let cask_state = CaskState::new()?;
-    let installed_casks = cask_state.load().await?;
+    let installed_casks = sync_cask_state(cache).await?;
 
     let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_casks().await?;
@@ -1250,7 +1279,9 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
 
 #[cfg(test)]
 mod tests {
-    use super::package_name_from_qualified_name;
+    use super::{merge_discovered_casks, package_name_from_qualified_name};
+    use crate::cask::InstalledCask;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn package_name_from_qualified_name_uses_last_segment() {
@@ -1259,5 +1290,75 @@ mod tests {
             "vro"
         );
         assert_eq!(package_name_from_qualified_name("vro"), "vro");
+    }
+
+    #[test]
+    fn merge_discovered_casks_updates_existing_versions() {
+        let mut installed = HashMap::from([(
+            "example-cask".to_string(),
+            InstalledCask {
+                name: "example-cask".to_string(),
+                version: "1.0.0".to_string(),
+                install_date: 1,
+                artifact_type: Some("dmg".to_string()),
+                binary_paths: None,
+                app_name: Some("Example.app".to_string()),
+            },
+        )]);
+        let discovered = HashMap::from([(
+            "example-cask".to_string(),
+            InstalledCask {
+                name: "example-cask".to_string(),
+                version: "2.0.0".to_string(),
+                install_date: 2,
+                artifact_type: Some("app".to_string()),
+                binary_paths: None,
+                app_name: Some("Example".to_string()),
+            },
+        )]);
+
+        merge_discovered_casks(&mut installed, discovered, &HashSet::new());
+
+        let cask = installed.get("example-cask").unwrap();
+        assert_eq!(cask.version, "2.0.0");
+        assert_eq!(cask.install_date, 2);
+        assert_eq!(cask.artifact_type.as_deref(), Some("dmg"));
+        assert_eq!(cask.app_name.as_deref(), Some("Example.app"));
+    }
+
+    #[test]
+    fn merge_discovered_casks_preserves_caskroom_synced_versions() {
+        let mut installed = HashMap::from([(
+            "example-cask".to_string(),
+            InstalledCask {
+                name: "example-cask".to_string(),
+                version: "2.0.0".to_string(),
+                install_date: 2,
+                artifact_type: Some("dmg".to_string()),
+                binary_paths: None,
+                app_name: Some("Example.app".to_string()),
+            },
+        )]);
+        let discovered = HashMap::from([(
+            "example-cask".to_string(),
+            InstalledCask {
+                name: "example-cask".to_string(),
+                version: "1.0.0".to_string(),
+                install_date: 1,
+                artifact_type: Some("app".to_string()),
+                binary_paths: None,
+                app_name: Some("Example".to_string()),
+            },
+        )]);
+
+        merge_discovered_casks(
+            &mut installed,
+            discovered,
+            &HashSet::from(["example-cask".to_string()]),
+        );
+
+        let cask = installed.get("example-cask").unwrap();
+        assert_eq!(cask.version, "2.0.0");
+        assert_eq!(cask.install_date, 2);
     }
 }

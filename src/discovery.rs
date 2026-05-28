@@ -38,6 +38,10 @@ pub async fn discover_manually_installed_casks(
     {
         // Match application bundles against every known cask token/name alias.
         let token_index = build_cask_token_index(casks);
+        let cask_index = casks
+            .iter()
+            .map(|cask| (cask.token.as_str(), cask))
+            .collect::<HashMap<_, _>>();
         let mut discovered = HashMap::new();
 
         // Scan the standard application roots so manually installed apps are
@@ -80,9 +84,12 @@ pub async fn discover_manually_installed_casks(
                     continue;
                 };
 
-                let version = read_app_bundle_version(&path)
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
+                let version = read_app_bundle_version_for_cask(
+                    &path,
+                    cask_index.get(token.as_str()).copied(),
+                )
+                .await
+                .unwrap_or_else(|| "unknown".to_string());
                 let install_date = entry
                     .metadata()
                     .await
@@ -277,6 +284,40 @@ pub async fn read_app_bundle_version(path: &Path) -> Option<String> {
         Some(version)
     } else {
         read_info_plist_string(path, "CFBundleVersion").await
+    }
+}
+
+async fn read_app_bundle_version_for_cask(path: &Path, cask: Option<&Cask>) -> Option<String> {
+    if cask.is_none() {
+        return read_app_bundle_version(path).await;
+    }
+
+    let short_version = read_info_plist_string(path, "CFBundleShortVersionString").await;
+    let bundle_version = read_info_plist_string(path, "CFBundleVersion").await;
+
+    if let (Some(cask), Some(short), Some(bundle)) = (cask, &short_version, &bundle_version) {
+        if let Some(version) = combine_bundle_version_for_cask(short, bundle, &cask.version) {
+            return Some(version);
+        }
+    }
+
+    short_version.or(bundle_version)
+}
+
+fn combine_bundle_version_for_cask(
+    short_version: &str,
+    bundle_version: &str,
+    cask_version: &str,
+) -> Option<String> {
+    if !cask_version.contains(',') || bundle_version.is_empty() || short_version.is_empty() {
+        return None;
+    }
+
+    let combined = format!("{short_version},{bundle_version}");
+    if cask_version == combined || cask_version.starts_with(&format!("{combined},")) {
+        Some(combined)
+    } else {
+        None
     }
 }
 
@@ -561,6 +602,22 @@ mod tests {
         assert_eq!(
             resolve_cask_token(&index, "Google Chrome"),
             Some("google-chrome".to_string())
+        );
+    }
+
+    #[test]
+    fn combines_bundle_version_when_cask_uses_build_suffix() {
+        assert_eq!(
+            combine_bundle_version_for_cask("1.2.3", "456", "1.2.3,456"),
+            Some("1.2.3,456".to_string())
+        );
+        assert_eq!(
+            combine_bundle_version_for_cask("1.2.3", "456", "1.2.3,456,789"),
+            Some("1.2.3,456".to_string())
+        );
+        assert_eq!(
+            combine_bundle_version_for_cask("1.2.3", "123", "1.2.3,456"),
+            None
         );
     }
 
