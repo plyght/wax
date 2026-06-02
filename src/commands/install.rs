@@ -21,7 +21,7 @@ use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sha2::Digest;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -170,7 +170,7 @@ async fn install_from_source_task(
             platform: platform.to_string(),
             install_date: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs() as i64,
             install_mode,
             from_source: false,
@@ -264,7 +264,7 @@ async fn install_from_source_task(
         platform: platform.to_string(),
         install_date: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64,
         install_mode,
         from_source: true,
@@ -320,7 +320,7 @@ async fn install_from_head_task(
     spinner.set_message("Parsing formula...");
     let parsed_formula = FormulaParser::parse_ruby_formula(&formula.name, &ruby_content)?;
 
-    if parsed_formula.head_url.is_none() {
+    let Some(head_url) = parsed_formula.head_url.as_deref() else {
         spinner.finish_and_clear();
         eprintln!(
             "  {} '{}' has no HEAD URL — installing stable release instead",
@@ -328,8 +328,7 @@ async fn install_from_head_task(
             formula.name
         );
         return install_from_source_task(formula, cellar, install_mode, state, platform).await;
-    }
-    let head_url = parsed_formula.head_url.as_deref().unwrap();
+    };
 
     let temp_dir = TempDir::new()?;
     let clone_dir = temp_dir.path().join("head-src");
@@ -399,7 +398,7 @@ async fn install_from_head_task(
         platform: platform.to_string(),
         install_date: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64,
         install_mode,
         from_source: true,
@@ -1119,7 +1118,10 @@ async fn install_impl(
         };
 
         tasks.spawn(async move {
-            let permit = semaphore.acquire().await.unwrap();
+            let permit = semaphore
+                .acquire()
+                .await
+                .map_err(|e| WaxError::InstallError(format!("download semaphore closed: {e}")))?;
             // Don't even start if already cancelled
             crate::signal::check_cancelled()?;
             crate::signal::set_current_op(format!("downloading {}", name));
@@ -1477,7 +1479,7 @@ pub async fn install_extracted_bottle(
         platform: platform.to_string(),
         install_date: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64,
         install_mode,
         from_source: false,
@@ -1617,7 +1619,9 @@ async fn install_casks(
             let sem = Arc::clone(&semaphore);
             let name = name.clone();
             tokio::spawn(async move {
-                let _permit = sem.acquire().await.unwrap();
+                let _permit = sem.acquire().await.map_err(|e| {
+                    WaxError::InstallError(format!("cask detail semaphore closed: {e}"))
+                })?;
                 let details = api.fetch_cask_details(&name).await?;
                 let artifact_type = if let Some(t) = detect_artifact_type(&details.url) {
                     t
@@ -1977,16 +1981,7 @@ async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -
     }
 
     // Try to run Homebrew's postinstall if brew is installed
-    let brew_path = match tokio::process::Command::new("which")
-        .arg("brew")
-        .output()
-        .await
-    {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => String::new(),
-    };
-
-    if !brew_path.is_empty() {
+    if let Some(brew_path) = find_in_path("brew") {
         let mut cmd = tokio::process::Command::new(&brew_path);
         cmd.arg("postinstall").arg(name);
 
@@ -2008,6 +2003,14 @@ async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -
     }
 
     Ok(())
+}
+
+fn find_in_path(program: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|dir| dir.join(program))
+        .find(|path| path.is_file())
 }
 
 /// Install a cask from an already-downloaded file (skips download).
@@ -2298,7 +2301,9 @@ async fn install_from_downloaded(
             while let Some(entry) = entries.next_entry().await? {
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("app") {
-                    let app_name = path.file_name().unwrap().to_str().unwrap();
+                    let Some(app_name) = path.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
                     step!(format!("installing guessed app: {}", app_name));
                     installer
                         .install_app(&staging, &mut rollback, app_name)
@@ -2318,7 +2323,7 @@ async fn install_from_downloaded(
         version: cask.version.clone(),
         install_date: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64,
         artifact_type: Some(artifact_type.to_string()),
         binary_paths: if binary_paths.is_empty() {

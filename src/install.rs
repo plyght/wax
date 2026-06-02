@@ -284,7 +284,9 @@ impl InstallState {
 
                 if !versions.is_empty() {
                     sort_versions(&mut versions);
-                    let version = versions.last().unwrap().clone();
+                    let Some(version) = versions.last().cloned() else {
+                        continue;
+                    };
 
                     if let Some(existing) = packages.get_mut(&package_name) {
                         existing.version = version;

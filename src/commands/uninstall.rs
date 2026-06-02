@@ -347,7 +347,7 @@ async fn uninstall_cask(
                         version,
                         install_date: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs() as i64,
                         artifact_type: Some("app".to_string()),
                         binary_paths: None,

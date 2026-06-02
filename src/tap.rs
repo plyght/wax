@@ -282,7 +282,13 @@ impl TapManager {
                         tap.path.display()
                     )));
                 }
-                fs::create_dir_all(tap.path.parent().unwrap()).await?;
+                let parent = tap.path.parent().ok_or_else(|| {
+                    WaxError::TapError(format!(
+                        "Tap path has no parent directory: {}",
+                        tap.path.display()
+                    ))
+                })?;
+                fs::create_dir_all(parent).await?;
                 self.clone_tap(&tap).await?;
             }
             TapKind::LocalDir { path } => {

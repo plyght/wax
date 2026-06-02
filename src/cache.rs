@@ -220,7 +220,7 @@ impl Cache {
         let metadata = CacheMetadata {
             last_updated: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs() as i64,
             formula_count: 0,
             cask_count: 0,

@@ -508,7 +508,7 @@ async fn check_cache(cache: &Cache, fix: bool) -> DiagResult {
 
             let age_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs() as i64
                 - meta.last_updated;
 
@@ -830,7 +830,9 @@ async fn check_opt_symlinks(fix: bool) -> DiagResult {
             }
             let mut sorted = versions;
             crate::version::sort_versions(&mut sorted);
-            let version = sorted.last().unwrap().clone();
+            let Some(version) = sorted.last().cloned() else {
+                continue;
+            };
 
             let cellar = match mode.cellar_path() {
                 Ok(c) => c,

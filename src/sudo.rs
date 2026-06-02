@@ -238,18 +238,6 @@ pub fn sudo_symlink(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::sudo_password_prompt;
-
-    #[test]
-    fn sudo_password_prompt_is_wax_branded() {
-        let prompt = sudo_password_prompt();
-        assert!(prompt.contains("wax"));
-        assert!(prompt.contains("%p"));
-    }
-}
-
 pub fn get_current_user() -> String {
     #[cfg(unix)]
     {
@@ -279,4 +267,16 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
         debug!("sudo chown failed for {:?}, continuing", path);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sudo_password_prompt;
+
+    #[test]
+    fn sudo_password_prompt_is_wax_branded() {
+        let prompt = sudo_password_prompt();
+        assert!(prompt.contains("wax"));
+        assert!(prompt.contains("%p"));
+    }
 }

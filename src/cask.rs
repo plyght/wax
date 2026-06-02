@@ -1086,6 +1086,11 @@ impl CaskInstaller {
     }
 
     fn resolve_source_path(&self, staging: &StagingContext, source_rel: &str) -> PathBuf {
+        if source_rel.contains('\0') {
+            tracing::warn!("Rejecting source path with NUL byte");
+            return staging.staging_root.join("unknown");
+        }
+
         let prefix = crate::bottle::homebrew_prefix()
             .to_string_lossy()
             .to_string();
@@ -1297,6 +1302,12 @@ impl CaskInstaller {
 
     /// Rejects paths that contain parent-directory traversal components.
     fn reject_traversal(path: &Path) -> Result<()> {
+        if path.as_os_str().as_encoded_bytes().contains(&0) {
+            return Err(WaxError::InstallError(format!(
+                "Path contains NUL byte: {}",
+                path.display()
+            )));
+        }
         if path
             .components()
             .any(|c| c == std::path::Component::ParentDir)
@@ -1307,6 +1318,39 @@ impl CaskInstaller {
             )));
         }
         Ok(())
+    }
+
+    fn resolve_artifact_dest(target_path: &str) -> Result<PathBuf> {
+        if target_path.contains('\0') {
+            return Err(WaxError::InstallError(
+                "unsafe artifact target contains NUL byte".to_string(),
+            ));
+        }
+
+        let dest = PathBuf::from(target_path);
+        Self::reject_traversal(&dest)?;
+
+        if dest.is_absolute() {
+            let allowed_roots = [
+                crate::bottle::homebrew_prefix(),
+                dirs::home_dir()?,
+                Self::applications_dir()?,
+            ];
+            let normalized_dest = normalize_existing_prefix(&dest);
+            if allowed_roots
+                .iter()
+                .map(|root| normalize_existing_prefix(root))
+                .any(|root| normalized_dest.starts_with(root))
+            {
+                return Ok(dest);
+            }
+            return Err(WaxError::InstallError(format!(
+                "unsafe artifact target outside install roots: {}",
+                dest.display()
+            )));
+        }
+
+        Ok(crate::bottle::homebrew_prefix().join(dest))
     }
 
     #[instrument(skip(self, _staging, _rollback))]
@@ -1349,19 +1393,7 @@ impl CaskInstaller {
 
             _rollback.add(app_dest.clone());
 
-            let cp_output = tokio::process::Command::new("cp")
-                .arg("-R")
-                .arg(&source)
-                .arg(&app_dest)
-                .output()
-                .await?;
-
-            if !cp_output.status.success() {
-                return Err(WaxError::InstallError(format!(
-                    "Failed to copy app: {}",
-                    String::from_utf8_lossy(&cp_output.stderr)
-                )));
-            }
+            crate::ui::copy_dir_all(&source, &app_dest)?;
 
             Ok(())
         }
@@ -1603,8 +1635,7 @@ impl CaskInstaller {
         target_path: &str,
     ) -> Result<()> {
         let source = self.resolve_source_path(staging, source_rel);
-        let dest = PathBuf::from(target_path);
-        Self::reject_traversal(&dest)?;
+        let dest = Self::resolve_artifact_dest(target_path)?;
 
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -1620,18 +1651,10 @@ impl CaskInstaller {
 
         rollback.add(dest.clone());
 
-        let cp_output = tokio::process::Command::new("cp")
-            .arg("-R")
-            .arg(&source)
-            .arg(&dest)
-            .output()
-            .await?;
-
-        if !cp_output.status.success() {
-            return Err(WaxError::InstallError(format!(
-                "Failed to copy artifact: {}",
-                String::from_utf8_lossy(&cp_output.stderr)
-            )));
+        if source.is_dir() {
+            crate::ui::copy_dir_all(&source, &dest)?;
+        } else {
+            tokio::fs::copy(&source, &dest).await?;
         }
 
         Ok(())
@@ -1664,20 +1687,7 @@ impl CaskInstaller {
 
         rollback.add(dest.clone());
 
-        let cp_output = tokio::process::Command::new("cp")
-            .arg("-R")
-            .arg(&source)
-            .arg(&dest)
-            .output()
-            .await?;
-
-        if !cp_output.status.success() {
-            return Err(WaxError::InstallError(format!(
-                "Failed to copy to {:?}: {}",
-                dest_parent,
-                String::from_utf8_lossy(&cp_output.stderr)
-            )));
-        }
+        crate::ui::copy_dir_all(&source, &dest)?;
 
         Ok(())
     }
@@ -1869,6 +1879,38 @@ mod tests {
         let abs_in_staging = staging_root.join("foo/bar");
         let res = installer.resolve_source_path(&staging, abs_in_staging.to_str().unwrap());
         assert_eq!(res, abs_in_staging);
+    }
+
+    #[tokio::test]
+    async fn resolve_source_path_rejects_nul_byte() {
+        let installer = CaskInstaller::new();
+        let temp = tempdir().unwrap();
+        let staging_root = temp.path().to_path_buf();
+        let staging = StagingContext {
+            staging_root: staging_root.clone(),
+            mount_point: None,
+            _temp_dir: Some(temp),
+        };
+
+        let res = installer.resolve_source_path(&staging, "bin/tool\0evil");
+
+        assert_eq!(res, staging_root.join("unknown"));
+    }
+
+    #[test]
+    fn artifact_dest_rejects_absolute_system_path() {
+        let err = CaskInstaller::resolve_artifact_dest("/etc/launchd.conf")
+            .expect_err("absolute system path should be rejected");
+
+        assert!(format!("{err:?}").contains("unsafe artifact target"));
+    }
+
+    #[test]
+    fn artifact_dest_allows_homebrew_prefix_path() {
+        let target = crate::bottle::homebrew_prefix().join("share/example/file");
+        let resolved = CaskInstaller::resolve_artifact_dest(target.to_str().unwrap()).unwrap();
+
+        assert_eq!(resolved, target);
     }
 
     #[test]

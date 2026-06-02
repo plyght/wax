@@ -788,14 +788,22 @@ impl BottleDownloader {
             std::fs::set_permissions(path, perms)?;
         }
 
+        let path_str = match path.to_str() {
+            Some(path) => path,
+            None => {
+                debug!("Skipping ELF relocation: non-UTF-8 path {:?}", path);
+                #[cfg(unix)]
+                {
+                    std::fs::set_permissions(path, original_permissions)?;
+                }
+                return Ok(());
+            }
+        };
+
         let interpreter = format!("{}/lib/ld.so", prefix);
         if Path::new(&interpreter).exists() {
             let output = Command::new(&patchelf)
-                .args([
-                    "--set-interpreter",
-                    &interpreter,
-                    path.to_str().unwrap_or_default(),
-                ])
+                .args(["--set-interpreter", &interpreter, path_str])
                 .output();
             if let Ok(out) = output {
                 if !out.status.success() {
@@ -808,7 +816,7 @@ impl BottleDownloader {
         }
 
         if let Ok(output) = Command::new(&patchelf)
-            .args(["--print-rpath", path.to_str().unwrap_or_default()])
+            .args(["--print-rpath", path_str])
             .output()
         {
             if output.status.success() {
@@ -819,11 +827,7 @@ impl BottleDownloader {
                     .replace("@@HOMEBREW_LIBRARY@@", library);
                 if new_rpath != rpath.as_ref() {
                     let _ = Command::new(&patchelf)
-                        .args([
-                            "--set-rpath",
-                            new_rpath.trim(),
-                            path.to_str().unwrap_or_default(),
-                        ])
+                        .args(["--set-rpath", new_rpath.trim(), path_str])
                         .output();
                     debug!("Relocated ELF rpath: {:?}", path);
                 }
@@ -905,20 +909,29 @@ impl BottleDownloader {
         if let Ok(output) = Command::new("otool").args(["-D", path_str]).output() {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
-                let mut lines = text.lines();
-                lines.next(); // skip header line
-                if let Some(install_name) = lines.next() {
-                    let install_name = install_name.trim();
-                    let new_name = install_name
-                        .replace("@@HOMEBREW_CELLAR@@", cellar)
-                        .replace("@@HOMEBREW_PREFIX@@", prefix)
-                        .replace("@@HOMEBREW_LIBRARY@@", library);
+                if let Some(install_name) = macho_install_name(&text) {
+                    let new_name =
+                        relocate_homebrew_placeholders(install_name, prefix, cellar, library);
                     if new_name != install_name {
-                        let _ = Command::new("install_name_tool")
+                        match Command::new("install_name_tool")
                             .args(["-id", &new_name, path_str])
-                            .output();
-                        modified = true;
-                        debug!("Relocated Mach-O install name: {:?}", path);
+                            .output()
+                        {
+                            Ok(out) if out.status.success() => {
+                                modified = true;
+                                debug!("Relocated Mach-O install name: {:?}", path);
+                            }
+                            Ok(out) => {
+                                debug!(
+                                    "install_name_tool -id failed for {:?}: {}",
+                                    path,
+                                    String::from_utf8_lossy(&out.stderr)
+                                );
+                            }
+                            Err(err) => {
+                                debug!("install_name_tool -id failed for {:?}: {}", path, err);
+                            }
+                        }
                     }
                 }
             }
@@ -928,15 +941,7 @@ impl BottleDownloader {
         if let Ok(output) = Command::new("otool").args(["-L", path_str]).output() {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
-                for line in text.lines().skip(1) {
-                    let line = line.trim();
-                    // Format: "\t/path/to/lib (compatibility version X, current version Y)"
-                    let lib_path = if let Some(end) = line.find(" (") {
-                        &line[..end]
-                    } else {
-                        continue;
-                    };
-
+                for lib_path in macho_loaded_libraries(&text) {
                     if !lib_path.contains("@@HOMEBREW_CELLAR@@")
                         && !lib_path.contains("@@HOMEBREW_PREFIX@@")
                         && !lib_path.contains("@@HOMEBREW_LIBRARY@@")
@@ -944,10 +949,8 @@ impl BottleDownloader {
                         continue;
                     }
 
-                    let new_path = lib_path
-                        .replace("@@HOMEBREW_CELLAR@@", cellar)
-                        .replace("@@HOMEBREW_PREFIX@@", prefix)
-                        .replace("@@HOMEBREW_LIBRARY@@", library);
+                    let new_path =
+                        relocate_homebrew_placeholders(lib_path, prefix, cellar, library);
 
                     let result = Command::new("install_name_tool")
                         .args(["-change", lib_path, &new_path, path_str])
@@ -976,51 +979,28 @@ impl BottleDownloader {
         if let Ok(output) = Command::new("otool").args(["-l", path_str]).output() {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
-                // Parse "path <value> (offset N)" lines inside LC_RPATH sections
-                let mut in_rpath = false;
-                for line in text.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("cmd LC_RPATH") || trimmed == "cmd LC_RPATH" {
-                        in_rpath = true;
-                        continue;
-                    }
-                    if trimmed.starts_with("cmd ") {
-                        in_rpath = false;
-                    }
-                    if in_rpath && trimmed.starts_with("path ") {
-                        let rpath = if let Some(end) = trimmed.find(" (offset") {
-                            &trimmed["path ".len()..end]
-                        } else {
-                            &trimmed["path ".len()..]
-                        };
-                        if rpath.contains("@@HOMEBREW_CELLAR@@")
-                            || rpath.contains("@@HOMEBREW_PREFIX@@")
-                            || rpath.contains("@@HOMEBREW_LIBRARY@@")
-                        {
-                            let new_rpath = rpath
-                                .replace("@@HOMEBREW_CELLAR@@", cellar)
-                                .replace("@@HOMEBREW_PREFIX@@", prefix)
-                                .replace("@@HOMEBREW_LIBRARY@@", library);
-                            let result = Command::new("install_name_tool")
-                                .args(["-rpath", rpath, &new_rpath, path_str])
-                                .output();
-                            if let Ok(out) = result {
-                                if out.status.success() {
-                                    debug!(
-                                        "Relocated rpath {} -> {} in {:?}",
-                                        rpath, new_rpath, path
-                                    );
-                                    modified = true;
-                                } else {
-                                    debug!(
-                                        "install_name_tool -rpath failed for {:?}: {}",
-                                        path,
-                                        String::from_utf8_lossy(&out.stderr)
-                                    );
-                                }
+                for rpath in macho_rpaths(&text) {
+                    if rpath.contains("@@HOMEBREW_CELLAR@@")
+                        || rpath.contains("@@HOMEBREW_PREFIX@@")
+                        || rpath.contains("@@HOMEBREW_LIBRARY@@")
+                    {
+                        let new_rpath =
+                            relocate_homebrew_placeholders(rpath, prefix, cellar, library);
+                        let result = Command::new("install_name_tool")
+                            .args(["-rpath", rpath, &new_rpath, path_str])
+                            .output();
+                        if let Ok(out) = result {
+                            if out.status.success() {
+                                debug!("Relocated rpath {} -> {} in {:?}", rpath, new_rpath, path);
+                                modified = true;
+                            } else {
+                                debug!(
+                                    "install_name_tool -rpath failed for {:?}: {}",
+                                    path,
+                                    String::from_utf8_lossy(&out.stderr)
+                                );
                             }
                         }
-                        in_rpath = false; // each LC_RPATH has one path
                     }
                 }
             }
@@ -1038,6 +1018,63 @@ impl BottleDownloader {
 
         Ok(())
     }
+}
+
+fn relocate_homebrew_placeholders(
+    value: &str,
+    prefix: &str,
+    cellar: &str,
+    library: &str,
+) -> String {
+    value
+        .replace("@@HOMEBREW_CELLAR@@", cellar)
+        .replace("@@HOMEBREW_PREFIX@@", prefix)
+        .replace("@@HOMEBREW_LIBRARY@@", library)
+}
+
+fn macho_install_name(output: &str) -> Option<&str> {
+    output
+        .lines()
+        .nth(1)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+}
+
+fn macho_loaded_libraries(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.trim().split_once(" (").map(|(path, _)| path))
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+fn macho_rpaths(output: &str) -> Vec<&str> {
+    let mut rpaths = Vec::new();
+    let mut in_rpath = false;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed == "cmd LC_RPATH" {
+            in_rpath = true;
+            continue;
+        }
+        if trimmed.starts_with("cmd ") {
+            in_rpath = false;
+        }
+        if in_rpath && trimmed.starts_with("path ") {
+            let path = if let Some(end) = trimmed.find(" (offset") {
+                &trimmed["path ".len()..end]
+            } else {
+                &trimmed["path ".len()..]
+            };
+            let path = path.trim();
+            if !path.is_empty() {
+                rpaths.push(path);
+            }
+            in_rpath = false;
+        }
+    }
+    rpaths
 }
 
 /// Returns true if the first 4 bytes match any Mach-O magic number.
@@ -1372,5 +1409,51 @@ mod tests {
         assert!(contents.contains("/opt/homebrew/Library/Homebrew"));
         assert!(!contents.contains("@@HOMEBREW_CELLAR@@"));
         assert!(!contents.contains("@@HOMEBREW_LIBRARY@@"));
+    }
+
+    #[test]
+    fn macho_install_name_parser_skips_header() {
+        let output =
+            "/tmp/libexample.dylib:\n@@HOMEBREW_CELLAR@@/example/1.0/lib/libexample.dylib\n";
+
+        assert_eq!(
+            macho_install_name(output),
+            Some("@@HOMEBREW_CELLAR@@/example/1.0/lib/libexample.dylib")
+        );
+    }
+
+    #[test]
+    fn macho_load_parser_extracts_only_library_paths() {
+        let output = "/tmp/tool:\n\t@@HOMEBREW_PREFIX@@/opt/zstd/lib/libzstd.1.dylib (compatibility version 1.0.0, current version 1.5.7)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n";
+
+        assert_eq!(
+            macho_loaded_libraries(output),
+            vec![
+                "@@HOMEBREW_PREFIX@@/opt/zstd/lib/libzstd.1.dylib",
+                "/usr/lib/libSystem.B.dylib"
+            ]
+        );
+    }
+
+    #[test]
+    fn macho_rpath_parser_extracts_lc_rpath_paths() {
+        let output = "Load command 12\n          cmd LC_RPATH\n      cmdsize 48\n         path @@HOMEBREW_PREFIX@@/lib (offset 12)\nLoad command 13\n          cmd LC_LOAD_DYLIB\n";
+
+        assert_eq!(macho_rpaths(output), vec!["@@HOMEBREW_PREFIX@@/lib"]);
+    }
+
+    #[test]
+    fn homebrew_placeholder_relocation_updates_all_macho_fields() {
+        let relocated = relocate_homebrew_placeholders(
+            "@@HOMEBREW_PREFIX@@/lib:@@HOMEBREW_CELLAR@@/pkg/1/lib:@@HOMEBREW_LIBRARY@@/Homebrew",
+            "/opt/homebrew",
+            "/opt/homebrew/Cellar",
+            "/opt/homebrew/Library",
+        );
+
+        assert_eq!(
+            relocated,
+            "/opt/homebrew/lib:/opt/homebrew/Cellar/pkg/1/lib:/opt/homebrew/Library/Homebrew"
+        );
     }
 }

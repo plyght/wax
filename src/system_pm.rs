@@ -9,6 +9,7 @@ use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
 use console::style;
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
@@ -354,14 +355,15 @@ impl SystemPm {
 
 /// Check if a binary exists on PATH.
 async fn which(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    find_in_path(bin).is_some()
+}
+
+fn find_in_path(program: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|dir| dir.join(program))
+        .find(|path| path.is_file())
 }
 
 /// Run a command, inheriting stdin/stdout/stderr so the user sees all output

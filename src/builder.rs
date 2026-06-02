@@ -31,11 +31,7 @@ impl Builder {
     }
 
     fn detect_ccache() -> bool {
-        Command::new("which")
-            .arg("ccache")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        find_in_path("ccache").is_some()
     }
 
     #[instrument(skip(self, progress))]
@@ -361,20 +357,18 @@ impl Builder {
             }
 
             if use_ccache && (program == "gcc" || program == "clang" || program == "cc") {
-                let ccache_path = Command::new("which")
-                    .arg("ccache")
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_else(|_| "ccache".to_string());
+                let ccache_path = find_in_path("ccache")
+                    .unwrap_or_else(|| PathBuf::from("ccache"))
+                    .display()
+                    .to_string();
                 cmd.env("CC", format!("{} {}", ccache_path, program));
             }
 
             if use_ccache && (program == "g++" || program == "clang++" || program == "c++") {
-                let ccache_path = Command::new("which")
-                    .arg("ccache")
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_else(|_| "ccache".to_string());
+                let ccache_path = find_in_path("ccache")
+                    .unwrap_or_else(|| PathBuf::from("ccache"))
+                    .display()
+                    .to_string();
                 cmd.env("CXX", format!("{} {}", ccache_path, program));
             }
 
@@ -399,12 +393,21 @@ impl Builder {
     }
 
     fn has_ninja() -> bool {
-        Command::new("which")
-            .arg("ninja")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        find_in_path("ninja").is_some()
     }
+}
+
+fn find_in_path(program: &str) -> Option<PathBuf> {
+    if program.contains(std::path::MAIN_SEPARATOR) {
+        let path = PathBuf::from(program);
+        return path.is_file().then_some(path);
+    }
+
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|dir| dir.join(program))
+        .find(|path| path.is_file())
 }
 
 impl Default for Builder {
