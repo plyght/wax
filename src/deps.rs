@@ -3,26 +3,6 @@ use crate::error::{Result, WaxError};
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::{debug, instrument};
 
-pub fn find_installed_reverse_dependencies(
-    package_name: &str,
-    formulae: &[Formula],
-    installed: &HashSet<String>,
-) -> Vec<String> {
-    let mut reverse_deps = Vec::new();
-    for formula in formulae {
-        if !installed.contains(&formula.name) {
-            continue;
-        }
-        if let Some(deps) = &formula.dependencies {
-            if deps.iter().any(|d| d == package_name) {
-                reverse_deps.push(formula.name.clone());
-            }
-        }
-    }
-    reverse_deps.sort();
-    reverse_deps
-}
-
 #[derive(Debug, Clone)]
 pub struct DependencyGraph {
     nodes: HashMap<String, Vec<String>>,

@@ -4,7 +4,6 @@ use crate::cache::Cache;
 use crate::cask::{CaskState, InstalledCask};
 use crate::commands::self_update::{self_update, Channel};
 use crate::commands::{install, uninstall};
-use crate::deps::find_installed_reverse_dependencies;
 use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
@@ -185,6 +184,22 @@ fn package_name_from_qualified_name(package_name: &str) -> &str {
     package_name.rsplit('/').next().unwrap_or(package_name)
 }
 
+fn cask_failed_names_from_error(err: &WaxError) -> HashSet<String> {
+    let message = err.to_string();
+    message
+        .strip_prefix("Install error: Some casks failed: ")
+        .or_else(|| message.strip_prefix("Some casks failed: "))
+        .map(|names| {
+            names
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn apply_one_formula_package_upgrade(
     cache: &Cache,
     multi: &MultiProgress,
@@ -315,35 +330,9 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         return Ok(());
     }
 
-    // --- Pre-compute the full plan before touching anything ---
-    let outdated_names: HashSet<String> = outdated.iter().map(|p| p.name.clone()).collect();
-
     let formulae = cache.load_all_formulae().await?;
-    let state = InstallState::new()?;
-    let installed_packages = state.load().await?;
-    let installed_names: HashSet<String> = installed_packages.keys().cloned().collect();
-    let install_modes: HashMap<String, InstallMode> = installed_packages
-        .iter()
-        .map(|(k, v)| (k.clone(), v.install_mode))
-        .collect();
-
-    // Collect all reverse-deps across every outdated formula, excluding packages
-    // that are themselves outdated (they'll be handled by their own upgrade slot).
-    let mut dependents_to_reinstall: Vec<String> = Vec::new();
-    for pkg in &outdated {
-        if pkg.is_cask {
-            continue;
-        }
-        let rev_deps = find_installed_reverse_dependencies(&pkg.name, &formulae, &installed_names);
-        for dep in rev_deps {
-            if !outdated_names.contains(&dep) && !dependents_to_reinstall.contains(&dep) {
-                dependents_to_reinstall.push(dep);
-            }
-        }
-    }
 
     let total = outdated.len();
-    let dep_total = dependents_to_reinstall.len();
 
     // Print plan summary
     let names: Vec<String> = outdated
@@ -357,18 +346,6 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
         })
         .collect();
     println!("upgrading {}\n", style(names.join(", ")).magenta());
-    if dep_total > 0 {
-        println!(
-            "  will reinstall {} dependent{} after: {}\n",
-            dep_total,
-            if dep_total == 1 { "" } else { "s" },
-            dependents_to_reinstall
-                .iter()
-                .map(|s| style(s).dim().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
 
     let multi = MultiProgress::new();
     let owns_multi_globals = crate::signal::clone_active_multi().is_none();
@@ -756,61 +733,68 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
             let mut c_succ = 0usize;
             let mut c_fail = 0usize;
             let mut c_failed: Vec<String> = Vec::new();
-            for (i, pkg) in cask_packages.into_iter().enumerate() {
+            if !cask_packages.is_empty() {
                 check_cancelled()?;
-                let label = format!(
-                    "({}/{}) {}",
-                    i + 1,
-                    cask_only_total_display.max(1),
-                    pkg.name
-                );
-                let spinner = multi.insert_from_back(1, ProgressBar::new_spinner());
-                spinner.set_style(
-                    ProgressStyle::default_spinner()
-                        .template("{spinner:.cyan} {msg}")
-                        .unwrap()
-                        .tick_chars(SPINNER_TICK_CHARS),
-                );
-                spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-                set_current_op(format!("upgrading {}", pkg.name));
-                spinner.set_message(format!(
-                    "{} upgrading {}...",
-                    style(&label).dim(),
-                    style(&pkg.name).magenta()
+                let cask_names: Vec<String> =
+                    cask_packages.iter().map(|p| p.name.clone()).collect();
+                set_current_op(format!(
+                    "upgrading {} casks",
+                    cask_only_total_display.max(1)
                 ));
-
-                let r = install::install_quiet_force(
-                    &cache,
-                    std::slice::from_ref(&pkg.name),
-                    true,
-                    false,
-                    false,
-                )
-                .await;
-                spinner.finish_and_clear();
+                let r = install::install_quiet_force(&cache, &cask_names, true, false, false).await;
                 clear_current_op();
 
                 match r {
                     Ok(()) => {
-                        c_succ += 1;
-                        let _ = multi.println(format!(
-                            "{} {} {} {} → {}",
-                            style("✓").green(),
-                            style(&pkg.name).magenta(),
-                            style("(cask)").yellow(),
-                            style(&pkg.installed_version).dim(),
-                            style(&pkg.latest_version).green()
-                        ));
+                        for pkg in cask_packages {
+                            c_succ += 1;
+                            let _ = multi.println(format!(
+                                "{} {} {} {} → {}",
+                                style("✓").green(),
+                                style(&pkg.name).magenta(),
+                                style("(cask)").yellow(),
+                                style(&pkg.installed_version).dim(),
+                                style(&pkg.latest_version).green()
+                            ));
+                        }
                     }
                     Err(e) => {
-                        c_fail += 1;
-                        let _ = multi.println(format!(
-                            "{} {} failed: {}",
-                            style("✗").red(),
-                            style(&pkg.name).magenta(),
-                            e
-                        ));
-                        c_failed.push(pkg.name);
+                        let failed_set = cask_failed_names_from_error(&e);
+                        if failed_set.is_empty() {
+                            c_fail += cask_packages.len();
+                            for pkg in cask_packages {
+                                let _ = multi.println(format!(
+                                    "{} {} failed: {}",
+                                    style("✗").red(),
+                                    style(&pkg.name).magenta(),
+                                    e
+                                ));
+                                c_failed.push(pkg.name);
+                            }
+                        } else {
+                            for pkg in cask_packages {
+                                if failed_set.contains(&pkg.name) {
+                                    c_fail += 1;
+                                    let _ = multi.println(format!(
+                                        "{} {} failed: {}",
+                                        style("✗").red(),
+                                        style(&pkg.name).magenta(),
+                                        e
+                                    ));
+                                    c_failed.push(pkg.name);
+                                } else {
+                                    c_succ += 1;
+                                    let _ = multi.println(format!(
+                                        "{} {} {} {} → {}",
+                                        style("✓").green(),
+                                        style(&pkg.name).magenta(),
+                                        style("(cask)").yellow(),
+                                        style(&pkg.installed_version).dim(),
+                                        style(&pkg.latest_version).green()
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -825,74 +809,6 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     success_count += c_succ;
     fail_count += c_fail;
     failed_names.extend(c_failed);
-
-    // Reinstall all affected dependents — each exactly once.
-    if !dependents_to_reinstall.is_empty() {
-        let _ = multi.println(format!(
-            "  {} reinstalling {} dependent{}",
-            style("→").cyan(),
-            dep_total,
-            if dep_total == 1 { "" } else { "s" },
-        ));
-
-        for dep_name in &dependents_to_reinstall {
-            check_cancelled()?;
-
-            let dep_mode = install_modes.get(dep_name).copied();
-            let (user_flag, global_flag) = match dep_mode {
-                Some(InstallMode::User) => (true, false),
-                Some(InstallMode::Global) => (false, true),
-                _ => (false, false),
-            };
-
-            let spinner = multi.insert_from_back(1, ProgressBar::new_spinner());
-            spinner.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.cyan} {msg}")
-                    .unwrap()
-                    .tick_chars(SPINNER_TICK_CHARS),
-            );
-            spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-            set_current_op(format!("reinstalling {}", dep_name));
-            spinner.set_message(format!("  reinstalling {}...", style(dep_name).magenta()));
-
-            let result = async {
-                uninstall::uninstall_quiet(cache, dep_name, false).await?;
-                install::install_quiet(
-                    cache,
-                    std::slice::from_ref(dep_name),
-                    false,
-                    user_flag,
-                    global_flag,
-                )
-                .await
-            }
-            .await;
-
-            spinner.finish_and_clear();
-            clear_current_op();
-
-            match result {
-                Ok(()) => {
-                    let _ = multi.println(format!(
-                        "  {} {} reinstalled",
-                        style("✓").green(),
-                        style(dep_name).magenta()
-                    ));
-                }
-                Err(e) => {
-                    fail_count += 1;
-                    let _ = multi.println(format!(
-                        "  {} {} reinstall failed: {}",
-                        style("✗").red(),
-                        style(dep_name).magenta(),
-                        e
-                    ));
-                    failed_names.push(dep_name.clone());
-                }
-            }
-        }
-    }
 
     let elapsed = start.elapsed();
     if fail_count > 0 {
@@ -1112,77 +1028,6 @@ async fn upgrade_formula_internal(
         global_flag,
     )
     .await?;
-
-    reinstall_dependents(cache, formula_name).await?;
-
-    Ok(())
-}
-
-async fn reinstall_dependents(cache: &Cache, upgraded_package: &str) -> Result<()> {
-    let formulae = cache.load_all_formulae().await?;
-    let state = InstallState::new()?;
-    let installed_packages = state.load().await?;
-    let installed_names: HashSet<String> = installed_packages.keys().cloned().collect();
-
-    let reverse_deps =
-        find_installed_reverse_dependencies(upgraded_package, &formulae, &installed_names);
-
-    if reverse_deps.is_empty() {
-        return Ok(());
-    }
-
-    println!(
-        "  {} reinstalling {} dependent{}: {}",
-        style("→").cyan(),
-        reverse_deps.len(),
-        if reverse_deps.len() == 1 { "" } else { "s" },
-        reverse_deps
-            .iter()
-            .map(|s| style(s).magenta().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    for dep_name in &reverse_deps {
-        let dep_mode = installed_packages.get(dep_name).map(|p| p.install_mode);
-
-        let (user_flag, global_flag) = match dep_mode {
-            Some(InstallMode::User) => (true, false),
-            Some(InstallMode::Global) => (false, true),
-            _ => (false, false),
-        };
-
-        let result = async {
-            uninstall::uninstall_quiet(cache, dep_name, false).await?;
-            install::install_quiet(
-                cache,
-                std::slice::from_ref(dep_name),
-                false,
-                user_flag,
-                global_flag,
-            )
-            .await
-        }
-        .await;
-
-        match result {
-            Ok(()) => {
-                println!(
-                    "  {} {} reinstalled",
-                    style("✓").green(),
-                    style(dep_name).magenta()
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "  {} {} reinstall failed: {}",
-                    style("✗").red(),
-                    style(dep_name).magenta(),
-                    e
-                );
-            }
-        }
-    }
 
     Ok(())
 }

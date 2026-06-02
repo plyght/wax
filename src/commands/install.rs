@@ -1668,7 +1668,7 @@ async fn install_casks(
     // --- Phase 2: per-cask pipelines (download → verify → install) with bounded overlap ---
     // While some casks are still downloading, others may already be installing. State persistence
     // is serialized so concurrent installs do not corrupt the cask JSON.
-    const CASK_PIPELINE_CONCURRENCY: usize = 8;
+    const CASK_PIPELINE_CONCURRENCY: usize = 15;
 
     // Register our MultiProgress for nested cask helpers (preflight, etc.) only once we know
     // we are past early returns; standalone installs own the global slot until phase 2 ends.

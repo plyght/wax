@@ -125,6 +125,42 @@ fn self_update_help_mentions_stable_and_nightly_flags() {
     assert!(stdout.contains("--clean"), "{stdout}");
 }
 
+#[test]
+fn upgrade_batches_cask_force_reinstalls() {
+    let source = std::fs::read_to_string("src/commands/upgrade.rs").unwrap();
+    assert!(
+        source.contains("install::install_quiet_force(&cache, &cask_names, true, false, false)"),
+        "upgrade should pass all outdated casks into one force reinstall pipeline"
+    );
+}
+
+#[test]
+fn cask_pipeline_concurrency_is_fifteen() {
+    let source = std::fs::read_to_string("src/commands/install.rs").unwrap();
+    assert!(
+        source.contains("const CASK_PIPELINE_CONCURRENCY: usize = 15;"),
+        "cask pipeline should keep up to 15 casks active"
+    );
+}
+
+#[test]
+fn upgrade_does_not_preplan_dependent_reinstalls() {
+    let source = std::fs::read_to_string("src/commands/upgrade.rs").unwrap();
+    assert!(
+        !source.contains("dependents_to_reinstall"),
+        "upgrade should not automatically reinstall reverse dependencies"
+    );
+}
+
+#[test]
+fn single_formula_upgrade_does_not_reinstall_dependents() {
+    let source = std::fs::read_to_string("src/commands/upgrade.rs").unwrap();
+    assert!(
+        !source.contains("reinstall_dependents"),
+        "single formula upgrade should leave healthy dependents untouched"
+    );
+}
+
 // ── list / tap list work offline ─────────────────────────────────────────────
 
 #[test]
