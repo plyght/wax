@@ -4,7 +4,7 @@ use crate::cache::Cache;
 use crate::cask::{CaskState, InstalledCask};
 use crate::commands::self_update::{self_update, Channel};
 use crate::commands::{install, uninstall};
-use crate::discovery::discover_manually_installed_casks;
+use crate::discovery::{discover_manually_installed_casks, normalize_package_token};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstallState};
 use crate::signal::{
@@ -138,6 +138,22 @@ fn merge_discovered_casks(
     caskroom_synced_names: &HashSet<String>,
 ) {
     for (name, discovered) in discovered_casks {
+        if let Some(app_key) = manual_app_key(&discovered) {
+            let stale_names = installed_casks
+                .iter()
+                .filter_map(|(installed_name, installed)| {
+                    if installed_name == &name || caskroom_synced_names.contains(installed_name) {
+                        return None;
+                    }
+                    (manual_app_key(installed).as_deref() == Some(app_key.as_str()))
+                        .then(|| installed_name.clone())
+                })
+                .collect::<Vec<_>>();
+            for stale_name in stale_names {
+                installed_casks.remove(&stale_name);
+            }
+        }
+
         installed_casks
             .entry(name.clone())
             .and_modify(|installed| {
@@ -159,6 +175,17 @@ fn merge_discovered_casks(
             })
             .or_insert(discovered);
     }
+}
+
+fn manual_app_key(cask: &InstalledCask) -> Option<String> {
+    if cask.artifact_type.as_deref() != Some("app") {
+        return None;
+    }
+
+    cask.app_name
+        .as_deref()
+        .map(normalize_package_token)
+        .filter(|name| !name.is_empty())
 }
 
 async fn sync_cask_state(cache: &Cache) -> Result<HashMap<String, InstalledCask>> {
@@ -1205,5 +1232,71 @@ mod tests {
         let cask = installed.get("example-cask").unwrap();
         assert_eq!(cask.version, "2.0.0");
         assert_eq!(cask.install_date, 2);
+    }
+
+    #[test]
+    fn merge_discovered_casks_replaces_stale_manual_app_token() {
+        let mut installed = HashMap::from([(
+            "example".to_string(),
+            InstalledCask {
+                name: "example".to_string(),
+                version: "1.0.0".to_string(),
+                install_date: 1,
+                artifact_type: Some("app".to_string()),
+                binary_paths: None,
+                app_name: Some("Example".to_string()),
+            },
+        )]);
+        let discovered = HashMap::from([(
+            "vendor-example".to_string(),
+            InstalledCask {
+                name: "vendor-example".to_string(),
+                version: "2.0.0".to_string(),
+                install_date: 2,
+                artifact_type: Some("app".to_string()),
+                binary_paths: None,
+                app_name: Some("Example.app".to_string()),
+            },
+        )]);
+
+        merge_discovered_casks(&mut installed, discovered, &HashSet::new());
+
+        assert!(!installed.contains_key("example"));
+        assert_eq!(installed.get("vendor-example").unwrap().version, "2.0.0");
+    }
+
+    #[test]
+    fn merge_discovered_casks_keeps_caskroom_synced_same_app_token() {
+        let mut installed = HashMap::from([(
+            "example".to_string(),
+            InstalledCask {
+                name: "example".to_string(),
+                version: "1.0.0".to_string(),
+                install_date: 1,
+                artifact_type: Some("app".to_string()),
+                binary_paths: None,
+                app_name: Some("Example".to_string()),
+            },
+        )]);
+        let discovered = HashMap::from([(
+            "vendor-example".to_string(),
+            InstalledCask {
+                name: "vendor-example".to_string(),
+                version: "2.0.0".to_string(),
+                install_date: 2,
+                artifact_type: Some("app".to_string()),
+                binary_paths: None,
+                app_name: Some("Example".to_string()),
+            },
+        )]);
+
+        merge_discovered_casks(
+            &mut installed,
+            discovered,
+            &HashSet::from(["example".to_string()]),
+        );
+
+        assert!(installed.contains_key("example"));
+        assert!(installed.contains_key("vendor-example"));
     }
 }

@@ -24,6 +24,21 @@ use tokio::process::Command;
 use tracing::debug;
 use tracing::info;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AppBundleMetadata {
+    bundle_name: String,
+    file_name: String,
+    bundle_identifier: Option<String>,
+    short_version: Option<String>,
+    bundle_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CaskMatch {
+    cask_index: usize,
+    version: Option<String>,
+}
+
 #[allow(dead_code)]
 pub async fn discover_manually_installed_casks(
     casks: &[Cask],
@@ -36,12 +51,10 @@ pub async fn discover_manually_installed_casks(
 
     #[cfg(target_os = "macos")]
     {
-        // Match application bundles against every known cask token/name alias.
-        let token_index = build_cask_token_index(casks);
-        let cask_index = casks
-            .iter()
-            .map(|cask| (cask.token.as_str(), cask))
-            .collect::<HashMap<_, _>>();
+        // Match application bundles against every known cask token/name alias,
+        // but keep all candidates so ambiguous names can be resolved by
+        // stronger bundle metadata instead of whichever cask appears first.
+        let candidate_index = build_cask_candidate_index(casks);
         let mut discovered = HashMap::new();
 
         // Scan the standard application roots so manually installed apps are
@@ -73,23 +86,13 @@ pub async fn discover_manually_installed_casks(
                     continue;
                 }
 
-                let bundle_name = read_app_bundle_name(&path)
-                    .await
-                    .unwrap_or_else(|| file_name.trim_end_matches(".app").to_string());
-
-                let token = resolve_cask_token(&token_index, &bundle_name)
-                    .or_else(|| resolve_cask_token(&token_index, &file_name));
-
-                let Some(token) = token else {
+                let app = read_app_bundle_metadata(&path, &file_name).await;
+                let Some(cask_match) = resolve_cask_match(casks, &candidate_index, &app) else {
                     continue;
                 };
+                let cask = &casks[cask_match.cask_index];
 
-                let version = read_app_bundle_version_for_cask(
-                    &path,
-                    cask_index.get(token.as_str()).copied(),
-                )
-                .await
-                .unwrap_or_else(|| "unknown".to_string());
+                let version = cask_match.version.unwrap_or_else(|| "unknown".to_string());
                 let install_date = entry
                     .metadata()
                     .await
@@ -99,14 +102,14 @@ pub async fn discover_manually_installed_casks(
                     .unwrap_or_else(unix_seconds_now);
 
                 discovered
-                    .entry(token.clone())
+                    .entry(cask.token.clone())
                     .or_insert_with(|| InstalledCask {
-                        name: token,
+                        name: cask.token.clone(),
                         version,
                         install_date,
                         artifact_type: Some("app".to_string()),
                         binary_paths: None,
-                        app_name: Some(bundle_name),
+                        app_name: Some(app.bundle_name),
                     });
             }
         }
@@ -173,14 +176,17 @@ pub async fn discover_linux_system_packages(
 }
 
 #[allow(dead_code)]
-fn build_cask_token_index(casks: &[Cask]) -> HashMap<String, String> {
+fn build_cask_candidate_index(casks: &[Cask]) -> HashMap<String, Vec<usize>> {
     let mut index = HashMap::new();
 
-    for cask in casks {
+    for (cask_index, cask) in casks.iter().enumerate() {
         for alias in cask_tokens(cask) {
-            index
+            let candidates = index
                 .entry(normalize_package_token(&alias))
-                .or_insert_with(|| cask.token.clone());
+                .or_insert_with(Vec::new);
+            if !candidates.contains(&cask_index) {
+                candidates.push(cask_index);
+            }
         }
     }
 
@@ -211,19 +217,83 @@ fn cask_tokens(cask: &Cask) -> Vec<String> {
 }
 
 #[allow(dead_code)]
-fn resolve_cask_token(token_index: &HashMap<String, String>, value: &str) -> Option<String> {
+fn candidate_indices_for_value(
+    candidate_index: &HashMap<String, Vec<usize>>,
+    value: &str,
+) -> Vec<usize> {
+    let mut candidates = Vec::new();
     let normalized = normalize_package_token(value);
-    if let Some(token) = token_index.get(&normalized) {
-        return Some(token.clone());
+    if let Some(indices) = candidate_index.get(&normalized) {
+        candidates.extend(indices.iter().copied());
     }
 
     let stripped = value.trim_end_matches(".app");
     let normalized_stripped = normalize_package_token(stripped);
-    token_index.get(&normalized_stripped).cloned()
+    if normalized_stripped != normalized {
+        if let Some(indices) = candidate_index.get(&normalized_stripped) {
+            for index in indices {
+                if !candidates.contains(index) {
+                    candidates.push(*index);
+                }
+            }
+        }
+    }
+
+    candidates
 }
 
 #[allow(dead_code)]
-fn normalize_package_token(value: &str) -> String {
+fn resolve_cask_match(
+    casks: &[Cask],
+    candidate_index: &HashMap<String, Vec<usize>>,
+    app: &AppBundleMetadata,
+) -> Option<CaskMatch> {
+    let mut candidate_indices = candidate_indices_for_value(candidate_index, &app.bundle_name);
+    for index in candidate_indices_for_value(candidate_index, &app.file_name) {
+        if !candidate_indices.contains(&index) {
+            candidate_indices.push(index);
+        }
+    }
+
+    if candidate_indices.is_empty() {
+        return None;
+    }
+
+    if candidate_indices.len() == 1 {
+        let cask_index = candidate_indices[0];
+        return Some(CaskMatch {
+            cask_index,
+            version: app_version_for_cask(app, &casks[cask_index]),
+        });
+    }
+
+    let mut scored = candidate_indices
+        .into_iter()
+        .map(|cask_index| {
+            let cask = &casks[cask_index];
+            let score = cask_match_score(app, cask);
+            (cask_index, score)
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| casks[a.0].token.cmp(&casks[b.0].token))
+    });
+
+    let (best_index, best_score) = scored[0];
+    let second_score = scored.get(1).map(|(_, score)| *score).unwrap_or(0);
+    if best_score >= 50 && best_score > second_score {
+        Some(CaskMatch {
+            cask_index: best_index,
+            version: app_version_for_cask(app, &casks[best_index]),
+        })
+    } else {
+        None
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn normalize_package_token(value: &str) -> String {
     let value = value
         .replace(".app", "")
         .replace("_", "-")
@@ -256,6 +326,74 @@ fn normalize_package_token(value: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+fn cask_match_score(app: &AppBundleMetadata, cask: &Cask) -> i32 {
+    let mut score = 0;
+    if cask_version_matches_app(app, cask) {
+        score += 100;
+    }
+    if bundle_identifier_matches_cask(app.bundle_identifier.as_deref(), cask) {
+        score += 60;
+    }
+    score
+}
+
+fn app_version_for_cask(app: &AppBundleMetadata, cask: &Cask) -> Option<String> {
+    if let (Some(short), Some(bundle)) = (&app.short_version, &app.bundle_version) {
+        if let Some(version) = combine_bundle_version_for_cask(short, bundle, &cask.version) {
+            return Some(version);
+        }
+    }
+
+    app.short_version
+        .clone()
+        .or_else(|| app.bundle_version.clone())
+}
+
+fn cask_version_matches_app(app: &AppBundleMetadata, cask: &Cask) -> bool {
+    if app
+        .short_version
+        .as_deref()
+        .is_some_and(|version| version == cask.version)
+    {
+        return true;
+    }
+    if app
+        .bundle_version
+        .as_deref()
+        .is_some_and(|version| version == cask.version)
+    {
+        return true;
+    }
+
+    if let (Some(short), Some(bundle)) = (&app.short_version, &app.bundle_version) {
+        return combine_bundle_version_for_cask(short, bundle, &cask.version).is_some();
+    }
+
+    false
+}
+
+fn bundle_identifier_matches_cask(bundle_identifier: Option<&str>, cask: &Cask) -> bool {
+    let Some(vendor) = bundle_identifier_vendor(bundle_identifier) else {
+        return false;
+    };
+
+    let token = normalize_package_token(&cask.token);
+    let full_token = normalize_package_token(&cask.full_token);
+    let homepage = normalize_package_token(&cask.homepage);
+
+    token.split('-').any(|part| part == vendor)
+        || full_token.split('-').any(|part| part == vendor)
+        || homepage.split('-').any(|part| part == vendor)
+}
+
+fn bundle_identifier_vendor(bundle_identifier: Option<&str>) -> Option<String> {
+    let common_prefixes = ["app", "co", "com", "io", "net", "org"];
+    bundle_identifier?
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|part| part.to_ascii_lowercase())
+        .find(|part| !part.is_empty() && !common_prefixes.contains(&part.as_str()))
+}
+
 #[cfg(target_os = "macos")]
 fn macos_application_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/Applications")];
@@ -263,6 +401,19 @@ fn macos_application_roots() -> Vec<PathBuf> {
         roots.push(home.join("Applications"));
     }
     roots
+}
+
+#[cfg(target_os = "macos")]
+async fn read_app_bundle_metadata(path: &Path, file_name: &str) -> AppBundleMetadata {
+    AppBundleMetadata {
+        bundle_name: read_app_bundle_name(path)
+            .await
+            .unwrap_or_else(|| file_name.trim_end_matches(".app").to_string()),
+        file_name: file_name.to_string(),
+        bundle_identifier: read_info_plist_string(path, "CFBundleIdentifier").await,
+        short_version: read_info_plist_string(path, "CFBundleShortVersionString").await,
+        bundle_version: read_info_plist_string(path, "CFBundleVersion").await,
+    }
 }
 
 #[allow(dead_code)]
@@ -279,29 +430,13 @@ async fn read_app_bundle_name(path: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+#[allow(dead_code)]
 pub async fn read_app_bundle_version(path: &Path) -> Option<String> {
     if let Some(version) = read_info_plist_string(path, "CFBundleShortVersionString").await {
         Some(version)
     } else {
         read_info_plist_string(path, "CFBundleVersion").await
     }
-}
-
-async fn read_app_bundle_version_for_cask(path: &Path, cask: Option<&Cask>) -> Option<String> {
-    if cask.is_none() {
-        return read_app_bundle_version(path).await;
-    }
-
-    let short_version = read_info_plist_string(path, "CFBundleShortVersionString").await;
-    let bundle_version = read_info_plist_string(path, "CFBundleVersion").await;
-
-    if let (Some(cask), Some(short), Some(bundle)) = (cask, &short_version, &bundle_version) {
-        if let Some(version) = combine_bundle_version_for_cask(short, bundle, &cask.version) {
-            return Some(version);
-        }
-    }
-
-    short_version.or(bundle_version)
 }
 
 fn combine_bundle_version_for_cask(
@@ -594,15 +729,104 @@ mod tests {
             deprecated: false,
             disabled: false,
         };
-        let index = build_cask_token_index(&[cask]);
-        assert_eq!(
-            resolve_cask_token(&index, "Google Chrome.app"),
-            Some("google-chrome".to_string())
-        );
-        assert_eq!(
-            resolve_cask_token(&index, "Google Chrome"),
-            Some("google-chrome".to_string())
-        );
+        let casks = vec![cask];
+        let index = build_cask_candidate_index(&casks);
+        let app = AppBundleMetadata {
+            bundle_name: "Google Chrome".to_string(),
+            file_name: "Google Chrome.app".to_string(),
+            bundle_identifier: None,
+            short_version: Some("1.0".to_string()),
+            bundle_version: None,
+        };
+        let resolved = resolve_cask_match(&casks, &index, &app).unwrap();
+
+        assert_eq!(casks[resolved.cask_index].token, "google-chrome");
+        assert_eq!(resolved.version.as_deref(), Some("1.0"));
+    }
+
+    fn test_cask(token: &str, names: &[&str], homepage: &str, version: &str) -> Cask {
+        Cask {
+            token: token.to_string(),
+            full_token: token.to_string(),
+            name: names.iter().map(|name| name.to_string()).collect(),
+            desc: None,
+            homepage: homepage.to_string(),
+            version: version.to_string(),
+            deprecated: false,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn prefers_exact_version_when_app_name_is_ambiguous() {
+        let casks = vec![
+            test_cask("example", &["Example"], "https://example.invalid/", "9.9.9"),
+            test_cask(
+                "vendor-example",
+                &["Example"],
+                "https://vendor.invalid/example",
+                "1.2.3",
+            ),
+        ];
+        let index = build_cask_candidate_index(&casks);
+        let app = AppBundleMetadata {
+            bundle_name: "Example".to_string(),
+            file_name: "Example.app".to_string(),
+            bundle_identifier: None,
+            short_version: Some("1.2.3".to_string()),
+            bundle_version: None,
+        };
+        let resolved = resolve_cask_match(&casks, &index, &app).unwrap();
+
+        assert_eq!(casks[resolved.cask_index].token, "vendor-example");
+        assert_eq!(resolved.version.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn uses_bundle_identifier_to_break_ambiguous_app_name_tie() {
+        let casks = vec![
+            test_cask("example", &["Example"], "https://example.invalid/", "9.9.9"),
+            test_cask(
+                "vendor-example",
+                &["Example"],
+                "https://vendor.invalid/example",
+                "8.8.8",
+            ),
+        ];
+        let index = build_cask_candidate_index(&casks);
+        let app = AppBundleMetadata {
+            bundle_name: "Example".to_string(),
+            file_name: "Example.app".to_string(),
+            bundle_identifier: Some("com.vendor.Example".to_string()),
+            short_version: Some("1.2.3".to_string()),
+            bundle_version: None,
+        };
+        let resolved = resolve_cask_match(&casks, &index, &app).unwrap();
+
+        assert_eq!(casks[resolved.cask_index].token, "vendor-example");
+    }
+
+    #[test]
+    fn does_not_guess_when_app_name_is_ambiguous() {
+        let casks = vec![
+            test_cask("example", &["Example"], "https://example.invalid/", "9.9.9"),
+            test_cask(
+                "vendor-example",
+                &["Example"],
+                "https://vendor.invalid/example",
+                "8.8.8",
+            ),
+        ];
+        let index = build_cask_candidate_index(&casks);
+        let app = AppBundleMetadata {
+            bundle_name: "Example".to_string(),
+            file_name: "Example.app".to_string(),
+            bundle_identifier: None,
+            short_version: Some("1.2.3".to_string()),
+            bundle_version: None,
+        };
+
+        assert_eq!(resolve_cask_match(&casks, &index, &app), None);
     }
 
     #[test]
