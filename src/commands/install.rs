@@ -20,7 +20,7 @@ use crate::ui::{
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use sha2::Digest;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -785,6 +785,8 @@ async fn install_impl(
         }
     }
 
+    check_already_installed_formula_linkages(&already_installed, &installed_packages)?;
+
     if !errors.is_empty() && !quiet {
         for (pkg, err) in &errors {
             eprintln!("{}: {}", pkg, err);
@@ -1324,6 +1326,50 @@ fn infer_artifact_type_from_cask_artifacts(
     }
 
     None
+}
+
+fn check_already_installed_formula_linkages(
+    packages: &[String],
+    installed_packages: &HashMap<String, InstalledPackage>,
+) -> Result<Vec<PathBuf>> {
+    check_already_installed_formula_linkages_with_cellar(packages, installed_packages, |mode| {
+        mode.cellar_path()
+    })
+}
+
+fn check_already_installed_formula_linkages_with_cellar<F>(
+    packages: &[String],
+    installed_packages: &HashMap<String, InstalledPackage>,
+    mut cellar_for_mode: F,
+) -> Result<Vec<PathBuf>>
+where
+    F: FnMut(InstallMode) -> Result<PathBuf>,
+{
+    let mut checked = Vec::new();
+
+    for package in packages {
+        let Some(installed_package) = installed_packages.get(package) else {
+            continue;
+        };
+
+        let version_dir = cellar_for_mode(installed_package.install_mode)?
+            .join(&installed_package.name)
+            .join(&installed_package.version);
+
+        if !version_dir.exists() {
+            continue;
+        }
+
+        BottleDownloader::validate_runtime(&version_dir).map_err(|err| {
+            WaxError::InstallError(format!(
+                "{} is already installed, but runtime linkage check failed: {}. Run wax reinstall {}",
+                package, err, package
+            ))
+        })?;
+        checked.push(version_dir);
+    }
+
+    Ok(checked)
 }
 
 /// Pick the cellar version directory inside an extracted bottle (`name/<version>/...`).
@@ -2337,7 +2383,11 @@ async fn install_from_downloaded(
 
 #[cfg(test)]
 mod tests {
-    use super::tap_name_from_qualified_package;
+    use super::{
+        check_already_installed_formula_linkages_with_cellar, tap_name_from_qualified_package,
+    };
+    use crate::install::{InstallMode, InstalledPackage};
+    use std::collections::HashMap;
 
     #[test]
     fn tap_name_from_qualified_package_uses_first_two_segments() {
@@ -2351,5 +2401,42 @@ mod tests {
     fn tap_name_from_qualified_package_rejects_unqualified_names() {
         assert_eq!(tap_name_from_qualified_package("package"), None);
         assert_eq!(tap_name_from_qualified_package("user/tap"), None);
+    }
+
+    #[test]
+    fn already_installed_linkage_check_uses_recorded_install_location() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let cellar = tmp.path().join("Cellar");
+        let version_dir = cellar.join("ripgrep/14.1.1");
+        std::fs::create_dir_all(&version_dir).unwrap();
+
+        let mut installed = HashMap::new();
+        installed.insert(
+            "ripgrep".to_string(),
+            InstalledPackage {
+                name: "ripgrep".to_string(),
+                version: "14.1.1".to_string(),
+                platform: "x86_64_linux".to_string(),
+                install_date: 0,
+                install_mode: InstallMode::User,
+                from_source: false,
+                bottle_rebuild: 0,
+                bottle_sha256: None,
+                pinned: false,
+            },
+        );
+
+        let checked = check_already_installed_formula_linkages_with_cellar(
+            &["ripgrep".to_string()],
+            &installed,
+            |mode| {
+                assert_eq!(mode, InstallMode::User);
+                Ok(cellar.clone())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(checked, vec![version_dir]);
     }
 }
