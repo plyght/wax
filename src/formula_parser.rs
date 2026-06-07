@@ -60,7 +60,7 @@ pub struct CaskLinuxArtifact {
     pub sha256: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinInstall {
     pub source: String,
     pub destination: String,
@@ -321,6 +321,7 @@ impl FormulaParser {
     }
 
     /// Parse `bin.install "filename"` entries from a formula install block.
+    #[cfg(test)]
     pub(crate) fn extract_bin_installs(install_block: &str) -> Vec<String> {
         Self::extract_bin_install_targets(install_block)
             .into_iter()

@@ -842,6 +842,13 @@ impl BottleDownloader {
         Ok(())
     }
 
+    pub fn validate_runtime(dir: &Path) -> Result<()> {
+        if std::env::consts::OS != "linux" {
+            return Ok(());
+        }
+        validate_runtime_dir(dir)
+    }
+
     fn relocate_macho(path: &Path, prefix: &str, cellar: &str, library: &str) -> Result<()> {
         use std::process::Command;
 
@@ -1099,6 +1106,137 @@ fn which_patchelf() -> Option<String> {
             }
         }
     }
+    None
+}
+
+fn validate_runtime_dir(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            validate_runtime_dir(&path)?;
+            continue;
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let content = match std::fs::read(&path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+
+        if content.len() < 4 || &content[0..4] != b"\x7fELF" {
+            continue;
+        }
+
+        if binary_has_homebrew_placeholders(&path) {
+            return Err(WaxError::InstallError(format!(
+                "Installed Linux binary still contains unresolved Homebrew placeholders: {}",
+                path.display()
+            )));
+        }
+
+        if let Some(interpreter) = elf_interpreter(&path) {
+            if interpreter.contains("@@HOMEBREW_") {
+                return Err(WaxError::InstallError(format!(
+                    "Installed binary has unresolved runtime loader placeholder: {} -> {}",
+                    path.display(),
+                    interpreter
+                )));
+            }
+            if interpreter.starts_with('/') && !Path::new(&interpreter).exists() {
+                return Err(WaxError::InstallError(format!(
+                    "Installed binary has missing runtime loader: {} -> {}",
+                    path.display(),
+                    interpreter
+                )));
+            }
+        }
+
+        if let Some(missing_lib) = elf_missing_dependency(&path) {
+            return Err(WaxError::InstallError(format!(
+                "Installed binary has unresolved shared library dependency: {} -> {}",
+                path.display(),
+                missing_lib
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn binary_has_homebrew_placeholders(path: &Path) -> bool {
+    let Ok(output) = Command::new("readelf")
+        .args(["-d", path.to_str().unwrap_or_default()])
+        .output()
+    else {
+        return false;
+    };
+
+    if !output.status.success() {
+        return false;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.contains("@@HOMEBREW_PREFIX@@") || text.contains("@@HOMEBREW_CELLAR@@")
+}
+
+fn elf_missing_dependency(path: &Path) -> Option<String> {
+    let output = Command::new("ldd")
+        .arg(path.to_str().unwrap_or_default())
+        .output()
+        .ok()?;
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for line in combined.lines() {
+        if let Some((name, _)) = line.split_once("=> not found") {
+            return Some(name.trim().to_string());
+        }
+    }
+
+    None
+}
+
+fn elf_interpreter(path: &Path) -> Option<String> {
+    if let Some(patchelf) = which_patchelf() {
+        if let Ok(output) = Command::new(&patchelf)
+            .args(["--print-interpreter", path.to_str()?])
+            .output()
+        {
+            if output.status.success() {
+                let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !value.is_empty() {
+                    return Some(value);
+                }
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("readelf")
+        .args(["-l", path.to_str()?])
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let (Some(start), Some(end)) = (line.find('['), line.find(']')) {
+                    let value = line[start + 1..end].trim();
+                    if value.starts_with('/') {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
