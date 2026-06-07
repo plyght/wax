@@ -109,6 +109,8 @@ struct Cli {
 
     #[arg(
         long,
+        alias = "tta",
+        alias = "time",
         global = true,
         help = "Print startup time before running the command"
     )]

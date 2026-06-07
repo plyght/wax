@@ -146,6 +146,28 @@ fn time_to_action_flag_reports_before_command_output() {
 }
 
 #[test]
+fn time_to_action_aliases_report_before_command_output() {
+    for alias in ["--tta", "--time"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = wax()
+            .env("HOME", tmp.path())
+            .env("WAX_CACHE_DIR", tmp.path())
+            .env("CI", "1")
+            .args([alias, "list"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "wax {alias} list failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("time to action:"), "{stderr}");
+        assert!(stderr.contains("ms"), "{stderr}");
+    }
+}
+
+#[test]
 fn upgrade_batches_cask_force_reinstalls() {
     let source = std::fs::read_to_string("src/commands/upgrade.rs").unwrap();
     assert!(
