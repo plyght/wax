@@ -59,10 +59,10 @@ pub async fn uninstall(
 
     if total > 1 && !dry_run {
         println!(
-            "\n{} {} removed [{}ms]",
+            "\n{} {} removed{}",
             style(total).bold(),
             if total == 1 { "package" } else { "packages" },
-            start.elapsed().as_millis()
+            crate::timing::elapsed_suffix(start.elapsed())
         );
     }
 
@@ -247,12 +247,12 @@ async fn uninstall_package_direct(
 
     if !quiet {
         println!(
-            "{} {}{}{} {}",
+            "{} {}{}{}{}",
             style("✗").red().bold(),
             prefix,
             style(formula_name).magenta(),
             style(format!("@{}", package.version)).dim(),
-            style(format!("[{}ms]", start.elapsed().as_millis())).dim(),
+            style(crate::timing::elapsed_suffix(start.elapsed())).dim(),
         );
     }
 
@@ -372,7 +372,10 @@ async fn uninstall_cask(
         if !quiet {
             println!("- {} (cask)", cask_name);
             let elapsed = start.elapsed();
-            println!("\ndry run - no changes made [{}ms]", elapsed.as_millis());
+            println!(
+                "\ndry run - no changes made{}",
+                crate::timing::elapsed_suffix(elapsed)
+            );
         }
         return Ok(());
     }
@@ -454,11 +457,11 @@ async fn uninstall_cask(
 
     if !quiet {
         println!(
-            "{} {}{}  {}",
+            "{} {}{}{}",
             style("✗").red().bold(),
             style(cask_name).magenta(),
             style(format!("@{} (cask)", cask.version)).dim(),
-            style(format!("[{}ms]", start.elapsed().as_millis())).dim(),
+            style(crate::timing::elapsed_suffix(start.elapsed())).dim(),
         );
     }
 

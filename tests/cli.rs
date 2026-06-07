@@ -125,8 +125,15 @@ fn self_update_help_mentions_stable_and_nightly_flags() {
     assert!(stdout.contains("--clean"), "{stdout}");
 }
 
+fn has_timing_line(stdout: &str) -> bool {
+    stdout.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with('[') && trimmed.ends_with("ms]")
+    })
+}
+
 #[test]
-fn time_to_action_flag_reports_before_command_output() {
+fn time_to_action_flag_prints_elapsed_footer() {
     let tmp = tempfile::tempdir().unwrap();
     let out = wax()
         .env("HOME", tmp.path())
@@ -140,13 +147,12 @@ fn time_to_action_flag_reports_before_command_output() {
         "wax --time-to-action list failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("time to action:"), "{stderr}");
-    assert!(stderr.contains("ms"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(has_timing_line(&stdout), "{stdout}");
 }
 
 #[test]
-fn time_to_action_aliases_report_before_command_output() {
+fn time_to_action_aliases_print_elapsed_footer() {
     for alias in ["--tta", "--time"] {
         let tmp = tempfile::tempdir().unwrap();
         let out = wax()
@@ -161,10 +167,28 @@ fn time_to_action_aliases_report_before_command_output() {
             "wax {alias} list failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("time to action:"), "{stderr}");
-        assert!(stderr.contains("ms"), "{stderr}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(has_timing_line(&stdout), "{stdout}");
     }
+}
+
+#[test]
+fn list_without_time_flag_omits_elapsed_footer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = wax()
+        .env("HOME", tmp.path())
+        .env("WAX_CACHE_DIR", tmp.path())
+        .env("CI", "1")
+        .args(["list"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "wax list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!has_timing_line(&stdout), "{stdout}");
 }
 
 #[test]

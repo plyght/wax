@@ -150,7 +150,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             pb.finish_and_clear();
         }
         println!(
-            "{} {}{}@{}  {}",
+            "{} {}{}@{}{}",
             style("✓").green().bold(),
             prefix,
             style(name).magenta(),
@@ -161,15 +161,15 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
                     .unwrap_or("latest")
             )
             .dim(),
-            style(format!("[{}ms]", pkg_start.elapsed().as_millis())).dim(),
+            style(crate::timing::elapsed_suffix(pkg_start.elapsed())).dim(),
         );
     }
 
     println!(
-        "\n{} {} reinstalled [{}ms]",
+        "\n{} {} reinstalled{}",
         style(total).bold(),
         if total == 1 { "package" } else { "packages" },
-        start.elapsed().as_millis()
+        crate::timing::elapsed_suffix(start.elapsed())
     );
 
     Ok(())

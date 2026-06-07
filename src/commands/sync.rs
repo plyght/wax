@@ -381,14 +381,14 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     println!();
     println!(
-        "{} {} synced [{}ms]",
+        "{} {} synced{}",
         total_synced,
         if total_synced == 1 {
             "package/cask"
         } else {
             "packages/casks"
         },
-        elapsed.as_millis()
+        crate::timing::elapsed_suffix(elapsed)
     );
 
     Ok(())

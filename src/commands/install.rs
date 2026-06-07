@@ -2085,25 +2085,25 @@ async fn install_casks(
     if failed.is_empty() {
         if !quiet {
             println!(
-                "\n{} {} installed [{}ms]",
+                "\n{} {} installed{}",
                 installed_count,
                 if installed_count == 1 {
                     "cask"
                 } else {
                     "casks"
                 },
-                elapsed.as_millis()
+                crate::timing::elapsed_suffix(elapsed)
             );
         }
         Ok(())
     } else {
         if !quiet {
             println!(
-                "\n{}/{} casks installed ({} failed) [{}ms]",
+                "\n{}/{} casks installed ({} failed){}",
                 installed_count,
                 installed_count + failed.len(),
                 failed.len(),
-                elapsed.as_millis()
+                crate::timing::elapsed_suffix(elapsed)
             );
         }
         Err(WaxError::InstallError(format!(

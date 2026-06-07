@@ -378,10 +378,10 @@ pub async fn version_install(
 
     let elapsed = start.elapsed();
     println!(
-        "\n+ {}@{} [{}ms]",
+        "\n+ {}@{}{}",
         style(formula_name).magenta(),
         style(version).cyan(),
-        elapsed.as_millis()
+        crate::timing::elapsed_suffix(elapsed)
     );
 
     Ok(())

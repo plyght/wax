@@ -35,10 +35,10 @@ pub async fn outdated(cache: &Cache) -> Result<()> {
 
     let elapsed = start.elapsed();
     println!(
-        "\n{} package{} can be upgraded [{}ms]",
+        "\n{} package{} can be upgraded{}",
         style(outdated.len()).cyan(),
         if outdated.len() == 1 { "" } else { "s" },
-        elapsed.as_millis()
+        crate::timing::elapsed_suffix(elapsed)
     );
 
     Ok(())

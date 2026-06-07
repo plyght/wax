@@ -16,7 +16,7 @@ wax [OPTIONS] <COMMAND>
 Enable verbose logging. Writes detailed logs to cache directory.
 
 `--time-to-action`, `--tta`, `--time`
-Print startup time before running the command.
+Show command duration in result output.
 
 `--help, -h`
 Display help information for wax or specific commands.

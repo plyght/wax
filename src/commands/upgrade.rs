@@ -334,7 +334,9 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
 
     if outdated.is_empty() {
         println!("all packages are up to date");
-        println!("\n[{}ms] done", start.elapsed().as_millis());
+        if crate::timing::enabled() {
+            println!("\n{} done", crate::timing::elapsed_text(start.elapsed()));
+        }
         return Ok(());
     }
 
@@ -840,17 +842,17 @@ async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) ->
     let elapsed = start.elapsed();
     if fail_count > 0 {
         println!(
-            "\n{} upgraded, {} failed [{}ms]",
+            "\n{} upgraded, {} failed{}",
             style(success_count).green(),
             style(fail_count).red(),
-            elapsed.as_millis()
+            crate::timing::elapsed_suffix(elapsed)
         );
     } else {
         println!(
-            "\n{} package{} upgraded [{}ms]",
+            "\n{} package{} upgraded{}",
             style(success_count).green(),
             if success_count == 1 { "" } else { "s" },
-            elapsed.as_millis()
+            crate::timing::elapsed_suffix(elapsed)
         );
     }
 

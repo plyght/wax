@@ -253,18 +253,18 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
     println!();
     if failed == 0 {
         println!(
-            "{} installed, {} skipped [{}ms]",
+            "{} installed, {} skipped{}",
             style(success).green(),
             style(skipped).dim(),
-            elapsed.as_millis()
+            crate::timing::elapsed_suffix(elapsed)
         );
     } else {
         println!(
-            "{} installed, {} failed, {} skipped [{}ms]",
+            "{} installed, {} failed, {} skipped{}",
             style(success).green(),
             style(failed).red(),
             style(skipped).dim(),
-            elapsed.as_millis()
+            crate::timing::elapsed_suffix(elapsed)
         );
     }
 

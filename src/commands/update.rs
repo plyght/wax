@@ -132,23 +132,23 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
 
     if tap_count > 0 {
         println!(
-            "{} {} · {} formulae, {} casks, {} {} [{}ms]",
+            "{} {} · {} formulae, {} casks, {} {}{}",
             style("✓").green(),
             core_status,
             style(formula_count).cyan(),
             style(cask_count).cyan(),
             style(tap_count).cyan(),
             if tap_count == 1 { "tap" } else { "taps" },
-            elapsed.as_millis()
+            crate::timing::elapsed_suffix(elapsed)
         );
     } else {
         println!(
-            "{} {} · {} formulae, {} casks [{}ms]",
+            "{} {} · {} formulae, {} casks{}",
             style("✓").green(),
             core_status,
             style(formula_count).cyan(),
             style(cask_count).cyan(),
-            elapsed.as_millis()
+            crate::timing::elapsed_suffix(elapsed)
         );
     }
 
