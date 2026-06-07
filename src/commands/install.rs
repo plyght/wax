@@ -99,29 +99,9 @@ async fn install_from_source_task(
 
         // Extract tarball.
         let temp_dir = TempDir::new()?;
-        let archive_ext = if dl_url.ends_with(".tar.gz") || dl_url.ends_with(".tgz") {
-            "tar.gz"
-        } else {
-            "tar.bz2"
-        };
-        let archive_path = temp_dir
-            .path()
-            .join(format!("{}.{}", formula.name, archive_ext));
-        let extract_dir = temp_dir.path().join("extracted");
-        tokio::fs::write(&archive_path, &bytes).await?;
-        tokio::fs::create_dir_all(&extract_dir).await?;
-
-        let tar_output = tokio::process::Command::new("tar")
-            .args(["xf", &archive_path.to_string_lossy(), "-C"])
-            .arg(&extract_dir)
-            .output()
-            .await?;
-        if !tar_output.status.success() {
-            return Err(WaxError::BuildError(format!(
-                "Failed to extract tarball: {}",
-                String::from_utf8_lossy(&tar_output.stderr)
-            )));
-        }
+        let extract_dir =
+            stage_binary_release_download(bytes.as_ref(), &dl_url, &formula.name, temp_dir.path())
+                .await?;
 
         // Find the single extracted subdirectory, or use extract_dir itself.
         let src_dir = std::fs::read_dir(&extract_dir)
@@ -142,10 +122,23 @@ async fn install_from_source_task(
         let install_prefix = temp_dir.path().join("install");
         let bin_dir = install_prefix.join("bin");
         tokio::fs::create_dir_all(&bin_dir).await?;
-        for file in &parsed_formula.bin_installs {
-            let src = src_dir.join(file);
+        let mut copied_bins = 0usize;
+        let mut missing_bins = Vec::new();
+        for target in &parsed_formula.bin_install_targets {
+            let dest_path = Path::new(&target.destination);
+            if dest_path.is_absolute() || target.destination.split('/').any(|part| part == "..") {
+                return Err(WaxError::BuildError(format!(
+                    "Formula '{}' has invalid bin.install destination '{}'",
+                    formula.name, target.destination
+                )));
+            }
+
+            let src = resolve_bin_install_source(&src_dir, &target.source).await?;
             if src.exists() {
-                let dst = bin_dir.join(file);
+                let dst = bin_dir.join(&target.destination);
+                if let Some(parent) = dst.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
                 tokio::fs::copy(&src, &dst).await?;
                 #[cfg(unix)]
                 {
@@ -154,7 +147,26 @@ async fn install_from_source_task(
                     perms.set_mode(perms.mode() | 0o111);
                     tokio::fs::set_permissions(&dst, perms).await?;
                 }
+                copied_bins += 1;
+            } else {
+                if !target.optional {
+                    missing_bins.push(target.source.clone());
+                }
             }
+        }
+        if !missing_bins.is_empty() {
+            return Err(WaxError::BuildError(format!(
+                "Formula '{}' is broken: bin.install target(s) not found after extracting {}: {}",
+                formula.name,
+                dl_url,
+                missing_bins.join(", ")
+            )));
+        }
+        if copied_bins == 0 {
+            return Err(WaxError::BuildError(format!(
+                "Formula '{}' is broken: no bin.install targets were installed",
+                formula.name
+            )));
         }
 
         spinner.set_message("Installing to Cellar...");
@@ -283,6 +295,108 @@ async fn install_from_source_task(
     );
 
     Ok(())
+}
+
+async fn resolve_bin_install_source(root: &Path, source: &str) -> Result<std::path::PathBuf> {
+    if !source.contains('*') {
+        return Ok(root.join(source));
+    }
+    let source_path = Path::new(source);
+    if source_path.components().count() != 1 {
+        return Err(WaxError::BuildError(format!(
+            "Unsupported bin.install glob '{}'",
+            source
+        )));
+    }
+    let Some((prefix, suffix)) = source.split_once('*') else {
+        return Ok(root.join(source));
+    };
+    let mut matches = Vec::new();
+    let mut entries = tokio::fs::read_dir(root).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if name.starts_with(prefix) && name.ends_with(suffix) {
+            matches.push(entry.path());
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Ok(root.join(source)),
+        _ => Err(WaxError::BuildError(format!(
+            "Formula bin.install glob '{}' matched multiple files",
+            source
+        ))),
+    }
+}
+
+async fn stage_binary_release_download(
+    bytes: &[u8],
+    dl_url: &str,
+    formula_name: &str,
+    temp_dir: &Path,
+) -> Result<PathBuf> {
+    let extract_dir = temp_dir.join("extracted");
+    tokio::fs::create_dir_all(&extract_dir).await?;
+
+    if binary_release_url_is_archive(dl_url) {
+        let archive_path = temp_dir.join(binary_release_download_filename(dl_url, formula_name));
+        tokio::fs::write(&archive_path, bytes).await?;
+
+        let tar_output = tokio::process::Command::new("tar")
+            .arg("xf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(&extract_dir)
+            .output()
+            .await?;
+        if !tar_output.status.success() {
+            return Err(WaxError::BuildError(format!(
+                "Failed to extract tarball: {}",
+                String::from_utf8_lossy(&tar_output.stderr)
+            )));
+        }
+    } else {
+        tokio::fs::write(
+            extract_dir.join(binary_release_download_filename(dl_url, formula_name)),
+            bytes,
+        )
+        .await?;
+    }
+
+    Ok(extract_dir)
+}
+
+fn binary_release_url_is_archive(url: &str) -> bool {
+    let path = url
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .split('#')
+        .next()
+        .unwrap_or(url);
+    path.ends_with(".tar.gz")
+        || path.ends_with(".tgz")
+        || path.ends_with(".tar.bz2")
+        || path.ends_with(".tbz")
+        || path.ends_with(".tar.xz")
+        || path.ends_with(".txz")
+        || path.ends_with(".tar")
+}
+
+fn binary_release_download_filename(url: &str, formula_name: &str) -> String {
+    let path = url
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .split('#')
+        .next()
+        .unwrap_or(url);
+    path.rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(formula_name)
+        .to_string()
 }
 
 /// Clone and build from a formula's HEAD git URL.
@@ -2384,7 +2498,8 @@ async fn install_from_downloaded(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_already_installed_formula_linkages_with_cellar, tap_name_from_qualified_package,
+        check_already_installed_formula_linkages_with_cellar, stage_binary_release_download,
+        tap_name_from_qualified_package,
     };
     use crate::install::{InstallMode, InstalledPackage};
     use std::collections::HashMap;
@@ -2438,5 +2553,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(checked, vec![version_dir]);
+    }
+
+    #[tokio::test]
+    async fn binary_release_staging_keeps_direct_executable_downloads() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let src_dir = stage_binary_release_download(
+            b"#!/bin/sh\n",
+            "https://static.ampcode.com/cli/1.0.0/amp-darwin-arm64",
+            "ampcode",
+            tmp.path(),
+        )
+        .await
+        .unwrap();
+
+        let staged = src_dir.join("amp-darwin-arm64");
+        assert_eq!(std::fs::read(staged).unwrap(), b"#!/bin/sh\n");
     }
 }

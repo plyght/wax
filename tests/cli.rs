@@ -126,6 +126,26 @@ fn self_update_help_mentions_stable_and_nightly_flags() {
 }
 
 #[test]
+fn time_to_action_flag_reports_before_command_output() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = wax()
+        .env("HOME", tmp.path())
+        .env("WAX_CACHE_DIR", tmp.path())
+        .env("CI", "1")
+        .args(["--time-to-action", "list"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "wax --time-to-action list failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("time to action:"), "{stderr}");
+    assert!(stderr.contains("ms"), "{stderr}");
+}
+
+#[test]
 fn upgrade_batches_cask_force_reinstalls() {
     let source = std::fs::read_to_string("src/commands/upgrade.rs").unwrap();
     assert!(

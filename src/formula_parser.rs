@@ -38,6 +38,7 @@ pub struct ParsedFormula {
     pub configure_args: Vec<String>,
     /// Files to copy to `bin/` via `bin.install "..."` (binary-release formulas).
     pub bin_installs: Vec<String>,
+    pub bin_install_targets: Vec<BinInstall>,
 }
 
 pub struct FormulaParser;
@@ -57,6 +58,13 @@ pub struct CaskLinuxArtifact {
     pub url: String,
     /// sha256 checksum, or `None` if the cask uses `:no_check`.
     pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinInstall {
+    pub source: String,
+    pub destination: String,
+    pub optional: bool,
 }
 
 impl FormulaParser {
@@ -102,7 +110,11 @@ impl FormulaParser {
         let build_system = Self::detect_build_system(&install_block);
         let configure_args = Self::extract_configure_args(&install_block);
         let install_commands = Self::extract_install_commands(&install_block);
-        let bin_installs = Self::extract_bin_installs(&install_block);
+        let bin_install_targets = Self::extract_bin_install_targets(&install_block);
+        let bin_installs = bin_install_targets
+            .iter()
+            .map(|target| target.source.clone())
+            .collect();
 
         Ok(ParsedFormula {
             name: name.to_string(),
@@ -121,6 +133,7 @@ impl FormulaParser {
             install_commands,
             configure_args,
             bin_installs,
+            bin_install_targets,
         })
     }
 
@@ -309,10 +322,47 @@ impl FormulaParser {
 
     /// Parse `bin.install "filename"` entries from a formula install block.
     pub(crate) fn extract_bin_installs(install_block: &str) -> Vec<String> {
-        let re = Regex::new(r#"bin\.install\s+"([^"]+)""#).unwrap();
-        re.captures_iter(install_block)
-            .map(|c| c[1].to_string())
+        Self::extract_bin_install_targets(install_block)
+            .into_iter()
+            .map(|target| target.source)
             .collect()
+    }
+
+    pub(crate) fn extract_bin_install_targets(install_block: &str) -> Vec<BinInstall> {
+        let re = Regex::new(r#"bin\.install\s+"([^"]+)"(?:\s*=>\s*"([^"]+)")?"#).unwrap();
+        let dir_re =
+            Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap();
+        let mut targets: Vec<BinInstall> = Vec::new();
+        for line in install_block.lines() {
+            targets.extend(re.captures_iter(line).map(|c| {
+                let source = c[1].to_string();
+                let destination = c.get(2).map(|m| m.as_str().to_string()).unwrap_or_else(|| {
+                    source
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(source.as_str())
+                        .to_string()
+                });
+                BinInstall {
+                    destination,
+                    optional: line.contains("if File.exist?"),
+                    source,
+                }
+            }));
+            targets.extend(dir_re.captures_iter(line).map(|c| {
+                let source = c[1].to_string();
+                let destination = c
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| source.clone());
+                BinInstall {
+                    destination,
+                    optional: line.contains("if File.exist?"),
+                    source,
+                }
+            }));
+        }
+        targets
     }
 
     /// For formulas with `on_linux`/`on_macos`/`on_arm`/`on_intel` conditional blocks,
@@ -760,6 +810,26 @@ end
             bins,
             vec!["poke-around", "poke-around-bridge.js", "menubar_linux.py"]
         );
+    }
+
+    #[test]
+    fn extract_bin_install_targets_finds_renames() {
+        let install_block = r#"
+    bin.install "amp-darwin-arm64" => "amp"
+"#;
+        let bins = FormulaParser::extract_bin_install_targets(install_block);
+        assert_eq!(bins[0].source, "amp-darwin-arm64");
+        assert_eq!(bins[0].destination, "amp");
+    }
+
+    #[test]
+    fn extract_bin_install_targets_finds_dir_first_renames() {
+        let install_block = r#"
+    bin.install Dir["amp-*"].first => "amp"
+"#;
+        let bins = FormulaParser::extract_bin_install_targets(install_block);
+        assert_eq!(bins[0].source, "amp-*");
+        assert_eq!(bins[0].destination, "amp");
     }
 
     #[test]
