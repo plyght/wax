@@ -2002,4 +2002,37 @@ mod tests {
 
         assert_eq!(version, "2.0.0");
     }
+
+    #[test]
+    fn test_detect_artifact_type() {
+        // Direct extensions
+        assert_eq!(detect_artifact_type("https://example.com/app.dmg"), Some("dmg"));
+        assert_eq!(detect_artifact_type("https://example.com/app.pkg"), Some("pkg"));
+        assert_eq!(detect_artifact_type("https://example.com/app.zip"), Some("zip"));
+
+        // Tarball variants all map to "tar.gz"
+        assert_eq!(detect_artifact_type("https://example.com/app.tar.gz"), Some("tar.gz"));
+        assert_eq!(detect_artifact_type("https://example.com/app.tgz"), Some("tar.gz"));
+        assert_eq!(detect_artifact_type("https://example.com/app.tar.bz2"), Some("tar.gz"));
+        assert_eq!(detect_artifact_type("https://example.com/app.tbz"), Some("tar.gz"));
+        assert_eq!(detect_artifact_type("https://example.com/app.tar.xz"), Some("tar.gz"));
+        assert_eq!(detect_artifact_type("https://example.com/app.txz"), Some("tar.gz"));
+
+        // Query parameters
+        assert_eq!(detect_artifact_type("https://example.com/app.dmg?version=1.0"), Some("dmg"));
+        assert_eq!(detect_artifact_type("https://example.com/app.zip?token=xyz123"), Some("zip"));
+
+        // Fragments
+        assert_eq!(detect_artifact_type("https://example.com/app.pkg#checksum"), Some("pkg"));
+        assert_eq!(detect_artifact_type("https://example.com/app.tar.gz?v=1#checksum"), Some("tar.gz"));
+
+        // Unsupported extensions
+        assert_eq!(detect_artifact_type("https://example.com/app.exe"), None);
+        assert_eq!(detect_artifact_type("https://example.com/app.msi"), None);
+        assert_eq!(detect_artifact_type("https://example.com/app.AppImage"), None);
+
+        // No extension
+        assert_eq!(detect_artifact_type("https://example.com/app"), None);
+        assert_eq!(detect_artifact_type("https://example.com/app?v=1"), None);
+    }
 }
