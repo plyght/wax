@@ -277,7 +277,9 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_path, sudo_password_prompt};
+    use super::{is_file_exists_error, is_permission_error, normalize_path, sudo_password_prompt};
+    use crate::error::WaxError;
+    use std::io::{Error, ErrorKind};
     use std::path::Path;
 
     #[test]
@@ -289,14 +291,60 @@ mod tests {
 
     #[test]
     fn test_normalize_path_does_not_resolve_symlinks() {
-        // Create a path that looks like it could be a symlink target but shouldn't be resolved
         let path = Path::new("some/relative/symlink");
         let normalized = normalize_path(path);
 
-        // It should be absolute
         assert!(normalized.is_absolute());
-
-        // It should end with the exact path we gave it, not resolved
         assert!(normalized.ends_with(path));
+    }
+
+    #[test]
+    fn test_is_permission_error() {
+        let err = WaxError::IoError(Error::new(ErrorKind::PermissionDenied, "permission denied"));
+        assert!(is_permission_error(&err));
+
+        let err = WaxError::IoError(Error::new(ErrorKind::NotFound, "not found"));
+        assert!(!is_permission_error(&err));
+
+        let err = WaxError::InstallError("Failed: permission denied".to_string());
+        assert!(is_permission_error(&err));
+
+        let err = WaxError::InstallError("Failed: Permission Denied".to_string());
+        assert!(is_permission_error(&err));
+
+        let err = WaxError::InstallError("Failed: os error 13".to_string());
+        assert!(is_permission_error(&err));
+
+        let err = WaxError::InstallError("Failed: OS ERROR 13".to_string());
+        assert!(is_permission_error(&err));
+
+        let err = WaxError::InstallError("Failed: something else".to_string());
+        assert!(!is_permission_error(&err));
+
+        let err = WaxError::FormulaNotFound("formula".to_string());
+        assert!(!is_permission_error(&err));
+    }
+
+    #[test]
+    fn test_is_file_exists_error() {
+        let io_err = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+        let err = WaxError::IoError(io_err);
+        assert!(is_file_exists_error(&err));
+
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let err = WaxError::IoError(io_err);
+        assert!(!is_file_exists_error(&err));
+
+        let err = WaxError::InstallError("Cannot proceed: File exists at path".to_string());
+        assert!(is_file_exists_error(&err));
+
+        let err = WaxError::InstallError("Failed with os error 17".to_string());
+        assert!(is_file_exists_error(&err));
+
+        let err = WaxError::InstallError("Permission denied".to_string());
+        assert!(!is_file_exists_error(&err));
+
+        let err = WaxError::CacheError("Corrupted cache".to_string());
+        assert!(!is_file_exists_error(&err));
     }
 }

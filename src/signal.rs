@@ -173,20 +173,77 @@ pub fn install_handler() {
 mod tests {
     use super::*;
     use indicatif::MultiProgress;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn reset_shutdown_state() {
+        SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+    }
 
     #[test]
     fn test_active_multi_operations() {
-        // Clear state initially
         clear_active_multi();
         assert!(clone_active_multi().is_none());
 
-        // Set state
         let multi = MultiProgress::new();
         set_active_multi(multi);
         assert!(clone_active_multi().is_some());
 
-        // Clear state again
         clear_active_multi();
         assert!(clone_active_multi().is_none());
+    }
+
+    #[test]
+    fn test_shutdown_request() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_shutdown_state();
+
+        assert!(!is_shutdown_requested());
+        request_shutdown();
+        assert!(is_shutdown_requested());
+
+        reset_shutdown_state();
+    }
+
+    #[test]
+    fn test_check_cancelled_normal() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_shutdown_state();
+
+        assert!(check_cancelled().is_ok());
+
+        reset_shutdown_state();
+    }
+
+    #[test]
+    fn test_check_cancelled_interrupted() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_shutdown_state();
+
+        request_shutdown();
+        let err = check_cancelled().unwrap_err();
+        assert!(matches!(err, WaxError::Interrupted));
+
+        reset_shutdown_state();
+    }
+
+    #[test]
+    fn test_critical_section_behavior() {
+        leave_critical_section();
+        assert!(!is_in_critical_section());
+
+        enter_critical_section();
+        assert!(is_in_critical_section());
+
+        leave_critical_section();
+        assert!(!is_in_critical_section());
+
+        {
+            let _guard = CriticalSection::new();
+            assert!(is_in_critical_section());
+        }
+
+        assert!(!is_in_critical_section());
     }
 }

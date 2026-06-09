@@ -441,4 +441,53 @@ mod formula_tests {
         let f = create_mock_formula("1.2.3", 2);
         assert_eq!(f.full_version(), "1.2.3_2");
     }
+
+    fn dummy_formula(bottle: Option<BottleInfo>) -> Formula {
+        Formula {
+            name: "test-formula".into(),
+            full_name: "test-formula".into(),
+            desc: None,
+            homepage: "https://example.com".into(),
+            versions: Versions {
+                stable: "1.0.0".into(),
+                bottle: bottle.is_some(),
+            },
+            revision: 0,
+            installed: None,
+            dependencies: None,
+            build_dependencies: None,
+            bottle,
+            deprecated: false,
+            disabled: false,
+            deprecation_reason: None,
+            disable_reason: None,
+            keg_only: None,
+            keg_only_reason: None,
+            post_install_defined: false,
+            rb_path: None,
+        }
+    }
+
+    #[test]
+    fn test_bottle_rebuild_none() {
+        let f = dummy_formula(None);
+        assert_eq!(f.bottle_rebuild(), 0);
+    }
+
+    #[test]
+    fn test_bottle_rebuild_no_stable() {
+        let f = dummy_formula(Some(BottleInfo { stable: None }));
+        assert_eq!(f.bottle_rebuild(), 0);
+    }
+
+    #[test]
+    fn test_bottle_rebuild_with_rebuild() {
+        let f = dummy_formula(Some(BottleInfo {
+            stable: Some(BottleStable {
+                rebuild: 42,
+                files: std::collections::HashMap::new(),
+            }),
+        }));
+        assert_eq!(f.bottle_rebuild(), 42);
+    }
 }
