@@ -168,3 +168,25 @@ pub fn install_handler() {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicatif::MultiProgress;
+
+    #[test]
+    fn test_active_multi_operations() {
+        // Clear state initially
+        clear_active_multi();
+        assert!(clone_active_multi().is_none());
+
+        // Set state
+        let multi = MultiProgress::new();
+        set_active_multi(multi);
+        assert!(clone_active_multi().is_some());
+
+        // Clear state again
+        clear_active_multi();
+        assert!(clone_active_multi().is_none());
+    }
+}
