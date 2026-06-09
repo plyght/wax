@@ -231,11 +231,9 @@ fn candidate_indices_for_value(
     let normalized_stripped = normalize_package_token(stripped);
     if normalized_stripped != normalized {
         if let Some(indices) = candidate_index.get(&normalized_stripped) {
-            for index in indices {
-                if !candidates.contains(index) {
-                    candidates.push(*index);
-                }
-            }
+            candidates.extend(indices.iter().copied());
+            candidates.sort_unstable();
+            candidates.dedup();
         }
     }
 
@@ -249,11 +247,9 @@ fn resolve_cask_match(
     app: &AppBundleMetadata,
 ) -> Option<CaskMatch> {
     let mut candidate_indices = candidate_indices_for_value(candidate_index, &app.bundle_name);
-    for index in candidate_indices_for_value(candidate_index, &app.file_name) {
-        if !candidate_indices.contains(&index) {
-            candidate_indices.push(index);
-        }
-    }
+    candidate_indices.extend(candidate_indices_for_value(candidate_index, &app.file_name));
+    candidate_indices.sort_unstable();
+    candidate_indices.dedup();
 
     if candidate_indices.is_empty() {
         return None;
@@ -461,7 +457,7 @@ async fn read_info_plist_string(path: &Path, key: &str) -> Option<String> {
     {
         let _ = path;
         let _ = key;
-        return None;
+        None
     }
 
     #[cfg(target_os = "macos")]
