@@ -273,7 +273,15 @@ pub async fn sync(cache: &Cache) -> Result<()> {
             pb.set_message(entry.name.clone());
 
             let task = tokio::spawn(async move {
-                let permit = semaphore.acquire().await.unwrap();
+                let permit = match semaphore.acquire().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Err(WaxError::InstallError(format!(
+                            "Failed to acquire semaphore permit: {}",
+                            e
+                        )));
+                    }
+                };
 
                 let tarball_path = temp_dir
                     .path()
