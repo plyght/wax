@@ -369,3 +369,46 @@ mod bottle_stable_tests {
         assert_eq!(f.sha256, "deadbeef");
     }
 }
+
+#[cfg(test)]
+mod formula_tests {
+    use super::*;
+
+    fn create_mock_formula(stable: &str, revision: u32) -> Formula {
+        Formula {
+            name: "test".into(),
+            full_name: "test".into(),
+            desc: None,
+            homepage: "https://example.com".into(),
+            versions: Versions {
+                stable: stable.into(),
+                bottle: false,
+            },
+            revision,
+            installed: None,
+            dependencies: None,
+            build_dependencies: None,
+            bottle: None,
+            deprecated: false,
+            disabled: false,
+            deprecation_reason: None,
+            disable_reason: None,
+            keg_only: None,
+            keg_only_reason: None,
+            post_install_defined: false,
+            rb_path: None,
+        }
+    }
+
+    #[test]
+    fn test_full_version_without_revision() {
+        let f = create_mock_formula("1.2.3", 0);
+        assert_eq!(f.full_version(), "1.2.3");
+    }
+
+    #[test]
+    fn test_full_version_with_revision() {
+        let f = create_mock_formula("1.2.3", 2);
+        assert_eq!(f.full_version(), "1.2.3_2");
+    }
+}
