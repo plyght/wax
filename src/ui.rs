@@ -119,3 +119,15 @@ pub mod dirs {
         Ok(wax_dir()?.join("logs"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_spinner() {
+        let message = "Loading...";
+        let spinner = create_spinner(message);
+        assert_eq!(spinner.message(), message);
+    }
+}
