@@ -1301,4 +1301,169 @@ mod tests {
         assert!(installed.contains_key("example"));
         assert!(installed.contains_key("vendor-example"));
     }
+
+    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test]
+    async fn test_get_outdated_packages() {
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+
+        use crate::cache::Cache;
+        use crate::commands::upgrade::get_outdated_packages;
+        use crate::api::{Formula, Versions, BottleInfo, BottleStable, BottleFile};
+        use crate::install::{InstalledPackage, InstallMode};
+        use std::collections::HashMap;
+        use tempfile::tempdir;
+        use std::fs;
+
+        let dir = tempdir().unwrap();
+        std::env::set_var("HOME", dir.path());
+
+        let wax_dir = dir.path().join(".wax");
+        let cache_dir = wax_dir.join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        let mut installed = HashMap::new();
+
+        installed.insert("pkg-uptodate".to_string(), InstalledPackage {
+            name: "pkg-uptodate".to_string(),
+            version: "1.0.0".to_string(),
+            platform: "arm64_mac".to_string(),
+            install_date: 0,
+            install_mode: InstallMode::Global,
+            from_source: false,
+            bottle_rebuild: 0,
+            bottle_sha256: Some("sha1".to_string()),
+            pinned: false,
+        });
+
+        installed.insert("pkg-version".to_string(), InstalledPackage {
+            name: "pkg-version".to_string(),
+            version: "1.0.0".to_string(),
+            platform: "arm64_mac".to_string(),
+            install_date: 0,
+            install_mode: InstallMode::Global,
+            from_source: false,
+            bottle_rebuild: 0,
+            bottle_sha256: Some("sha1".to_string()),
+            pinned: false,
+        });
+
+        installed.insert("pkg-rebuild".to_string(), InstalledPackage {
+            name: "pkg-rebuild".to_string(),
+            version: "1.0.0".to_string(),
+            platform: "arm64_mac".to_string(),
+            install_date: 0,
+            install_mode: InstallMode::Global,
+            from_source: false,
+            bottle_rebuild: 0,
+            bottle_sha256: Some("sha1".to_string()),
+            pinned: false,
+        });
+
+        installed.insert("pkg-sha".to_string(), InstalledPackage {
+            name: "pkg-sha".to_string(),
+            version: "1.0.0".to_string(),
+            platform: "arm64_mac".to_string(),
+            install_date: 0,
+            install_mode: InstallMode::Global,
+            from_source: false,
+            bottle_rebuild: 0,
+            bottle_sha256: Some("sha_old".to_string()),
+            pinned: false,
+        });
+
+        installed.insert("pkg-pinned".to_string(), InstalledPackage {
+            name: "pkg-pinned".to_string(),
+            version: "1.0.0".to_string(),
+            platform: "arm64_mac".to_string(),
+            install_date: 0,
+            install_mode: InstallMode::Global,
+            from_source: false,
+            bottle_rebuild: 0,
+            bottle_sha256: Some("sha1".to_string()),
+            pinned: true,
+        });
+
+        let installed_json = serde_json::to_string(&installed).unwrap();
+        fs::write(wax_dir.join("installed.json"), installed_json).unwrap();
+        fs::write(wax_dir.join("installed_casks.json"), "{}").unwrap();
+
+        let mut formulae = Vec::new();
+
+        let make_formula = |name: &str, version: &str, rebuild: u32, sha: &str| {
+            let mut files = HashMap::new();
+            files.insert("all".to_string(), BottleFile {
+                url: "http://example.com".to_string(),
+                sha256: sha.to_string(),
+            });
+            Formula {
+                name: name.to_string(),
+                full_name: name.to_string(),
+                desc: None,
+                homepage: "".to_string(),
+                versions: Versions {
+                    stable: version.to_string(),
+                    bottle: true,
+                },
+                revision: 0,
+                installed: None,
+                dependencies: None,
+                build_dependencies: None,
+                bottle: Some(BottleInfo {
+                    stable: Some(BottleStable {
+                        rebuild,
+                        files,
+                    }),
+                }),
+                deprecated: false,
+                disabled: false,
+                deprecation_reason: None,
+                disable_reason: None,
+                post_install_defined: false,
+                rb_path: None,
+                keg_only: None,
+                keg_only_reason: None,
+            }
+        };
+
+        formulae.push(make_formula("pkg-uptodate", "1.0.0", 0, "sha1"));
+        formulae.push(make_formula("pkg-version", "2.0.0", 0, "sha1"));
+        formulae.push(make_formula("pkg-rebuild", "1.0.0", 1, "sha1"));
+        formulae.push(make_formula("pkg-sha", "1.0.0", 0, "sha_new"));
+        formulae.push(make_formula("pkg-pinned", "2.0.0", 0, "sha1"));
+
+        let formulae_json = serde_json::to_string(&formulae).unwrap();
+        fs::write(cache_dir.join("formulae.json"), formulae_json).unwrap();
+        fs::write(cache_dir.join("casks.json"), "[]").unwrap();
+
+        let cache = Cache::new().unwrap();
+        let outdated = get_outdated_packages(&cache).await.unwrap();
+
+        assert_eq!(outdated.len(), 3);
+
+        let names: Vec<&str> = outdated.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"pkg-version"));
+        assert!(names.contains(&"pkg-rebuild"));
+        assert!(names.contains(&"pkg-sha"));
+        assert!(!names.contains(&"pkg-pinned"));
+        assert!(!names.contains(&"pkg-uptodate"));
+
+        for pkg in outdated {
+            if pkg.name == "pkg-version" {
+                assert_eq!(pkg.latest_version, "2.0.0");
+            } else if pkg.name == "pkg-rebuild" {
+                assert_eq!(pkg.latest_version, "1.0.0 (rebuild 1)");
+            } else if pkg.name == "pkg-sha" {
+                assert_eq!(pkg.latest_version, "1.0.0 (bottle updated)");
+            }
+        }
+
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
 }
