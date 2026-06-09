@@ -184,7 +184,7 @@ fn build_cask_candidate_index(casks: &[Cask]) -> HashMap<String, Vec<usize>> {
             let candidates = index
                 .entry(normalize_package_token(&alias))
                 .or_insert_with(Vec::new);
-            if !candidates.contains(&cask_index) {
+            if candidates.last() != Some(&cask_index) {
                 candidates.push(cask_index);
             }
         }
