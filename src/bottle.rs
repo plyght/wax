@@ -233,8 +233,8 @@ impl BottleDownloader {
         // Pre-allocate the file so every chunk task can seek to its own offset
         // and write without holding the entire file in memory (aria2-style).
         {
-            let f = std::fs::File::create(dest_path)?;
-            f.set_len(total_size)?;
+            let f = tokio::fs::File::create(dest_path).await?;
+            f.set_len(total_size).await?;
         }
 
         let downloaded_so_far = Arc::new(std::sync::atomic::AtomicU64::new(0));
