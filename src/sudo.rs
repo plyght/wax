@@ -137,7 +137,13 @@ pub fn acquire_sudo() -> Result<()> {
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
-    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
 }
 
 pub fn sudo_remove(path: &Path) -> Result<()> {
@@ -271,12 +277,26 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::sudo_password_prompt;
+    use super::{normalize_path, sudo_password_prompt};
+    use std::path::Path;
 
     #[test]
     fn sudo_password_prompt_is_wax_branded() {
         let prompt = sudo_password_prompt();
         assert!(prompt.contains("wax"));
         assert!(prompt.contains("%p"));
+    }
+
+    #[test]
+    fn test_normalize_path_does_not_resolve_symlinks() {
+        // Create a path that looks like it could be a symlink target but shouldn't be resolved
+        let path = Path::new("some/relative/symlink");
+        let normalized = normalize_path(path);
+
+        // It should be absolute
+        assert!(normalized.is_absolute());
+
+        // It should end with the exact path we gave it, not resolved
+        assert!(normalized.ends_with(path));
     }
 }
