@@ -126,3 +126,115 @@ pub fn resolve_dependencies(
     debug!("Packages to install: {:?}", to_install);
     Ok(to_install)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_graph() {
+        let graph = DependencyGraph::new();
+        let result = graph.topological_sort().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_no_dependencies() {
+        let mut graph = DependencyGraph::new();
+        graph.add_node("A".to_string(), vec![]);
+        graph.add_node("B".to_string(), vec![]);
+        graph.add_node("C".to_string(), vec![]);
+
+        let mut result = graph.topological_sort().unwrap();
+        result.sort(); // Order is not guaranteed, so sort it
+        assert_eq!(result, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn test_linear_dependencies() {
+        let mut graph = DependencyGraph::new();
+        graph.add_node("C".to_string(), vec!["B".to_string()]);
+        graph.add_node("B".to_string(), vec!["A".to_string()]);
+
+        let result = graph.topological_sort().unwrap();
+        assert_eq!(result, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn test_multiple_dependencies() {
+        let mut graph = DependencyGraph::new();
+        graph.add_node("D".to_string(), vec!["B".to_string(), "C".to_string()]);
+        graph.add_node("B".to_string(), vec!["A".to_string()]);
+        graph.add_node("C".to_string(), vec!["A".to_string()]);
+
+        let result = graph.topological_sort().unwrap();
+
+        assert_eq!(result.first().unwrap(), "A");
+        assert_eq!(result.last().unwrap(), "D");
+        assert!(result.contains(&"B".to_string()));
+        assert!(result.contains(&"C".to_string()));
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_disconnected_graphs() {
+        let mut graph = DependencyGraph::new();
+        graph.add_node("B".to_string(), vec!["A".to_string()]);
+        graph.add_node("D".to_string(), vec!["C".to_string()]);
+
+        let result = graph.topological_sort().unwrap();
+
+        assert_eq!(result.len(), 4);
+
+        let pos_a = result.iter().position(|x| x == "A").unwrap();
+        let pos_b = result.iter().position(|x| x == "B").unwrap();
+        assert!(pos_a < pos_b);
+
+        let pos_c = result.iter().position(|x| x == "C").unwrap();
+        let pos_d = result.iter().position(|x| x == "D").unwrap();
+        assert!(pos_c < pos_d);
+    }
+
+    #[test]
+    fn test_cycle_detection() {
+        let mut graph = DependencyGraph::new();
+        graph.add_node("A".to_string(), vec!["B".to_string()]);
+        graph.add_node("B".to_string(), vec!["A".to_string()]);
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            WaxError::DependencyCycle(_) => (),
+            _ => panic!("Expected DependencyCycle error"),
+        }
+    }
+
+    #[test]
+    fn test_self_cycle() {
+        let mut graph = DependencyGraph::new();
+        graph.add_node("A".to_string(), vec!["A".to_string()]);
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            WaxError::DependencyCycle(_) => (),
+            _ => panic!("Expected DependencyCycle error"),
+        }
+    }
+
+    #[test]
+    fn test_complex_cycle() {
+        let mut graph = DependencyGraph::new();
+        graph.add_node("A".to_string(), vec!["D".to_string()]);
+        graph.add_node("B".to_string(), vec!["A".to_string()]);
+        graph.add_node("C".to_string(), vec!["B".to_string()]);
+        graph.add_node("D".to_string(), vec!["C".to_string()]);
+
+        let result = graph.topological_sort();
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            WaxError::DependencyCycle(_) => (),
+            _ => panic!("Expected DependencyCycle error"),
+        }
+    }
+}
