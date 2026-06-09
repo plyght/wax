@@ -27,7 +27,11 @@ impl Builder {
     }
 
     fn detect_cpu_cores() -> usize {
-        num_cpus::get().saturating_sub(1).max(1)
+        Self::calculate_cores(num_cpus::get())
+    }
+
+    fn calculate_cores(available_cpus: usize) -> usize {
+        available_cpus.saturating_sub(1).max(1)
     }
 
     fn detect_ccache() -> bool {
@@ -413,5 +417,26 @@ fn find_in_path(program: &str) -> Option<PathBuf> {
 impl Default for Builder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_cores() {
+        assert_eq!(Builder::calculate_cores(0), 1, "0 CPUs should result in 1 core");
+        assert_eq!(Builder::calculate_cores(1), 1, "1 CPU should result in 1 core");
+        assert_eq!(Builder::calculate_cores(2), 1, "2 CPUs should result in 1 core");
+        assert_eq!(Builder::calculate_cores(3), 2, "3 CPUs should result in 2 cores");
+        assert_eq!(Builder::calculate_cores(4), 3, "4 CPUs should result in 3 cores");
+        assert_eq!(Builder::calculate_cores(8), 7, "8 CPUs should result in 7 cores");
+    }
+
+    #[test]
+    fn test_detect_cpu_cores_sanity() {
+        let cores = Builder::detect_cpu_cores();
+        assert!(cores >= 1, "detect_cpu_cores should always return at least 1");
     }
 }
