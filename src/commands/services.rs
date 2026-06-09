@@ -217,7 +217,16 @@ pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()>
         let target_dir = launchctl_plist_dir();
         std::fs::create_dir_all(&target_dir)?;
 
-        let plist_name = plist.file_name().unwrap().to_string_lossy().to_string();
+        let plist_name = plist
+            .file_name()
+            .ok_or_else(|| {
+                WaxError::ServiceError(format!(
+                    "{} service definition path has no file name",
+                    formula_name
+                ))
+            })?
+            .to_string_lossy()
+            .to_string();
         let target_plist = target_dir.join(&plist_name);
 
         let mut plist_content = std::fs::read_to_string(&plist)?;
@@ -282,7 +291,16 @@ pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()>
             PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/systemd/user");
         std::fs::create_dir_all(&systemd_user_dir)?;
 
-        let unit_name = unit.file_name().unwrap().to_string_lossy().to_string();
+        let unit_name = unit
+            .file_name()
+            .ok_or_else(|| {
+                WaxError::ServiceError(format!(
+                    "{} service unit path has no file name",
+                    formula_name
+                ))
+            })?
+            .to_string_lossy()
+            .to_string();
         let target_unit = systemd_user_dir.join(&unit_name);
         std::fs::copy(&unit, &target_unit)?;
 
