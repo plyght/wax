@@ -400,3 +400,45 @@ async fn run_visible(program: &str, args: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_system_pm_name() {
+        assert_eq!(SystemPm::Apt.name(), "apt");
+        assert_eq!(SystemPm::Dnf.name(), "dnf");
+        assert_eq!(SystemPm::Pacman.name(), "pacman");
+        assert_eq!(SystemPm::Apk.name(), "apk");
+        assert_eq!(SystemPm::Zypper.name(), "zypper");
+        assert_eq!(SystemPm::Emerge.name(), "emerge");
+        assert_eq!(SystemPm::Yum.name(), "yum");
+        assert_eq!(SystemPm::Xbps.name(), "xbps-install");
+        assert_eq!(SystemPm::Nix.name(), "nix-env");
+    }
+
+    #[tokio::test]
+    async fn test_which_existing_binary() {
+        // 'sh' should be available on almost all unix-like systems
+        assert!(which("sh").await);
+    }
+
+    #[tokio::test]
+    async fn test_which_nonexistent_binary() {
+        assert!(!which("some_nonexistent_binary_that_should_never_exist_12345").await);
+    }
+
+    #[test]
+    fn test_find_in_path_existing() {
+        let path = find_in_path("sh");
+        assert!(path.is_some());
+        assert!(path.unwrap().is_file());
+    }
+
+    #[test]
+    fn test_find_in_path_nonexistent() {
+        let path = find_in_path("some_nonexistent_binary_that_should_never_exist_12345");
+        assert!(path.is_none());
+    }
+}
