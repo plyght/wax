@@ -368,6 +368,36 @@ mod bottle_stable_tests {
             .expect("arm64_linux alias");
         assert_eq!(f.sha256, "deadbeef");
     }
+
+    #[test]
+    fn file_for_platform_exact_match() {
+        let mut files = HashMap::new();
+        files.insert("x86_64_linux".into(), sample_file());
+        let stable = BottleStable { rebuild: 0, files };
+        let f = stable
+            .file_for_platform("x86_64_linux")
+            .expect("exact match");
+        assert_eq!(f.sha256, "deadbeef");
+    }
+
+    #[test]
+    fn file_for_platform_fallback_to_all() {
+        let mut files = HashMap::new();
+        files.insert("all".into(), sample_file());
+        let stable = BottleStable { rebuild: 0, files };
+        let f = stable
+            .file_for_platform("x86_64_linux")
+            .expect("fallback to all");
+        assert_eq!(f.sha256, "deadbeef");
+    }
+
+    #[test]
+    fn file_for_platform_no_match_returns_none() {
+        let files = HashMap::new();
+        let stable = BottleStable { rebuild: 0, files };
+        let f = stable.file_for_platform("x86_64_linux");
+        assert!(f.is_none());
+    }
 }
 
 #[cfg(test)]
