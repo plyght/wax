@@ -1,4 +1,4 @@
-use crate::bottle::{homebrew_prefix, BottleDownloader, DownloadTotals};
+use crate::bottle::{homebrew_prefix, run_command_with_timeout, BottleDownloader, DownloadTotals};
 use crate::error::{Result, WaxError};
 use crate::ui::dirs;
 use indicatif::ProgressBar;
@@ -141,6 +141,88 @@ impl CaskState {
                 let _ = std::fs::remove_file(&temp_path);
             })?;
         Ok(())
+    }
+
+    pub async fn sync_from_caskrooms(&self) -> Result<()> {
+        let mut casks = HashMap::new();
+        if let Some(output) =
+            run_command_with_timeout("brew", &["list", "--cask", "--versions"], 10)
+        {
+            for line in output.lines() {
+                let mut parts = line.split_whitespace();
+                let Some(name) = parts.next() else {
+                    continue;
+                };
+                let version = parts.next().unwrap_or("unknown").to_string();
+                casks.insert(
+                    name.to_string(),
+                    InstalledCask {
+                        name: name.to_string(),
+                        version,
+                        install_date: 0,
+                        artifact_type: None,
+                        binary_paths: None,
+                        app_name: None,
+                    },
+                );
+            }
+        }
+        if let Some(output) = run_command_with_timeout("brew", &["list", "--cask"], 10) {
+            for name in output
+                .lines()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                casks
+                    .entry(name.to_string())
+                    .or_insert_with(|| InstalledCask {
+                        name: name.to_string(),
+                        version: "unknown".to_string(),
+                        install_date: 0,
+                        artifact_type: None,
+                        binary_paths: None,
+                        app_name: None,
+                    });
+            }
+            if !casks.is_empty() {
+                return self.save(&casks).await;
+            }
+        }
+
+        let mut roots = vec![Self::caskroom_dir()];
+        if let Ok(user_caskroom) = Self::user_caskroom_dir() {
+            roots.push(user_caskroom);
+        }
+
+        let mut seen_roots = std::collections::HashSet::new();
+        roots.retain(|p| seen_roots.insert(normalize_existing_prefix(p)));
+
+        for root in roots {
+            if !root.exists() {
+                continue;
+            }
+            let mut entries = fs::read_dir(root).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if !entry.file_type().await?.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                let (version, install_date) = self.scan_cask_version_dir(&entry.path()).await?;
+                casks.insert(
+                    name.clone(),
+                    InstalledCask {
+                        name,
+                        version,
+                        install_date,
+                        artifact_type: None,
+                        binary_paths: None,
+                        app_name: None,
+                    },
+                );
+            }
+        }
+
+        self.save(&casks).await
     }
 
     pub async fn add(&self, cask: InstalledCask) -> Result<()> {

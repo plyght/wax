@@ -1,16 +1,17 @@
 use crate::cache::Cache;
-use crate::commands::upgrade::get_outdated_packages;
+use crate::commands::upgrade::get_outdated_packages_scoped;
 use crate::error::Result;
+use crate::install::InstallMode;
 use console::style;
 use tracing::instrument;
 
 #[instrument(skip(cache))]
-pub async fn outdated(cache: &Cache) -> Result<()> {
+pub async fn outdated(cache: &Cache, scope: Option<InstallMode>) -> Result<()> {
     let start = std::time::Instant::now();
 
     cache.ensure_fresh().await?;
 
-    let outdated = get_outdated_packages(cache).await?;
+    let outdated = get_outdated_packages_scoped(cache, scope).await?;
 
     if outdated.is_empty() {
         println!("all packages are up to date");

@@ -3,7 +3,7 @@ use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::commands::upgrade::{get_outdated_packages, upgrade as run_upgrade};
 use crate::error::{Result, WaxError};
-use crate::install::InstallState;
+use crate::install::{InstallMode, InstallState};
 use console::style;
 use inquire::{Confirm, Select};
 use std::collections::HashMap;
@@ -42,13 +42,26 @@ fn validate_cellar_path(path: &std::path::Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-async fn collect_installed_rows(_cache: &Cache) -> Result<Vec<InstalledRow>> {
+async fn collect_installed_rows(
+    _cache: &Cache,
+    scope: Option<InstallMode>,
+) -> Result<Vec<InstalledRow>> {
     let test_cellar = std::env::var_os(WAX_TEST_CELLAR_ENV);
 
     let (cellar_path, skip_casks) = if let Some(ref raw) = test_cellar {
         let pb = PathBuf::from(raw);
         validate_cellar_path(&pb)?;
         (pb, true)
+    } else if scope == Some(InstallMode::User) {
+        (
+            crate::ui::dirs::home_dir()?
+                .join(".local")
+                .join("wax")
+                .join("Cellar"),
+            true,
+        )
+    } else if scope == Some(InstallMode::Global) {
+        (homebrew_prefix().join("Cellar"), false)
     } else {
         let candidates = [
             homebrew_prefix().join("Cellar"),
@@ -65,7 +78,7 @@ async fn collect_installed_rows(_cache: &Cache) -> Result<Vec<InstalledRow>> {
     };
 
     let cask_state = CaskState::new()?;
-    let installed_casks: HashMap<_, _> = if skip_casks {
+    let installed_casks: HashMap<_, _> = if skip_casks || scope == Some(InstallMode::User) {
         HashMap::new()
     } else {
         cask_state.load().await?
@@ -80,48 +93,79 @@ async fn collect_installed_rows(_cache: &Cache) -> Result<Vec<InstalledRow>> {
 
     let mut rows = Vec::new();
 
-    if cellar_path.exists() {
-        let mut entries = tokio::fs::read_dir(&cellar_path).await?;
+    if skip_casks || scope.is_some() {
+        if cellar_path.exists() {
+            let mut entries = tokio::fs::read_dir(&cellar_path).await?;
 
-        while let Some(entry) = entries.next_entry().await? {
-            if entry.file_type().await?.is_dir() {
-                let package_name = entry.file_name().to_string_lossy().to_string();
+            while let Some(entry) = entries.next_entry().await? {
+                if entry.file_type().await?.is_dir() {
+                    let package_name = entry.file_name().to_string_lossy().to_string();
 
-                let mut versions = Vec::new();
-                let mut version_entries = tokio::fs::read_dir(entry.path()).await?;
-                while let Some(version_entry) = version_entries.next_entry().await? {
-                    if version_entry.file_type().await?.is_dir() {
-                        versions.push(version_entry.file_name().to_string_lossy().to_string());
+                    let mut versions = Vec::new();
+                    let mut version_entries = tokio::fs::read_dir(entry.path()).await?;
+                    while let Some(version_entry) = version_entries.next_entry().await? {
+                        if version_entry.file_type().await?.is_dir() {
+                            versions.push(version_entry.file_name().to_string_lossy().to_string());
+                        }
                     }
+
+                    let from_source = installed_packages
+                        .get(&package_name)
+                        .filter(|p| scope.is_none() || Some(p.install_mode) == scope)
+                        .map(|p| p.from_source)
+                        .unwrap_or(false);
+
+                    let version_str = versions.join(", ");
+                    let line = if from_source {
+                        format!(
+                            "{} {} {}",
+                            style(&package_name).magenta(),
+                            style(&version_str).dim(),
+                            style("(source)").yellow()
+                        )
+                    } else {
+                        format!(
+                            "{} {}",
+                            style(&package_name).magenta(),
+                            style(&version_str).dim()
+                        )
+                    };
+
+                    rows.push(InstalledRow {
+                        name: package_name,
+                        line,
+                        is_cask: false,
+                    });
                 }
-
-                let from_source = installed_packages
-                    .get(&package_name)
-                    .map(|p| p.from_source)
-                    .unwrap_or(false);
-
-                let version_str = versions.join(", ");
-                let line = if from_source {
-                    format!(
-                        "{} {} {}",
-                        style(&package_name).magenta(),
-                        style(&version_str).dim(),
-                        style("(source)").yellow()
-                    )
-                } else {
-                    format!(
-                        "{} {}",
-                        style(&package_name).magenta(),
-                        style(&version_str).dim()
-                    )
-                };
-
-                rows.push(InstalledRow {
-                    name: package_name,
-                    line,
-                    is_cask: false,
-                });
             }
+        }
+    } else {
+        let mut package_list: Vec<_> = installed_packages
+            .iter()
+            .filter(|(_, package)| scope.is_none() || Some(package.install_mode) == scope)
+            .collect();
+        package_list.sort_by_key(|(name, _)| *name);
+        for (package_name, package) in package_list {
+            let line = if package.from_source {
+                format!(
+                    "{} {} {}",
+                    style(package_name.as_str()).magenta(),
+                    style(&package.version).dim(),
+                    style("(source)").yellow()
+                )
+            } else {
+                format!(
+                    "{} {}",
+                    style(package_name.as_str()).magenta(),
+                    style(&package.version).dim()
+                )
+            };
+
+            rows.push(InstalledRow {
+                name: package_name.clone(),
+                line,
+                is_cask: false,
+            });
         }
     }
 
@@ -254,7 +298,7 @@ async fn offer_upgrade_for_selection(cache: &Cache, choice: &InstalledRow) -> Re
         .unwrap_or(false);
 
     if should_upgrade {
-        run_upgrade(cache, std::slice::from_ref(&choice.name), false).await?;
+        run_upgrade(cache, std::slice::from_ref(&choice.name), false, None).await?;
         println!(
             "\n{} {}",
             style("✓").green(),
@@ -269,7 +313,7 @@ async fn run_interactive_list(cache: &Cache, initial_query: Option<String>) -> R
     let mut first_prompt = true;
 
     loop {
-        let rows = collect_installed_rows(cache).await?;
+        let rows = collect_installed_rows(cache, None).await?;
         if rows.is_empty() {
             println!("no packages installed");
             return Ok(());
@@ -316,8 +360,8 @@ async fn run_interactive_list(cache: &Cache, initial_query: Option<String>) -> R
 }
 
 #[instrument(skip(cache))]
-pub async fn list(cache: &Cache, query: Option<String>) -> Result<()> {
-    let rows = collect_installed_rows(cache).await?;
+pub async fn list(cache: &Cache, query: Option<String>, scope: Option<InstallMode>) -> Result<()> {
+    let rows = collect_installed_rows(cache, scope).await?;
 
     if rows.is_empty() {
         println!("no packages installed");
@@ -328,7 +372,9 @@ pub async fn list(cache: &Cache, query: Option<String>) -> Result<()> {
         io::stdin().is_terminal() && io::stdout().is_terminal() && std::env::var_os("CI").is_none();
 
     if use_ui {
-        return run_interactive_list(cache, query).await;
+        if scope.is_none() {
+            return run_interactive_list(cache, query).await;
+        }
     }
 
     let q_str = query.as_deref().unwrap_or("");

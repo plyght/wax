@@ -67,7 +67,7 @@ impl InstallMode {
     }
 }
 
-fn is_writable(path: &Path) -> bool {
+pub fn is_writable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use nix::unistd::{getgid, getuid};
@@ -220,45 +220,46 @@ impl InstallState {
 
     pub async fn sync_from_cellar(&self) -> Result<()> {
         let mut packages = self.load().await?;
+        let mut found_packages = std::collections::HashSet::new();
 
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
 
-        let mut candidates = match os {
-            "macos" => match arch {
-                "aarch64" => vec![PathBuf::from("/opt/homebrew"), PathBuf::from("/usr/local")],
-                _ => vec![PathBuf::from("/usr/local"), PathBuf::from("/opt/homebrew")],
-            },
-            "linux" => vec![
-                PathBuf::from("/home/linuxbrew/.linuxbrew"),
-                PathBuf::from("/usr/local"),
-            ],
-            _ => vec![PathBuf::from("/usr/local")],
-        };
-
-        if let Some(prefix_str) = run_command_with_timeout("brew", &["--prefix"], 2) {
-            candidates.push(PathBuf::from(prefix_str.trim()));
-        }
+        let mut candidates =
+            if let Some(prefix_str) = run_command_with_timeout("brew", &["--prefix"], 2) {
+                vec![PathBuf::from(prefix_str.trim())]
+            } else {
+                match os {
+                    "macos" => match arch {
+                        "aarch64" => vec![PathBuf::from("/opt/homebrew")],
+                        _ => vec![PathBuf::from("/usr/local")],
+                    },
+                    "linux" => vec![PathBuf::from("/home/linuxbrew/.linuxbrew")],
+                    _ => vec![PathBuf::from("/usr/local")],
+                }
+            };
 
         // De-duplicate candidates
-        let mut seen = std::collections::HashSet::new();
-        candidates.retain(|p| seen.insert(p.clone()));
+        let mut seen_paths = std::collections::HashSet::new();
+        candidates.retain(|p| seen_paths.insert(p.clone()));
 
         for path in candidates {
             let cellar = path.join("Cellar");
             if cellar.exists() {
-                self.scan_cellar_and_update(&cellar, &mut packages).await?;
+                self.scan_cellar_and_update(&cellar, &mut packages, &mut found_packages)
+                    .await?;
             }
         }
 
         if let Ok(home) = dirs::home_dir() {
             let wax_user_cellar = home.join(".local/wax/Cellar");
             if wax_user_cellar.exists() {
-                self.scan_cellar_and_update(&wax_user_cellar, &mut packages)
+                self.scan_cellar_and_update(&wax_user_cellar, &mut packages, &mut found_packages)
                     .await?;
             }
         }
 
+        packages.retain(|name, _| found_packages.contains(name));
         self.save(&packages).await?;
         Ok(())
     }
@@ -267,6 +268,7 @@ impl InstallState {
         &self,
         cellar: &Path,
         packages: &mut HashMap<String, InstalledPackage>,
+        found_packages: &mut std::collections::HashSet<String>,
     ) -> Result<()> {
         let mut entries = tokio::fs::read_dir(cellar).await?;
 
@@ -286,8 +288,10 @@ impl InstallState {
                     sort_versions(&mut versions);
                     let version = versions.last().unwrap().clone();
 
+                    found_packages.insert(package_name.clone());
                     if let Some(existing) = packages.get_mut(&package_name) {
                         existing.version = version;
+                        existing.install_mode = self.detect_install_mode(cellar);
                     } else {
                         packages.insert(
                             package_name.clone(),

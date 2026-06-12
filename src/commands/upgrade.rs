@@ -1,12 +1,12 @@
 use crate::api::ApiClient;
-use crate::bottle::{detect_platform, BottleDownloader};
+use crate::bottle::{detect_platform, homebrew_prefix, BottleDownloader};
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::commands::self_update::{self_update, Channel};
 use crate::commands::{install, uninstall};
 use crate::deps::find_installed_reverse_dependencies;
 use crate::error::{Result, WaxError};
-use crate::install::{InstallMode, InstallState};
+use crate::install::{is_writable, InstallMode, InstallState};
 use crate::signal::{
     check_cancelled, clear_active_multi, clear_current_op, set_active_multi, set_current_op,
     CriticalSection,
@@ -51,13 +51,18 @@ impl Drop for UpgradeMultiGuard {
 }
 
 #[instrument(skip(cache))]
-pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Result<()> {
+pub async fn upgrade(
+    cache: &Cache,
+    packages: &[String],
+    dry_run: bool,
+    scope: Option<InstallMode>,
+) -> Result<()> {
     let start = std::time::Instant::now();
 
     cache.ensure_fresh().await?;
 
     if packages.is_empty() {
-        upgrade_all(cache, dry_run, start).await
+        upgrade_all(cache, dry_run, start, scope).await
     } else {
         let cask_state = CaskState::new()?;
         let installed_casks = cask_state.load().await?;
@@ -91,13 +96,35 @@ pub async fn upgrade(cache: &Cache, packages: &[String], dry_run: bool) -> Resul
     }
 }
 
-async fn upgrade_all(cache: &Cache, dry_run: bool, start: std::time::Instant) -> Result<()> {
-    let outdated = get_outdated_packages(cache).await?;
+async fn upgrade_all(
+    cache: &Cache,
+    dry_run: bool,
+    start: std::time::Instant,
+    scope: Option<InstallMode>,
+) -> Result<()> {
+    let outdated = get_outdated_packages_scoped(cache, scope).await?;
 
     if outdated.is_empty() {
         println!("all packages are up to date");
         println!("\n[{}ms] done", start.elapsed().as_millis());
         return Ok(());
+    }
+
+    let global_count = outdated
+        .iter()
+        .filter(|pkg| pkg.install_mode == Some(InstallMode::Global) || pkg.is_cask)
+        .count();
+    if !dry_run && global_count > 0 {
+        let prefix = homebrew_prefix();
+        if !is_writable(&prefix) {
+            return Err(WaxError::InstallError(format!(
+                "Refusing to upgrade {} global package{} because {} is not writable by {}. Use the Homebrew-owning user, run with --dry-run, or install packages with --user.",
+                global_count,
+                if global_count == 1 { "" } else { "s" },
+                prefix.display(),
+                std::env::var("USER").unwrap_or_else(|_| "this user".to_string())
+            )));
+        }
     }
 
     if dry_run {
@@ -851,10 +878,70 @@ async fn upgrade_cask_internal(cache: &Cache, cask_name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn load_packages_from_scope(
+    mode: InstallMode,
+) -> Result<HashMap<String, crate::install::InstalledPackage>> {
+    let cellar = match mode {
+        InstallMode::User => crate::ui::dirs::home_dir()?
+            .join(".local")
+            .join("wax")
+            .join("Cellar"),
+        InstallMode::Global => homebrew_prefix().join("Cellar"),
+    };
+    let mut packages = HashMap::new();
+    if !cellar.exists() {
+        return Ok(packages);
+    }
+    let mut entries = tokio::fs::read_dir(&cellar).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let mut versions = Vec::new();
+        let mut version_entries = tokio::fs::read_dir(entry.path()).await?;
+        while let Some(version_entry) = version_entries.next_entry().await? {
+            if version_entry.file_type().await?.is_dir() {
+                versions.push(version_entry.file_name().to_string_lossy().to_string());
+            }
+        }
+        if versions.is_empty() {
+            continue;
+        }
+        crate::version::sort_versions(&mut versions);
+        packages.insert(
+            name.clone(),
+            crate::install::InstalledPackage {
+                name,
+                version: versions.last().cloned().unwrap_or_default(),
+                platform: detect_platform(),
+                install_date: 0,
+                install_mode: mode,
+                from_source: false,
+                bottle_rebuild: 0,
+                bottle_sha256: None,
+                pinned: false,
+            },
+        );
+    }
+    Ok(packages)
+}
+
 pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>> {
+    get_outdated_packages_scoped(cache, None).await
+}
+
+pub async fn get_outdated_packages_scoped(
+    cache: &Cache,
+    scope: Option<InstallMode>,
+) -> Result<Vec<OutdatedPackage>> {
     let state = InstallState::new()?;
     state.sync_from_cellar().await?;
-    let installed_packages = state.load().await?;
+    let installed_packages = if let Some(mode) = scope {
+        load_packages_from_scope(mode).await?
+    } else {
+        state.load().await?
+    };
 
     let cask_state = CaskState::new()?;
     let installed_casks = cask_state.load().await?;
@@ -872,6 +959,9 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
 
     let platform = detect_platform();
     for (name, installed) in &installed_packages {
+        if scope.is_some() && Some(installed.install_mode) != scope {
+            continue;
+        }
         if installed.pinned {
             continue;
         }
@@ -913,6 +1003,10 @@ pub async fn get_outdated_packages(cache: &Cache) -> Result<Vec<OutdatedPackage>
     }
 
     let api_client = ApiClient::new();
+    if scope == Some(InstallMode::User) {
+        outdated.sort_by(|a, b| a.name.cmp(&b.name));
+        return Ok(outdated);
+    }
     for (name, installed) in &installed_casks {
         if let Some(cask) = cask_index.get(name.as_str()) {
             if let Ok(details) = api_client.fetch_cask_details(&cask.token).await {

@@ -119,6 +119,14 @@ pub async fn doctor(cache: &Cache, fix: bool) -> Result<()> {
     let start = Instant::now();
 
     if fix {
+        let prefix = homebrew_prefix();
+        if prefix.exists() && !crate::install::is_writable(&prefix) {
+            return Err(crate::error::WaxError::InstallError(format!(
+                "Refusing doctor --fix because {} is not writable by {}. Run as the Homebrew-owning user or use wax install --user for per-user installs.",
+                prefix.display(),
+                std::env::var("USER").unwrap_or_else(|_| "this user".to_string())
+            )));
+        }
         println!("{}", style("running wax doctor --fix").bold());
     } else {
         println!("{}", style("running wax doctor").bold());

@@ -587,7 +587,16 @@ async fn install_impl(
     let state = InstallState::new()?;
     state.sync_from_cellar().await.ok();
     let installed_packages = state.load().await?;
-    let installed: HashSet<String> = installed_packages.keys().cloned().collect();
+    let installed: HashSet<String> = installed_packages
+        .iter()
+        .filter_map(|(name, pkg)| {
+            if pkg.install_mode == install_mode {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Pre-build lookup maps for O(1) formula resolution instead of O(n) linear scans
     let by_name: std::collections::HashMap<&str, &crate::api::Formula> =
