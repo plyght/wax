@@ -1,7 +1,11 @@
 use crate::error::Result;
 use crate::sudo;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::ffi::CString;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::debug;
 
@@ -74,10 +78,34 @@ fn copy_dir_all_inner(src: &PathBuf, dst: &PathBuf) -> Result<()> {
                         .or_else(|_| sudo::sudo_remove(&dst_path).map(|_| ()))?;
                 }
             }
-            std::fs::copy(&src_path, &dst_path)?;
+            copy_regular_file(&src_path, &dst_path)?;
         }
     }
     Ok(())
+}
+
+fn copy_regular_file(src: &PathBuf, dst: &PathBuf) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if clonefile(src, dst).is_ok() {
+            return Ok(());
+        }
+    }
+
+    std::fs::copy(src, dst)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let src_c = CString::new(src.as_os_str().as_bytes())?;
+    let dst_c = CString::new(dst.as_os_str().as_bytes())?;
+    let result = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 pub fn create_spinner(message: &str) -> ProgressBar {
@@ -147,7 +175,10 @@ mod tests {
         env::set_var("HOME", dummy_home);
 
         assert_eq!(dirs::home_dir().unwrap(), PathBuf::from(dummy_home));
-        assert_eq!(dirs::wax_dir().unwrap(), PathBuf::from(dummy_home).join(".wax"));
+        assert_eq!(
+            dirs::wax_dir().unwrap(),
+            PathBuf::from(dummy_home).join(".wax")
+        );
         assert_eq!(
             dirs::wax_cache_dir().unwrap(),
             PathBuf::from(dummy_home).join(".wax/cache")
@@ -189,7 +220,10 @@ mod tests {
         let dst_sub = dst.join("subdir");
         assert!(dst_sub.exists());
         assert!(dst_sub.join("file2.txt").exists());
-        assert_eq!(fs::read_to_string(dst_sub.join("file2.txt")).unwrap(), "world");
+        assert_eq!(
+            fs::read_to_string(dst_sub.join("file2.txt")).unwrap(),
+            "world"
+        );
     }
 
     #[cfg(unix)]
@@ -211,7 +245,10 @@ mod tests {
         let meta = dst.join("link.txt").symlink_metadata().unwrap();
         assert!(meta.file_type().is_symlink());
         assert_eq!(
-            fs::read_link(dst.join("link.txt")).unwrap().to_str().unwrap(),
+            fs::read_link(dst.join("link.txt"))
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "target.txt"
         );
         assert_eq!(fs::read_to_string(dst.join("link.txt")).unwrap(), "target");
@@ -231,6 +268,9 @@ mod tests {
 
         copy_dir_all(&src, &dst).unwrap();
 
-        assert_eq!(fs::read_to_string(dst.join("file1.txt")).unwrap(), "new content");
+        assert_eq!(
+            fs::read_to_string(dst.join("file1.txt")).unwrap(),
+            "new content"
+        );
     }
 }
