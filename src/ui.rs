@@ -1,6 +1,9 @@
-use crate::error::Result;
+use crate::error::{Result, WaxError};
 use crate::sudo;
+use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
+use inquire::Confirm;
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::debug;
@@ -78,6 +81,30 @@ fn copy_dir_all_inner(src: &PathBuf, dst: &PathBuf) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn confirm_prompt(message: &str) -> Result<bool> {
+    if io::stdin().is_terminal() {
+        return Confirm::new(message)
+            .with_default(false)
+            .prompt_skippable()
+            .map(|answer| answer.unwrap_or(false))
+            .map_err(|e| WaxError::InstallError(format!("prompt failed: {}", e)));
+    }
+
+    print!(
+        "{} {} {} ",
+        style("?").cyan().bold(),
+        message,
+        style("[y/N]").dim()
+    );
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 pub fn create_spinner(message: &str) -> ProgressBar {

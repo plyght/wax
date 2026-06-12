@@ -142,6 +142,8 @@ enum Commands {
         packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long, help = "Show the install plan and ask before making changes")]
+        ask: bool,
         #[arg(long)]
         cask: bool,
         #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
@@ -165,6 +167,8 @@ enum Commands {
         packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long, help = "Show the install plan and ask before making changes")]
+        ask: bool,
         #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
         user: bool,
         #[arg(long, help = "Install to system directory (may need sudo)")]
@@ -217,6 +221,8 @@ enum Commands {
         upgrade_self: bool,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long, help = "Show the upgrade plan and ask before making changes")]
+        ask: bool,
         #[arg(
             long,
             help = "Also upgrade OS packages via the native package manager (apt/dnf/pacman/apk/…)"
@@ -410,6 +416,8 @@ enum TapAction {
     Add {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
+        #[arg(long, help = "Trust this tap for formula discovery and installs")]
+        trust: bool,
     },
     #[command(
         about = "Remove a custom tap",
@@ -425,6 +433,16 @@ enum TapAction {
     List,
     #[command(about = "Update a tap", visible_alias = "up")]
     Update {
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
+        tap: String,
+    },
+    #[command(about = "Trust a tap for formula discovery and installs")]
+    Trust {
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
+        tap: String,
+    },
+    #[command(about = "Remove trust from a tap")]
+    Untrust {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
@@ -480,7 +498,42 @@ async fn handle_system_upgrade() -> Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        print_error_and_exit(err);
+    }
+}
+
+fn print_error_and_exit(err: error::WaxError) -> ! {
+    use console::style;
+    use error::WaxError;
+
+    let prefix = style("error:").red().bold();
+    match err {
+        WaxError::Interrupted => {
+            eprintln!("\n{} interrupted", style("✗").red());
+            std::process::exit(130);
+        }
+        WaxError::NotInstalled(pkg) => {
+            eprintln!("{} {} is not installed", prefix, style(&pkg).magenta());
+        }
+        WaxError::FormulaNotFound(pkg) => {
+            eprintln!("{} formula not found: {}", prefix, style(&pkg).magenta());
+        }
+        WaxError::CaskNotFound(pkg) => {
+            eprintln!("{} cask not found: {}", prefix, style(&pkg).magenta());
+        }
+        WaxError::InstallError(message) => {
+            eprintln!("{} {}", prefix, message);
+        }
+        other => {
+            eprintln!("{} {}", prefix, other);
+        }
+    }
+    std::process::exit(1);
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     if should_refresh_state(&cli.command) {
@@ -556,6 +609,7 @@ async fn main() -> Result<()> {
         Commands::Install {
             packages,
             dry_run,
+            ask,
             cask,
             user,
             global,
@@ -570,6 +624,7 @@ async fn main() -> Result<()> {
                     &cache,
                     &packages,
                     dry_run,
+                    ask && !cli.yes,
                     cask,
                     user,
                     global,
@@ -582,11 +637,22 @@ async fn main() -> Result<()> {
         Commands::InstallCask {
             packages,
             dry_run,
+            ask,
             user,
             global,
         } => {
-            commands::install::install(&cache, &packages, dry_run, true, user, global, false, false)
-                .await
+            commands::install::install(
+                &cache,
+                &packages,
+                dry_run,
+                ask && !cli.yes,
+                true,
+                user,
+                global,
+                false,
+                false,
+            )
+            .await
         }
         Commands::Uninstall {
             formulae,
@@ -608,6 +674,7 @@ async fn main() -> Result<()> {
             packages,
             upgrade_self,
             dry_run,
+            ask,
             system,
             user,
             global,
@@ -624,8 +691,14 @@ async fn main() -> Result<()> {
 
             let explicit_packages_requested = !packages.is_empty();
 
-            commands::upgrade::upgrade(&cache, &packages, dry_run, install_scope(user, global)?)
-                .await?;
+            commands::upgrade::upgrade(
+                &cache,
+                &packages,
+                dry_run,
+                ask && !cli.yes,
+                install_scope(user, global)?,
+            )
+            .await?;
             if system {
                 handle_system_upgrade().await?;
             }
@@ -727,6 +800,9 @@ async fn main() -> Result<()> {
             }
             WaxError::CaskNotFound(pkg) => {
                 eprintln!("{} cask not found: {}", prefix, style(&pkg).magenta());
+            }
+            WaxError::InstallError(message) => {
+                eprintln!("{} {}", prefix, message);
             }
             _ => {
                 eprintln!("{} {}", prefix, e);

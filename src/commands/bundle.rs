@@ -57,7 +57,14 @@ impl BundleEntry {
 }
 
 fn find_waxfile() -> Result<PathBuf> {
-    let candidates = ["Waxfile", "Waxfile.toml", "waxfile", "waxfile.toml"];
+    let candidates = [
+        "Waxfile",
+        "Waxfile.toml",
+        "waxfile",
+        "waxfile.toml",
+        "Brewfile",
+        "brewfile",
+    ];
     for name in &candidates {
         let path = PathBuf::from(name);
         if path.exists() {
@@ -65,15 +72,171 @@ fn find_waxfile() -> Result<PathBuf> {
         }
     }
     Err(WaxError::BundleError(
-        "No Waxfile found. Create a Waxfile.toml in your project root.".to_string(),
+        "No Waxfile or Brewfile found. Create a Waxfile.toml or Brewfile in your project root."
+            .to_string(),
     ))
 }
 
 pub fn parse_waxfile(path: &Path) -> Result<Waxfile> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| WaxError::BundleError(format!("Cannot read {}: {}", path.display(), e)))?;
-    let waxfile: Waxfile = toml::from_str(&content)?;
+    match toml::from_str(&content) {
+        Ok(waxfile) => Ok(waxfile),
+        Err(toml_error) => parse_brewfile(&content).map_err(|brewfile_error| {
+            WaxError::BundleError(format!(
+                "Failed to parse {} as TOML ({}) or Brewfile ({})",
+                path.display(),
+                toml_error,
+                brewfile_error
+            ))
+        }),
+    }
+}
+
+pub fn parse_brewfile(content: &str) -> Result<Waxfile> {
+    let mut waxfile = Waxfile::default();
+
+    for (index, line) in content.lines().enumerate() {
+        let line = strip_brewfile_comment(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let Some((directive, rest)) = split_brewfile_directive(line) else {
+            return Err(WaxError::BundleError(format!(
+                "Unsupported Brewfile line {}: {}",
+                index + 1,
+                line
+            )));
+        };
+
+        match directive {
+            "tap" => waxfile.tap.push(parse_brewfile_string(rest, index + 1)?),
+            "brew" => waxfile.brew.push(parse_brewfile_entry(rest, index + 1)?),
+            "cask" => waxfile.cask.push(parse_brewfile_entry(rest, index + 1)?),
+            "cargo" => waxfile.cargo.push(parse_brewfile_entry(rest, index + 1)?),
+            "uv" => waxfile.uv.push(parse_brewfile_entry(rest, index + 1)?),
+            "mas" | "vscode" | "whalebrew" | "go" => {}
+            _ => {
+                return Err(WaxError::BundleError(format!(
+                    "Unsupported Brewfile directive on line {}: {}",
+                    index + 1,
+                    directive
+                )))
+            }
+        }
+    }
+
     Ok(waxfile)
+}
+
+fn split_brewfile_directive(line: &str) -> Option<(&str, &str)> {
+    let mut parts = line.splitn(2, char::is_whitespace);
+    let directive = parts.next()?;
+    let rest = parts.next()?.trim();
+    Some((directive, rest))
+}
+
+fn strip_brewfile_comment(line: &str) -> &str {
+    let mut in_quote = false;
+    let mut escaped = false;
+
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && in_quote {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            in_quote = !in_quote;
+            continue;
+        }
+        if ch == '#' && !in_quote {
+            return &line[..index];
+        }
+    }
+
+    line
+}
+
+fn parse_brewfile_entry(rest: &str, line: usize) -> Result<BundleEntry> {
+    let name = parse_brewfile_string(rest, line)?;
+    let args = parse_brewfile_args(rest)?;
+
+    if args.is_empty() {
+        Ok(BundleEntry::Simple(name))
+    } else {
+        Ok(BundleEntry::Detailed {
+            name,
+            version: None,
+            args: Some(args),
+        })
+    }
+}
+
+fn parse_brewfile_string(rest: &str, line: usize) -> Result<String> {
+    let rest = rest.trim_start();
+    if !rest.starts_with('"') {
+        return Err(WaxError::BundleError(format!(
+            "Expected quoted string on Brewfile line {}",
+            line
+        )));
+    }
+
+    let mut value = String::new();
+    let mut escaped = false;
+
+    for ch in rest[1..].chars() {
+        if escaped {
+            value.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            return Ok(value);
+        }
+        value.push(ch);
+    }
+
+    Err(WaxError::BundleError(format!(
+        "Unterminated quoted string on Brewfile line {}",
+        line
+    )))
+}
+
+fn parse_brewfile_args(rest: &str) -> Result<Vec<String>> {
+    let Some(args_start) = rest.find("args:") else {
+        return Ok(Vec::new());
+    };
+    let args = rest[args_start + "args:".len()..].trim();
+    if args.starts_with('"') {
+        return Ok(vec![parse_brewfile_string(args, 0)?]);
+    }
+    if !args.starts_with('[') {
+        return Ok(Vec::new());
+    }
+    let Some(end) = args.find(']') else {
+        return Err(WaxError::BundleError(
+            "Unterminated args array in Brewfile".to_string(),
+        ));
+    };
+
+    let mut values = Vec::new();
+    for part in args[1..end].split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        values.push(parse_brewfile_string(part, 0)?);
+    }
+    Ok(values)
 }
 
 #[instrument(skip(cache))]
@@ -86,8 +249,8 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
     };
 
     println!(
-        "{} {}",
-        style("wax bundle").bold(),
+        "{} bundle {}",
+        style("→").cyan().bold(),
         style(path.display()).dim()
     );
 
@@ -101,12 +264,12 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
     let total = tap_count + brew_count + cask_count + cargo_count + uv_count;
 
     if total == 0 {
-        println!("  {} Waxfile is empty", style("!").yellow());
+        println!("{} Waxfile is empty", style("!").yellow());
         return Ok(());
     }
 
     println!(
-        "  {} taps, {} formulae, {} casks, {} cargo, {} uv",
+        "{} taps, {} formulae, {} casks, {} cargo, {} uv",
         style(tap_count).cyan(),
         style(brew_count).cyan(),
         style(cask_count).cyan(),
@@ -125,13 +288,13 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
 
     for tap in &waxfile.tap {
         println!();
-        println!("  {} tap {}", style("→").cyan(), style(tap).magenta());
+        println!("{} tap {}", style("+").green(), style(tap).magenta());
         match add_tap(tap).await {
             Ok(true) => success += 1,
             Ok(false) => skipped += 1,
             Err(e) => {
                 eprintln!(
-                    "  {} tap {} failed: {}",
+                    "{} tap {} failed: {}",
                     style("✗").red(),
                     style(tap).magenta(),
                     e
@@ -145,18 +308,18 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
         let names: Vec<String> = waxfile.brew.iter().map(|e| e.name().to_string()).collect();
         println!();
         println!(
-            "  {} installing {} formulae",
-            style("→").cyan(),
+            "{} installing {} formulae",
+            style("→").cyan().bold(),
             names.len()
         );
         match crate::commands::install::install(
-            cache, &names, false, false, false, false, false, false,
+            cache, &names, false, false, false, false, false, false, false,
         )
         .await
         {
             Ok(()) => success += names.len(),
             Err(e) => {
-                eprintln!("  {} brew install failed: {}", style("✗").red(), e);
+                eprintln!("{} brew install failed: {}", style("✗").red(), e);
                 failed += names.len();
             }
         }
@@ -165,15 +328,19 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
     if !waxfile.cask.is_empty() {
         let names: Vec<String> = waxfile.cask.iter().map(|e| e.name().to_string()).collect();
         println!();
-        println!("  {} installing {} casks", style("→").cyan(), names.len());
+        println!(
+            "{} installing {} casks",
+            style("→").cyan().bold(),
+            names.len()
+        );
         match crate::commands::install::install(
-            cache, &names, false, true, false, false, false, false,
+            cache, &names, false, false, true, false, false, false, false,
         )
         .await
         {
             Ok(()) => success += names.len(),
             Err(e) => {
-                eprintln!("  {} cask install failed: {}", style("✗").red(), e);
+                eprintln!("{} cask install failed: {}", style("✗").red(), e);
                 failed += names.len();
             }
         }
@@ -184,7 +351,7 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
         for entry in &waxfile.cargo {
             let name = entry.name();
             print!(
-                "  {} cargo install {}",
+                "{} cargo install {}",
                 style("→").cyan(),
                 style(name).magenta()
             );
@@ -198,12 +365,12 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
 
             match cargo_install(entry).await {
                 Ok(()) => {
-                    println!("  {} cargo {}", style("✓").green(), style(name).magenta());
+                    println!("{} cargo {}", style("✓").green(), style(name).magenta());
                     success += 1;
                 }
                 Err(e) => {
                     eprintln!(
-                        "  {} cargo {} failed: {}",
+                        "{} cargo {} failed: {}",
                         style("✗").red(),
                         style(name).magenta(),
                         e
@@ -219,7 +386,7 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
         for entry in &waxfile.uv {
             let name = entry.name();
             print!(
-                "  {} uv tool install {}",
+                "{} uv tool install {}",
                 style("→").cyan(),
                 style(name).magenta()
             );
@@ -233,12 +400,12 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
 
             match uv_tool_install(entry).await {
                 Ok(()) => {
-                    println!("  {} uv {}", style("✓").green(), style(name).magenta());
+                    println!("{} uv {}", style("✓").green(), style(name).magenta());
                     success += 1;
                 }
                 Err(e) => {
                     eprintln!(
-                        "  {} uv {} failed: {}",
+                        "{} uv {} failed: {}",
                         style("✗").red(),
                         style(name).magenta(),
                         e
@@ -307,23 +474,36 @@ pub async fn bundle_dump(_cache: &Cache) -> Result<()> {
 fn print_dry_run(waxfile: &Waxfile) {
     println!();
     for tap in &waxfile.tap {
-        println!("  tap {}", style(tap).magenta());
+        println!("{} tap {}", style("+").green(), style(tap).magenta());
     }
     for entry in &waxfile.brew {
-        println!("  brew {}", style(entry.name()).magenta());
+        println!(
+            "{} brew {}",
+            style("+").green(),
+            style(entry.name()).magenta()
+        );
     }
     for entry in &waxfile.cask {
         println!(
-            "  cask {} {}",
+            "{} cask {} {}",
+            style("+").green(),
             style(entry.name()).magenta(),
             style("(cask)").yellow()
         );
     }
     for entry in &waxfile.cargo {
-        println!("  cargo {}", style(entry.name()).magenta());
+        println!(
+            "{} cargo {}",
+            style("+").green(),
+            style(entry.name()).magenta()
+        );
     }
     for entry in &waxfile.uv {
-        println!("  uv {}", style(entry.name()).magenta());
+        println!(
+            "{} uv {}",
+            style("+").green(),
+            style(entry.name()).magenta()
+        );
     }
     println!("\n{}", style("dry run - no changes made").dim());
 }
@@ -437,4 +617,48 @@ async fn uv_tool_install(entry: &BundleEntry) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_brewfile_subset() {
+        let waxfile = parse_brewfile(
+            r#"
+tap "homebrew/cask"
+brew "ripgrep"
+brew "bat", args: ["--HEAD"]
+cask "iterm2" # terminal
+cargo "cargo-edit"
+uv "ruff"
+mas "Ignored", id: 123
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(waxfile.tap, vec!["homebrew/cask"]);
+        assert_eq!(waxfile.brew.len(), 2);
+        assert_eq!(waxfile.brew[0].name(), "ripgrep");
+        assert_eq!(waxfile.brew[1].name(), "bat");
+        assert_eq!(waxfile.brew[1].args().unwrap(), &["--HEAD".to_string()]);
+        assert_eq!(waxfile.cask[0].name(), "iterm2");
+        assert_eq!(waxfile.cargo[0].name(), "cargo-edit");
+        assert_eq!(waxfile.uv[0].name(), "ruff");
+    }
+
+    #[test]
+    fn parse_brewfile_preserves_hash_inside_quotes() {
+        let waxfile = parse_brewfile("brew \"pkg#name\" # trailing comment").unwrap();
+
+        assert_eq!(waxfile.brew[0].name(), "pkg#name");
+    }
+
+    #[test]
+    fn parse_brewfile_rejects_unquoted_names() {
+        let err = parse_brewfile("brew ripgrep").unwrap_err().to_string();
+
+        assert!(err.contains("Expected quoted string"));
+    }
 }

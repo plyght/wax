@@ -11,7 +11,7 @@ use crate::signal::{
     check_cancelled, clear_active_multi, clear_current_op, set_active_multi, set_current_op,
     CriticalSection,
 };
-use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
+use crate::ui::{confirm_prompt, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
 use crate::version::{is_same_or_newer, WAX_VERSION};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -55,6 +55,7 @@ pub async fn upgrade(
     cache: &Cache,
     packages: &[String],
     dry_run: bool,
+    ask: bool,
     scope: Option<InstallMode>,
 ) -> Result<()> {
     let start = std::time::Instant::now();
@@ -62,10 +63,26 @@ pub async fn upgrade(
     cache.ensure_fresh().await?;
 
     if packages.is_empty() {
-        upgrade_all(cache, dry_run, start, scope).await
+        upgrade_all(cache, dry_run, ask, start, scope).await
     } else {
         let cask_state = CaskState::new()?;
         let installed_casks = cask_state.load().await?;
+        if ask && !dry_run {
+            for package in packages {
+                if package == "wax" {
+                    upgrade_single(cache, package, true).await?;
+                } else if installed_casks.contains_key(package) {
+                    upgrade_cask_single(cache, package, true).await?;
+                } else {
+                    upgrade_single(cache, package, true).await?;
+                }
+            }
+            let proceed = confirm_prompt("Proceed with upgrade?")?;
+            if !proceed {
+                println!("{} upgrade cancelled", style("✗").red());
+                return Ok(());
+            }
+        }
         let mut failed_names = Vec::new();
         for package in packages {
             if let Err(e) = if package == "wax" {
@@ -99,6 +116,7 @@ pub async fn upgrade(
 async fn upgrade_all(
     cache: &Cache,
     dry_run: bool,
+    ask: bool,
     start: std::time::Instant,
     scope: Option<InstallMode>,
 ) -> Result<()> {
@@ -118,16 +136,20 @@ async fn upgrade_all(
         let prefix = homebrew_prefix();
         if !is_writable(&prefix) {
             return Err(WaxError::InstallError(format!(
-                "Refusing to upgrade {} global package{} because {} is not writable by {}. Use the Homebrew-owning user, run with --dry-run, or install packages with --user.",
+                "global upgrade blocked\n  {} {} global package{} would be changed\n  {} {} is not writable by {}\n\ntry:\n  wax upgrade --user\n  wax upgrade --dry-run\n  run global upgrades as the Homebrew-owning user",
+                style("→").cyan(),
                 global_count,
                 if global_count == 1 { "" } else { "s" },
+                style("→").cyan(),
                 prefix.display(),
                 std::env::var("USER").unwrap_or_else(|_| "this user".to_string())
             )));
         }
     }
 
-    if dry_run {
+    if dry_run || ask {
+        println!();
+        println!("{} upgrade plan", style("→").cyan().bold());
         for pkg in &outdated {
             let cask_indicator = if pkg.is_cask {
                 format!(" {}", style("(cask)").yellow())
@@ -135,15 +157,23 @@ async fn upgrade_all(
                 String::new()
             };
             println!(
-                "{}{}: {} → {}",
+                "  {} {}{} {} {}",
+                style("↻").cyan(),
                 style(&pkg.name).magenta(),
                 cask_indicator,
                 style(&pkg.installed_version).dim(),
-                style(&pkg.latest_version).green()
+                style(format!("→ {}", pkg.latest_version)).green()
             );
         }
-        println!("\ndry run - no changes made");
-        return Ok(());
+        if dry_run {
+            println!("\n{}", style("dry run - no changes made").dim());
+            return Ok(());
+        }
+        let proceed = confirm_prompt("Proceed with upgrade?")?;
+        if !proceed {
+            println!("{} upgrade cancelled", style("✗").red());
+            return Ok(());
+        }
     }
 
     // --- Pre-compute the full plan before touching anything ---

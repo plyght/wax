@@ -298,7 +298,14 @@ async fn offer_upgrade_for_selection(cache: &Cache, choice: &InstalledRow) -> Re
         .unwrap_or(false);
 
     if should_upgrade {
-        run_upgrade(cache, std::slice::from_ref(&choice.name), false, None).await?;
+        run_upgrade(
+            cache,
+            std::slice::from_ref(&choice.name),
+            false,
+            false,
+            None,
+        )
+        .await?;
         println!(
             "\n{} {}",
             style("✓").green(),

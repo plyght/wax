@@ -24,12 +24,26 @@ pub async fn tap(
     }
 
     match action {
-        Some(crate::TapAction::Add { tap }) => {
-            manager.add_tap(&tap).await?;
+        Some(crate::TapAction::Add { tap, trust }) => {
+            manager.add_tap_with_trust(&tap, trust).await?;
             if let Some(cache) = cache {
                 cache.invalidate_all_tap_caches().await?;
             }
-            println!("{} tap {}", style("+").green(), style(&tap).magenta());
+            if trust {
+                println!(
+                    "{} tap {} {}",
+                    style("+").green(),
+                    style(&tap).magenta(),
+                    style("(trusted)").green()
+                );
+            } else {
+                println!(
+                    "{} tap {} {}",
+                    style("+").green(),
+                    style(&tap).magenta(),
+                    style("(untrusted; run `wax tap trust` to enable formula installs)").yellow()
+                );
+            }
         }
         Some(crate::TapAction::External(args)) => {
             // `wax tap user/repo` without the `add` subcommand — treat as add.
@@ -53,6 +67,30 @@ pub async fn tap(
                 cache.invalidate_tap_cache(&full_name).await?;
             }
             println!("{} tap {}", style("-").red(), style(&tap).magenta());
+        }
+        Some(crate::TapAction::Trust { tap }) => {
+            manager.set_trust(&tap, true).await?;
+            if let Some(cache) = cache {
+                cache.invalidate_all_tap_caches().await?;
+            }
+            println!(
+                "{} tap {} {}",
+                style("✓").green().bold(),
+                style(&tap).magenta(),
+                style("(trusted)").green()
+            );
+        }
+        Some(crate::TapAction::Untrust { tap }) => {
+            manager.set_trust(&tap, false).await?;
+            if let Some(cache) = cache {
+                cache.invalidate_all_tap_caches().await?;
+            }
+            println!(
+                "{} tap {} {}",
+                style("✓").green().bold(),
+                style(&tap).magenta(),
+                style("(untrusted)").yellow()
+            );
         }
         Some(crate::TapAction::Update { tap }) => {
             let tap_spec = crate::tap::Tap::from_spec(&tap)?;
@@ -94,11 +132,17 @@ pub async fn tap(
                         TapKind::LocalDir { .. } => style("(local dir)").yellow(),
                         TapKind::LocalFile { .. } => style("(local file)").yellow(),
                     };
+                    let trust_label = if tap.trusted {
+                        style("(trusted)").green()
+                    } else {
+                        style("(untrusted)").yellow()
+                    };
                     let url_str = tap.url().unwrap_or_default();
                     println!(
-                        "{} {} {}",
+                        "{} {} {} {}",
                         style(&tap.full_name).magenta(),
                         kind_label,
+                        trust_label,
                         style(&url_str).dim()
                     );
                 }
