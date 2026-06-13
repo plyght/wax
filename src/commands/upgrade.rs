@@ -1305,17 +1305,18 @@ mod tests {
     static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_get_outdated_packages() {
         let _lock = HOME_MUTEX.lock().unwrap();
         let original_home = std::env::var_os("HOME");
 
+        use crate::api::{BottleFile, BottleInfo, BottleStable, Formula, Versions};
         use crate::cache::Cache;
         use crate::commands::upgrade::get_outdated_packages;
-        use crate::api::{Formula, Versions, BottleInfo, BottleStable, BottleFile};
-        use crate::install::{InstalledPackage, InstallMode};
+        use crate::install::{InstallMode, InstalledPackage};
         use std::collections::HashMap;
-        use tempfile::tempdir;
         use std::fs;
+        use tempfile::tempdir;
 
         let dir = tempdir().unwrap();
         std::env::set_var("HOME", dir.path());
@@ -1326,65 +1327,80 @@ mod tests {
 
         let mut installed = HashMap::new();
 
-        installed.insert("pkg-uptodate".to_string(), InstalledPackage {
-            name: "pkg-uptodate".to_string(),
-            version: "1.0.0".to_string(),
-            platform: "arm64_mac".to_string(),
-            install_date: 0,
-            install_mode: InstallMode::Global,
-            from_source: false,
-            bottle_rebuild: 0,
-            bottle_sha256: Some("sha1".to_string()),
-            pinned: false,
-        });
+        installed.insert(
+            "pkg-uptodate".to_string(),
+            InstalledPackage {
+                name: "pkg-uptodate".to_string(),
+                version: "1.0.0".to_string(),
+                platform: "arm64_mac".to_string(),
+                install_date: 0,
+                install_mode: InstallMode::Global,
+                from_source: false,
+                bottle_rebuild: 0,
+                bottle_sha256: Some("sha1".to_string()),
+                pinned: false,
+            },
+        );
 
-        installed.insert("pkg-version".to_string(), InstalledPackage {
-            name: "pkg-version".to_string(),
-            version: "1.0.0".to_string(),
-            platform: "arm64_mac".to_string(),
-            install_date: 0,
-            install_mode: InstallMode::Global,
-            from_source: false,
-            bottle_rebuild: 0,
-            bottle_sha256: Some("sha1".to_string()),
-            pinned: false,
-        });
+        installed.insert(
+            "pkg-version".to_string(),
+            InstalledPackage {
+                name: "pkg-version".to_string(),
+                version: "1.0.0".to_string(),
+                platform: "arm64_mac".to_string(),
+                install_date: 0,
+                install_mode: InstallMode::Global,
+                from_source: false,
+                bottle_rebuild: 0,
+                bottle_sha256: Some("sha1".to_string()),
+                pinned: false,
+            },
+        );
 
-        installed.insert("pkg-rebuild".to_string(), InstalledPackage {
-            name: "pkg-rebuild".to_string(),
-            version: "1.0.0".to_string(),
-            platform: "arm64_mac".to_string(),
-            install_date: 0,
-            install_mode: InstallMode::Global,
-            from_source: false,
-            bottle_rebuild: 0,
-            bottle_sha256: Some("sha1".to_string()),
-            pinned: false,
-        });
+        installed.insert(
+            "pkg-rebuild".to_string(),
+            InstalledPackage {
+                name: "pkg-rebuild".to_string(),
+                version: "1.0.0".to_string(),
+                platform: "arm64_mac".to_string(),
+                install_date: 0,
+                install_mode: InstallMode::Global,
+                from_source: false,
+                bottle_rebuild: 0,
+                bottle_sha256: Some("sha1".to_string()),
+                pinned: false,
+            },
+        );
 
-        installed.insert("pkg-sha".to_string(), InstalledPackage {
-            name: "pkg-sha".to_string(),
-            version: "1.0.0".to_string(),
-            platform: "arm64_mac".to_string(),
-            install_date: 0,
-            install_mode: InstallMode::Global,
-            from_source: false,
-            bottle_rebuild: 0,
-            bottle_sha256: Some("sha_old".to_string()),
-            pinned: false,
-        });
+        installed.insert(
+            "pkg-sha".to_string(),
+            InstalledPackage {
+                name: "pkg-sha".to_string(),
+                version: "1.0.0".to_string(),
+                platform: "arm64_mac".to_string(),
+                install_date: 0,
+                install_mode: InstallMode::Global,
+                from_source: false,
+                bottle_rebuild: 0,
+                bottle_sha256: Some("sha_old".to_string()),
+                pinned: false,
+            },
+        );
 
-        installed.insert("pkg-pinned".to_string(), InstalledPackage {
-            name: "pkg-pinned".to_string(),
-            version: "1.0.0".to_string(),
-            platform: "arm64_mac".to_string(),
-            install_date: 0,
-            install_mode: InstallMode::Global,
-            from_source: false,
-            bottle_rebuild: 0,
-            bottle_sha256: Some("sha1".to_string()),
-            pinned: true,
-        });
+        installed.insert(
+            "pkg-pinned".to_string(),
+            InstalledPackage {
+                name: "pkg-pinned".to_string(),
+                version: "1.0.0".to_string(),
+                platform: "arm64_mac".to_string(),
+                install_date: 0,
+                install_mode: InstallMode::Global,
+                from_source: false,
+                bottle_rebuild: 0,
+                bottle_sha256: Some("sha1".to_string()),
+                pinned: true,
+            },
+        );
 
         let installed_json = serde_json::to_string(&installed).unwrap();
         fs::write(wax_dir.join("installed.json"), installed_json).unwrap();
@@ -1394,10 +1410,13 @@ mod tests {
 
         let make_formula = |name: &str, version: &str, rebuild: u32, sha: &str| {
             let mut files = HashMap::new();
-            files.insert("all".to_string(), BottleFile {
-                url: "http://example.com".to_string(),
-                sha256: sha.to_string(),
-            });
+            files.insert(
+                "all".to_string(),
+                BottleFile {
+                    url: "http://example.com".to_string(),
+                    sha256: sha.to_string(),
+                },
+            );
             Formula {
                 name: name.to_string(),
                 full_name: name.to_string(),
@@ -1412,10 +1431,7 @@ mod tests {
                 dependencies: None,
                 build_dependencies: None,
                 bottle: Some(BottleInfo {
-                    stable: Some(BottleStable {
-                        rebuild,
-                        files,
-                    }),
+                    stable: Some(BottleStable { rebuild, files }),
                 }),
                 deprecated: false,
                 disabled: false,

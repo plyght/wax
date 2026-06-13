@@ -426,17 +426,44 @@ mod tests {
 
     #[test]
     fn test_calculate_cores() {
-        assert_eq!(Builder::calculate_cores(0), 1, "0 CPUs should result in 1 core");
-        assert_eq!(Builder::calculate_cores(1), 1, "1 CPU should result in 1 core");
-        assert_eq!(Builder::calculate_cores(2), 1, "2 CPUs should result in 1 core");
-        assert_eq!(Builder::calculate_cores(3), 2, "3 CPUs should result in 2 cores");
-        assert_eq!(Builder::calculate_cores(4), 3, "4 CPUs should result in 3 cores");
-        assert_eq!(Builder::calculate_cores(8), 7, "8 CPUs should result in 7 cores");
+        assert_eq!(
+            Builder::calculate_cores(0),
+            1,
+            "0 CPUs should result in 1 core"
+        );
+        assert_eq!(
+            Builder::calculate_cores(1),
+            1,
+            "1 CPU should result in 1 core"
+        );
+        assert_eq!(
+            Builder::calculate_cores(2),
+            1,
+            "2 CPUs should result in 1 core"
+        );
+        assert_eq!(
+            Builder::calculate_cores(3),
+            2,
+            "3 CPUs should result in 2 cores"
+        );
+        assert_eq!(
+            Builder::calculate_cores(4),
+            3,
+            "4 CPUs should result in 3 cores"
+        );
+        assert_eq!(
+            Builder::calculate_cores(8),
+            7,
+            "8 CPUs should result in 7 cores"
+        );
     }
 
     #[test]
     fn test_detect_cpu_cores_sanity() {
         let cores = Builder::detect_cpu_cores();
-        assert!(cores >= 1, "detect_cpu_cores should always return at least 1");
+        assert!(
+            cores >= 1,
+            "detect_cpu_cores should always return at least 1"
+        );
     }
 }
