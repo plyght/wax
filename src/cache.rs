@@ -268,7 +268,7 @@ impl Cache {
         let mut tap_manager = TapManager::new()?;
         tap_manager.load().await?;
 
-        for tap in tap_manager.list_taps() {
+        for tap in tap_manager.trusted_taps() {
             let tap_cache_path = self.tap_cache_path(&tap.full_name);
 
             let tap_formulae = if tap_cache_path.exists() {

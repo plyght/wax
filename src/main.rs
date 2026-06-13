@@ -63,7 +63,7 @@ fn command_prints_timing(command: &Commands) -> bool {
             | Commands::Uninstall { .. }
             | Commands::Reinstall { .. }
             | Commands::Upgrade { .. }
-            | Commands::Outdated
+            | Commands::Outdated { .. }
             | Commands::Sync
             | Commands::Bundle { .. }
     )
@@ -199,6 +199,10 @@ enum Commands {
     List {
         #[arg(help = "Filter: pre-fills the interactive search (TTY), or limits printed output")]
         query: Option<String>,
+        #[arg(long, conflicts_with = "global")]
+        user: bool,
+        #[arg(long, conflicts_with = "user")]
+        global: bool,
     },
 
     #[command(about = "Install one or more formulae or casks  [alias: i, add]")]
@@ -209,6 +213,8 @@ enum Commands {
         packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long, help = "Show the install plan and ask before making changes")]
+        ask: bool,
         #[arg(long)]
         cask: bool,
         #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
@@ -234,6 +240,8 @@ enum Commands {
         packages: Vec<String>,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long, help = "Show the install plan and ask before making changes")]
+        ask: bool,
         #[arg(long, help = "Install to ~/.local/wax (no sudo required)")]
         user: bool,
         #[arg(long, help = "Install to system directory (may need sudo)")]
@@ -297,11 +305,17 @@ enum Commands {
         no_clean: bool,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long, help = "Show the upgrade plan and ask before making changes")]
+        ask: bool,
         #[arg(
             long,
             help = "Also upgrade OS packages via the native package manager (apt/dnf/pacman/apk/…)"
         )]
         system: bool,
+        #[arg(long, conflicts_with = "global")]
+        user: bool,
+        #[arg(long, conflicts_with = "user")]
+        global: bool,
     },
 
     #[command(about = "Manage OS-level packages via the native package manager")]
@@ -311,7 +325,12 @@ enum Commands {
     },
 
     #[command(about = "List packages with available updates")]
-    Outdated,
+    Outdated {
+        #[arg(long, conflicts_with = "global")]
+        user: bool,
+        #[arg(long, conflicts_with = "user")]
+        global: bool,
+    },
 
     #[command(about = "Re-create symlinks for installed packages  [alias: ln]")]
     #[command(visible_alias = "ln")]
@@ -487,6 +506,8 @@ enum TapAction {
     Add {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
+        #[arg(long, help = "Trust this tap for formula discovery and installs")]
+        trust: bool,
     },
     #[command(
         about = "Remove a custom tap",
@@ -502,6 +523,16 @@ enum TapAction {
     List,
     #[command(about = "Update a tap", visible_alias = "up")]
     Update {
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
+        tap: String,
+    },
+    #[command(about = "Trust a tap for formula discovery and installs")]
+    Trust {
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
+        tap: String,
+    },
+    #[command(about = "Remove trust from a tap")]
+    Untrust {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
@@ -531,6 +562,10 @@ fn init_logging(verbose: bool) -> Result<()> {
     Ok(())
 }
 
+fn install_scope(user: bool, global: bool) -> Result<Option<install::InstallMode>> {
+    install::InstallMode::from_flags(user, global)
+}
+
 async fn handle_system_upgrade() -> Result<()> {
     use crate::system_pm::SystemPm;
     match SystemPm::detect().await {
@@ -553,7 +588,42 @@ async fn handle_system_upgrade() -> Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(err) = run().await {
+        print_error_and_exit(err);
+    }
+}
+
+fn print_error_and_exit(err: error::WaxError) -> ! {
+    use console::style;
+    use error::WaxError;
+
+    let prefix = style("error:").red().bold();
+    match err {
+        WaxError::Interrupted => {
+            eprintln!("\n{} interrupted", style("✗").red());
+            std::process::exit(130);
+        }
+        WaxError::NotInstalled(pkg) => {
+            eprintln!("{} {} is not installed", prefix, style(&pkg).magenta());
+        }
+        WaxError::FormulaNotFound(pkg) => {
+            eprintln!("{} formula not found: {}", prefix, style(&pkg).magenta());
+        }
+        WaxError::CaskNotFound(pkg) => {
+            eprintln!("{} cask not found: {}", prefix, style(&pkg).magenta());
+        }
+        WaxError::InstallError(message) => {
+            eprintln!("{} {}", prefix, message);
+        }
+        other => {
+            eprintln!("{} {}", prefix, other);
+        }
+    }
+    std::process::exit(1);
+}
+
+async fn run() -> Result<()> {
     let action_timer = Instant::now();
     let cli = Cli::parse();
 
@@ -610,10 +680,15 @@ async fn main() -> Result<()> {
         Commands::Info { formula, cask } => {
             commands::info::info(&api_client, &cache, &formula, cask).await
         }
-        Commands::List { query } => commands::list::list(&cache, query).await,
+        Commands::List {
+            query,
+            user,
+            global,
+        } => commands::list::list(&cache, query, install_scope(user, global)?).await,
         Commands::Install {
             packages,
             dry_run,
+            ask,
             cask,
             user,
             global,
@@ -629,6 +704,7 @@ async fn main() -> Result<()> {
                     &cache,
                     &packages,
                     dry_run,
+                    ask && !cli.yes,
                     cask,
                     user,
                     global,
@@ -642,12 +718,22 @@ async fn main() -> Result<()> {
         Commands::InstallCask {
             packages,
             dry_run,
+            ask,
             user,
             global,
             no_script,
         } => {
             commands::install::install(
-                &cache, &packages, dry_run, true, user, global, false, false, !no_script,
+                &cache,
+                &packages,
+                dry_run,
+                ask && !cli.yes,
+                true,
+                user,
+                global,
+                false,
+                false,
+                !no_script,
             )
             .await
         }
@@ -674,7 +760,10 @@ async fn main() -> Result<()> {
             clean,
             no_clean,
             dry_run,
+            ask,
             system,
+            user,
+            global,
         } => {
             if upgrade_self {
                 run_self_update(nightly, false, clean, no_clean).await?;
@@ -683,7 +772,14 @@ async fn main() -> Result<()> {
 
             let explicit_packages_requested = !packages.is_empty();
 
-            commands::upgrade::upgrade(&cache, &packages, dry_run).await?;
+            commands::upgrade::upgrade(
+                &cache,
+                &packages,
+                dry_run,
+                ask && !cli.yes,
+                install_scope(user, global)?,
+            )
+            .await?;
             if system {
                 handle_system_upgrade().await?;
             }
@@ -717,7 +813,9 @@ async fn main() -> Result<()> {
                 }
             }
         },
-        Commands::Outdated => commands::outdated::outdated(&cache).await,
+        Commands::Outdated { user, global } => {
+            commands::outdated::outdated(&cache, install_scope(user, global)?).await
+        }
         Commands::Link { packages } => commands::link::link(&packages).await,
         Commands::Unlink { packages } => commands::link::unlink(&packages).await,
         Commands::Cleanup { dry_run } => commands::cleanup::cleanup(dry_run).await,
@@ -765,31 +863,7 @@ async fn main() -> Result<()> {
         Commands::Audit => commands::audit::audit(&cache).await,
     };
 
-    if let Err(e) = result {
-        use console::style;
-        use error::WaxError;
-
-        let prefix = style("error:").red().bold();
-        match e {
-            WaxError::Interrupted => {
-                eprintln!("\n{} interrupted", style("✗").red());
-                std::process::exit(130);
-            }
-            WaxError::NotInstalled(pkg) => {
-                eprintln!("{} {} is not installed", prefix, style(&pkg).magenta());
-            }
-            WaxError::FormulaNotFound(pkg) => {
-                eprintln!("{} formula not found: {}", prefix, style(&pkg).magenta());
-            }
-            WaxError::CaskNotFound(pkg) => {
-                eprintln!("{} cask not found: {}", prefix, style(&pkg).magenta());
-            }
-            _ => {
-                eprintln!("{} {}", prefix, e);
-            }
-        }
-        std::process::exit(1);
-    }
+    result?;
 
     if cli.time_to_action && !command_prints_own_timing {
         println!("{}", timing::elapsed_text(action_timer.elapsed()));

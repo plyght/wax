@@ -15,7 +15,8 @@ use crate::signal::{check_cancelled, clear_active_multi, set_active_multi, Criti
 use crate::system_pm::SystemPm;
 use crate::tap::TapManager;
 use crate::ui::{
-    copy_dir_all, dirs, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
+    confirm_prompt, copy_dir_all, dirs, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE,
+    PROGRESS_BAR_TEMPLATE,
 };
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -535,6 +536,7 @@ async fn install_from_head_task(
 
 struct InstallArgs<'a> {
     dry_run: bool,
+    ask: bool,
     cask: bool,
     user: bool,
     global: bool,
@@ -552,6 +554,7 @@ pub async fn install(
     cache: &Cache,
     package_names: &[String],
     dry_run: bool,
+    ask: bool,
     cask: bool,
     user: bool,
     global: bool,
@@ -564,6 +567,7 @@ pub async fn install(
         package_names,
         InstallArgs {
             dry_run,
+            ask,
             cask,
             user,
             global,
@@ -594,6 +598,7 @@ pub async fn install_quiet(
         &names,
         InstallArgs {
             dry_run: false,
+            ask: false,
             cask,
             user,
             global,
@@ -624,6 +629,7 @@ pub async fn install_quiet_force(
         &names,
         InstallArgs {
             dry_run: false,
+            ask: false,
             cask,
             user,
             global,
@@ -656,6 +662,7 @@ pub async fn install_quiet_with_progress(
         &names,
         InstallArgs {
             dry_run: false,
+            ask: false,
             cask,
             user,
             global,
@@ -718,6 +725,7 @@ async fn install_impl(
 ) -> Result<()> {
     let InstallArgs {
         dry_run,
+        ask,
         cask,
         user,
         global,
@@ -739,7 +747,7 @@ async fn install_impl(
     cache.ensure_fresh().await?;
 
     if cask {
-        return install_casks(cache, package_names, dry_run, quiet, force_reinstall).await;
+        return install_casks(cache, package_names, dry_run, ask, quiet, force_reinstall).await;
     }
 
     let install_mode = match InstallMode::from_flags(user, global)? {
@@ -780,7 +788,16 @@ async fn install_impl(
     let state = InstallState::new()?;
     state.sync_from_cellar().await.ok();
     let installed_packages = state.load().await?;
-    let installed: HashSet<String> = installed_packages.keys().cloned().collect();
+    let installed: HashSet<String> = installed_packages
+        .iter()
+        .filter_map(|(name, pkg)| {
+            if pkg.install_mode == install_mode {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Pre-build lookup maps for O(1) formula resolution instead of O(n) linear scans
     let by_name: std::collections::HashMap<&str, &crate::api::Formula> =
@@ -912,20 +929,9 @@ async fn install_impl(
         }
     }
 
-    let cask_task = if detected_casks.is_empty() {
-        None
-    } else {
-        let cask_names = detected_casks.clone();
-        Some(tokio::spawn(async move {
-            let local_cache = Cache::new()?;
-            install_casks(&local_cache, &cask_names, dry_run, quiet, false).await
-        }))
-    };
-
     if all_to_install.is_empty() {
-        if let Some(task) = cask_task {
-            task.await
-                .map_err(|e| WaxError::InstallError(format!("cask task failed: {}", e)))??;
+        if !detected_casks.is_empty() {
+            install_casks(cache, &detected_casks, dry_run, ask, quiet, false).await?;
         }
         hint_user_prefix_path_if_needed(install_mode, quiet);
         return Ok(());
@@ -953,16 +959,36 @@ async fn install_impl(
         );
     }
 
-    if dry_run {
+    if dry_run || ask {
         if !quiet {
             println!();
+            println!("{} install plan", style("→").cyan().bold());
             for name in &all_to_install {
-                println!("+ {}", name);
+                println!("  {} {}", style("+").green(), style(name).magenta());
             }
-            println!("\ndry run - no changes made");
+            if dry_run {
+                println!("\n{}", style("dry run - no changes made").dim());
+            }
         }
-        return Ok(());
+        if dry_run {
+            return Ok(());
+        }
+        let proceed = confirm_prompt("Proceed with install?")?;
+        if !proceed {
+            println!("{} install cancelled", style("✗").red());
+            return Ok(());
+        }
     }
+
+    let cask_task = if detected_casks.is_empty() {
+        None
+    } else {
+        let cask_names = detected_casks.clone();
+        Some(tokio::spawn(async move {
+            let local_cache = Cache::new()?;
+            install_casks(&local_cache, &cask_names, dry_run, ask, quiet, false).await
+        }))
+    };
 
     let platform = detect_platform();
     debug!("Detected platform: {}", platform);
@@ -1707,6 +1733,7 @@ async fn install_casks(
     cache: &Cache,
     cask_names: &[String],
     dry_run: bool,
+    ask: bool,
     quiet: bool,
     force_reinstall: bool,
 ) -> Result<()> {
@@ -1761,9 +1788,25 @@ async fn install_casks(
         return Ok(());
     }
 
-    if dry_run {
-        let _ = multi.println("dry run - no changes made");
-        return Ok(());
+    if dry_run || ask {
+        let _ = multi.println(format!("{} install plan", style("→").cyan().bold()));
+        for name in to_install.iter().chain(linux_cask_installs.iter()) {
+            let _ = multi.println(format!(
+                "  {} {} {}",
+                style("+").green(),
+                style(name).magenta(),
+                style("(cask)").yellow()
+            ));
+        }
+        if dry_run {
+            let _ = multi.println(format!("{}", style("dry run - no changes made").dim()));
+            return Ok(());
+        }
+        let proceed = confirm_prompt("Proceed with install?")?;
+        if !proceed {
+            let _ = multi.println(format!("{} install cancelled", style("✗").red()));
+            return Ok(());
+        }
     }
 
     // --- Phase 1: fetch all details + probe artifact types concurrently ---

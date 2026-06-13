@@ -143,6 +143,11 @@ wax lock
 # Install from lockfile
 # Uses the same discovery pass to include manual installs / other package managers in the installed view
 wax sync
+
+# Install from Waxfile.toml or a Homebrew-style Brewfile
+wax bundle
+wax bundle --file Brewfile --dry-run
+wax bundle dump
 ```
 
 ## Configuration
@@ -169,6 +174,27 @@ Wax stores configuration and cache in `~/.wax/` (or platform-specific cache dire
 nginx = { version = "1.25.3", bottle = "arm64_ventura" }
 openssl = { version = "3.1.4", bottle = "arm64_ventura" }
 tree = { version = "2.1.1", bottle = "arm64_ventura" }
+```
+
+### Bundle Format
+
+`wax bundle` reads `Waxfile`, `Waxfile.toml`, `waxfile`, `waxfile.toml`, `Brewfile`, or `brewfile`. TOML Waxfiles support `tap`, `brew`, `cask`, `cargo`, and `uv` arrays:
+
+```toml
+tap = ["homebrew/cask"]
+brew = ["ripgrep", { name = "bat", args = ["--HEAD"] }]
+cask = ["iterm2"]
+cargo = ["cargo-edit"]
+uv = ["ruff"]
+```
+
+Homebrew Brewfile compatibility covers the common quoted subset: `tap`, `brew`, and `cask`, plus Wax extensions `cargo` and `uv`. `args:` strings or string arrays are forwarded. Unsupported Homebrew-only directives such as `mas`, `vscode`, `whalebrew`, and `go` are ignored.
+
+```ruby
+tap "homebrew/cask"
+brew "ripgrep"
+brew "bat", args: ["--HEAD"]
+cask "iterm2"
 ```
 
 ## Architecture

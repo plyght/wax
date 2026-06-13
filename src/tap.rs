@@ -21,6 +21,12 @@ pub struct Tap {
     pub full_name: String,
     pub kind: TapKind,
     pub path: PathBuf,
+    #[serde(default = "default_trusted")]
+    pub trusted: bool,
+}
+
+fn default_trusted() -> bool {
+    true
 }
 
 impl Tap {
@@ -77,6 +83,7 @@ impl Tap {
                 repo: repo.to_string(),
             },
             path,
+            trusted: false,
         })
     }
 
@@ -90,6 +97,7 @@ impl Tap {
                 url: url.to_string(),
             },
             path,
+            trusted: false,
         })
     }
 
@@ -106,6 +114,7 @@ impl Tap {
                 path: canonicalized.clone(),
             },
             path: canonicalized,
+            trusted: false,
         })
     }
 
@@ -122,6 +131,7 @@ impl Tap {
                 path: canonicalized.clone(),
             },
             path: canonicalized,
+            trusted: false,
         })
     }
 
@@ -242,6 +252,7 @@ impl TapManager {
                     full_name,
                     kind,
                     path,
+                    trusted: true,
                 },
             );
         }
@@ -263,9 +274,15 @@ impl TapManager {
 
     #[instrument(skip(self))]
     pub async fn add_tap(&mut self, spec: &str) -> Result<()> {
+        self.add_tap_with_trust(spec, false).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn add_tap_with_trust(&mut self, spec: &str, trusted: bool) -> Result<()> {
         info!("Adding tap: {}", spec);
 
-        let tap = Tap::from_spec(spec)?;
+        let mut tap = Tap::from_spec(spec)?;
+        tap.trusted = trusted;
 
         if self.taps.contains_key(&tap.full_name) {
             return Err(WaxError::TapError(format!(
@@ -312,6 +329,19 @@ impl TapManager {
         self.taps.insert(tap.full_name.clone(), tap);
         self.save().await?;
 
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn set_trust(&mut self, spec: &str, trusted: bool) -> Result<()> {
+        let tap_to_update = Tap::from_spec(spec)?;
+        let full_name = tap_to_update.full_name;
+        let tap = self
+            .taps
+            .get_mut(&full_name)
+            .ok_or_else(|| WaxError::TapError(format!("Tap {} not found", full_name)))?;
+        tap.trusted = trusted;
+        self.save().await?;
         Ok(())
     }
 
@@ -410,6 +440,10 @@ impl TapManager {
         }
 
         Ok(repaired)
+    }
+
+    pub fn trusted_taps(&self) -> Vec<&Tap> {
+        self.taps.values().filter(|tap| tap.trusted).collect()
     }
 
     pub async fn has_tap(&self, tap_name: &str) -> bool {

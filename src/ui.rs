@@ -1,8 +1,11 @@
-use crate::error::Result;
+use crate::error::{Result, WaxError};
 use crate::sudo;
+use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
+use inquire::Confirm;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
+use std::io::{self, IsTerminal, Write};
 #[cfg(target_os = "macos")]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -106,6 +109,30 @@ fn clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
     } else {
         Err(std::io::Error::last_os_error())
     }
+}
+
+pub fn confirm_prompt(message: &str) -> Result<bool> {
+    if io::stdin().is_terminal() {
+        return Confirm::new(message)
+            .with_default(false)
+            .prompt_skippable()
+            .map(|answer| answer.unwrap_or(false))
+            .map_err(|e| WaxError::InstallError(format!("prompt failed: {}", e)));
+    }
+
+    print!(
+        "{} {} {} ",
+        style("?").cyan().bold(),
+        message,
+        style("[y/N]").dim()
+    );
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 pub fn create_spinner(message: &str) -> ProgressBar {
