@@ -13,6 +13,9 @@ use inquire::Confirm;
 use std::path::Path;
 use std::time::Instant;
 
+#[cfg(target_os = "windows")]
+use crate::windows_state::{self, WindowsPackageManifest};
+
 pub async fn uninstall(
     cache: &Cache,
     formulae: &[String],
@@ -26,6 +29,12 @@ pub async fn uninstall(
         state.sync_from_cellar().await.ok();
         let installed = state.load().await?;
         let mut names: Vec<String> = installed.keys().cloned().collect();
+        #[cfg(target_os = "windows")]
+        names.extend(
+            windows_state::list_manifests()?
+                .into_iter()
+                .map(|m| format!("{}/{}", m.ecosystem.label(), m.id)),
+        );
         names.sort();
         names
     } else {
@@ -86,6 +95,14 @@ async fn uninstall_impl(
 
     if cask {
         return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
+    }
+
+    // On Windows, check for Windows package manifests (scoop, winget, choco)
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(manifest) = windows_state::find_manifest(formula_name)? {
+            return uninstall_windows_package(&manifest, dry_run, start, quiet, prefix).await;
+        }
     }
 
     let state = InstallState::new()?;
@@ -513,6 +530,57 @@ async fn read_app_version_from_plist(path: &Path) -> Option<String> {
     } else {
         Some(value)
     }
+}
+
+#[cfg(target_os = "windows")]
+async fn uninstall_windows_package(
+    manifest: &WindowsPackageManifest,
+    dry_run: bool,
+    start: std::time::Instant,
+    quiet: bool,
+    prefix: &str,
+) -> Result<()> {
+    let qualified = format!("{}/{}", manifest.ecosystem.label(), manifest.id);
+
+    if dry_run {
+        if !quiet {
+            println!(
+                "{}would remove {}@{} (windows)",
+                prefix,
+                style(&qualified).magenta(),
+                style(&manifest.version).dim()
+            );
+        }
+        return Ok(());
+    }
+
+    // Run native uninstaller first if present
+    if let Some(native) = &manifest.native_uninstall {
+        if !quiet {
+            println!(
+                "{}uninstalling {} via native uninstaller...",
+                prefix,
+                style(&qualified).magenta()
+            );
+        }
+        let _ = std::process::Command::new(&native.command)
+            .args(&native.args)
+            .status();
+    }
+
+    windows_state::remove_manifest(manifest, false)?;
+
+    if !quiet {
+        println!(
+            "{} {}{}{}",
+            style("✗").red().bold(),
+            prefix,
+            style(&qualified).magenta(),
+            style(format!("@{} (windows)", manifest.version)).dim(),
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

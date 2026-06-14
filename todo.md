@@ -1,1 +1,2 @@
 - system package management completeness nix parity
+- test winget/scoop/choco install on real Windows system (OS-gated, can't test on macOS)

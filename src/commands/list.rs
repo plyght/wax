@@ -11,6 +11,9 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use tracing::instrument;
 
+#[cfg(target_os = "windows")]
+use crate::windows_state;
+
 /// When set (tests only), treat this path as the Cellar root (`<Cellar>/<formula>/<version>/`)
 /// and do not merge in casks from the system, so `wax list` output is deterministic.
 const WAX_TEST_CELLAR_ENV: &str = "WAX_TEST_CELLAR";
@@ -20,6 +23,8 @@ struct InstalledRow {
     name: String,
     line: String,
     is_cask: bool,
+    #[allow(dead_code)]
+    is_windows: bool,
 }
 
 impl std::fmt::Display for InstalledRow {
@@ -135,6 +140,7 @@ async fn collect_installed_rows(
                         name: package_name,
                         line,
                         is_cask: false,
+                        is_windows: false,
                     });
                 }
             }
@@ -165,6 +171,7 @@ async fn collect_installed_rows(
                 name: package_name.clone(),
                 line,
                 is_cask: false,
+                is_windows: false,
             });
         }
     }
@@ -183,6 +190,25 @@ async fn collect_installed_rows(
             name: cask_name.clone(),
             line,
             is_cask: true,
+            is_windows: false,
+        });
+    }
+
+    // Add Windows package manifests (scoop, winget, choco)
+    #[cfg(target_os = "windows")]
+    for manifest in windows_state::list_manifests()? {
+        let qualified = format!("{}/{}", manifest.ecosystem.label(), manifest.id);
+        let line = format!(
+            "{} {} {}",
+            style(&qualified).magenta(),
+            style(&manifest.version).dim(),
+            style("(windows)").yellow()
+        );
+        rows.push(InstalledRow {
+            name: qualified,
+            line,
+            is_cask: false,
+            is_windows: true,
         });
     }
 
@@ -208,40 +234,36 @@ fn print_table(rows: &[InstalledRow]) {
     }
 }
 
-fn summarize_counts(rows: &[InstalledRow]) -> (usize, usize) {
-    let fc = rows.iter().filter(|r| !r.is_cask).count();
+fn summarize_counts(rows: &[InstalledRow]) -> (usize, usize, usize) {
+    let fc = rows.iter().filter(|r| !r.is_cask && !r.is_windows).count();
     let cc = rows.iter().filter(|r| r.is_cask).count();
-    (fc, cc)
+    let wc = rows.iter().filter(|r| r.is_windows).count();
+    (fc, cc, wc)
 }
 
-fn print_summary(total: usize, formula_count: usize, cask_count: usize) {
-    let parts: Vec<String> = [
-        if formula_count == 0 {
-            None
-        } else {
-            Some(format!(
-                "{} {}",
-                formula_count,
-                if formula_count == 1 {
-                    "formula"
-                } else {
-                    "formulae"
-                }
-            ))
-        },
-        if cask_count == 0 {
-            None
-        } else {
-            Some(format!(
-                "{} {}",
-                cask_count,
-                if cask_count == 1 { "cask" } else { "casks" }
-            ))
-        },
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+fn print_summary(total: usize, formula_count: usize, cask_count: usize, windows_count: usize) {
+    let mut parts: Vec<String> = Vec::new();
+    if formula_count > 0 {
+        parts.push(format!(
+            "{} {}",
+            formula_count,
+            if formula_count == 1 { "formula" } else { "formulae" }
+        ));
+    }
+    if cask_count > 0 {
+        parts.push(format!(
+            "{} {}",
+            cask_count,
+            if cask_count == 1 { "cask" } else { "casks" }
+        ));
+    }
+    if windows_count > 0 {
+        parts.push(format!(
+            "{} {}",
+            windows_count,
+            if windows_count == 1 { "windows" } else { "windows" }
+        ));
+    }
 
     println!(
         "\n{} {} installed ({})",
@@ -395,8 +417,8 @@ pub async fn list(cache: &Cache, query: Option<String>, scope: Option<InstallMod
     }
 
     print_table(&filtered);
-    let (fc, cc) = summarize_counts(&filtered);
-    print_summary(filtered.len(), fc, cc);
+    let (fc, cc, wc) = summarize_counts(&filtered);
+    print_summary(filtered.len(), fc, cc, wc);
 
     Ok(())
 }
@@ -411,6 +433,7 @@ mod tests {
             name: name.to_string(),
             line: line.to_string(),
             is_cask: false,
+            is_windows: false,
         }
     }
 

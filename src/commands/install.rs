@@ -812,8 +812,32 @@ async fn install_impl(
     let mut detected_casks: Vec<String> = Vec::new();
     let mut user_direct_formula_names: HashSet<String> = HashSet::new();
 
-    for package_name in package_names {
-        if installed.contains(package_name) {
+    // Pre-filter ecosystem-qualified packages on Windows
+    #[cfg(target_os = "windows")]
+    let package_names: Vec<String> = {
+        let mut remaining = Vec::new();
+        for name in package_names.iter() {
+            let spec = crate::package_spec::parse_package_spec(name);
+            if spec.force == Some(crate::package_spec::Ecosystem::Brew) {
+                remaining.push(spec.name);
+            } else if spec.force.is_some() {
+                // scoop/, choco/, winget/ — handled by ecosystem_install
+                if crate::ecosystem_install::install_one_qualified(
+                    cache, name, dry_run, false,
+                ).await? {
+                    continue;
+                }
+                // If ecosystem_install didn't handle it, try remaining as formula name
+                remaining.push(spec.name);
+            } else {
+                remaining.push(name.clone());
+            }
+        }
+        remaining
+    };
+
+    for package_name in package_names.iter() {
+        if installed.contains(package_name.as_str()) {
             already_installed.push(package_name.clone());
             continue;
         }

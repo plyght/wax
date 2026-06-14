@@ -18,6 +18,22 @@ mod timing;
 mod ui;
 mod version;
 
+// Windows package manager support (scoop, winget, chocolatey)
+#[cfg(target_os = "windows")]
+mod chocolatey;
+#[cfg(target_os = "windows")]
+mod ecosystem_install;
+#[cfg(target_os = "windows")]
+mod package_spec;
+#[cfg(target_os = "windows")]
+mod remote_search;
+#[cfg(target_os = "windows")]
+mod scoop;
+#[cfg(target_os = "windows")]
+mod windows_state;
+#[cfg(target_os = "windows")]
+mod winget_install;
+
 use api::ApiClient;
 use cache::Cache;
 use clap::{Parser, Subcommand};
