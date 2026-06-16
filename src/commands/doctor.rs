@@ -120,30 +120,7 @@ fn print_check_result(title: &str, result: &DiagResult, elapsed: Duration) {
     }
 }
 
-pub async fn doctor(cache: &Cache, fix: bool, full: bool) -> Result<()> {
-    let mut aggregate = DiagResult::new(fix);
-    let cache = cache.clone();
-    let start = Instant::now();
-
-    let run_full_checks = fix || full;
-
-    if fix {
-        let prefix = homebrew_prefix();
-        if prefix.exists() && !crate::install::is_writable(&prefix) {
-            return Err(crate::error::WaxError::InstallError(format!(
-                "doctor --fix blocked\n  {} {} is not writable by {}\n\ntry:\n  run wax doctor --fix as the Homebrew-owning user\n  use wax install --user for per-user installs",
-                console::style("→").cyan(),
-                prefix.display(),
-                std::env::var("USER").unwrap_or_else(|_| "this user".to_string())
-            )));
-        }
-        println!("{}", style("running wax doctor --fix").bold());
-    } else if full {
-        println!("{}", style("running wax doctor --full").bold());
-    } else {
-        println!("{}", style("running wax doctor (quick)").bold());
-    }
-
+fn build_checks(cache: &Cache, fix: bool, run_full_checks: bool) -> Vec<Check> {
     let cache_for_check = cache.clone();
     let cache_for_cask_metadata = cache.clone();
     let mut checks: Vec<Check> = vec![
@@ -248,6 +225,10 @@ pub async fn doctor(cache: &Cache, fix: bool, full: bool) -> Result<()> {
         });
     }
 
+    checks
+}
+
+async fn run_checks(checks: Vec<Check>) -> Vec<(&'static str, DiagResult, Duration)> {
     // One spinner per check, displayed in declaration order while all checks
     // run in parallel.
     let mp = MultiProgress::new();
@@ -279,20 +260,39 @@ pub async fn doctor(cache: &Cache, fix: bool, full: bool) -> Result<()> {
             as BoxFuture<'static, (usize, DiagResult, Duration)>);
     }
 
-    let mut results: Vec<Option<(DiagResult, Duration)>> =
+    let mut raw_results: Vec<Option<(DiagResult, Duration)>> =
         (0..titles.len()).map(|_| None).collect();
     while let Some((idx, res, elapsed)) = fut.next().await {
         spinners[idx].finish_and_clear();
-        results[idx] = Some((res, elapsed));
+        raw_results[idx] = Some((res, elapsed));
     }
     mp.clear().ok();
 
-    for (idx, slot) in results.into_iter().enumerate() {
+    let mut results = Vec::with_capacity(titles.len());
+    for (idx, slot) in raw_results.into_iter().enumerate() {
         let (res, elapsed) = slot.expect("every check must complete");
-        print_check_result(titles[idx], &res, elapsed);
-        aggregate.add(res);
+        results.push((titles[idx], res, elapsed));
     }
 
+    results
+}
+
+fn check_writable_prefix(fix: bool) -> Result<()> {
+    if fix {
+        let prefix = homebrew_prefix();
+        if prefix.exists() && !crate::install::is_writable(&prefix) {
+            return Err(crate::error::WaxError::InstallError(format!(
+                "doctor --fix blocked\n  {} {} is not writable by {}\n\ntry:\n  run wax doctor --fix as the Homebrew-owning user\n  use wax install --user for per-user installs",
+                console::style("→").cyan(),
+                prefix.display(),
+                std::env::var("USER").unwrap_or_else(|_| "this user".to_string())
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn print_summary(aggregate: &DiagResult, start: Instant, run_full_checks: bool, fix: bool) {
     println!();
     let mut parts = vec![format!("{} passed", style(aggregate.passed).green())];
     if aggregate.warned > 0 {
@@ -332,6 +332,33 @@ pub async fn doctor(cache: &Cache, fix: bool, full: bool) -> Result<()> {
             style("wax doctor --full").yellow()
         );
     }
+}
+
+pub async fn doctor(cache: &Cache, fix: bool, full: bool) -> Result<()> {
+    let start = Instant::now();
+    let run_full_checks = fix || full;
+
+    check_writable_prefix(fix)?;
+
+    if fix {
+        println!("{}", style("running wax doctor --fix").bold());
+    } else if full {
+        println!("{}", style("running wax doctor --full").bold());
+    } else {
+        println!("{}", style("running wax doctor (quick)").bold());
+    }
+
+    let checks = build_checks(cache, fix, run_full_checks);
+
+    let results = run_checks(checks).await;
+
+    let mut aggregate = DiagResult::new(fix);
+    for (title, res, elapsed) in results {
+        print_check_result(title, &res, elapsed);
+        aggregate.add(res);
+    }
+
+    print_summary(&aggregate, start, run_full_checks, fix);
 
     Ok(())
 }
