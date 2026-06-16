@@ -3,12 +3,8 @@ use crate::sudo;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
-#[cfg(target_os = "macos")]
-use std::ffi::CString;
 use std::io::{self, IsTerminal, Write};
-#[cfg(target_os = "macos")]
-use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use tracing::debug;
 
@@ -88,27 +84,8 @@ fn copy_dir_all_inner(src: &PathBuf, dst: &PathBuf) -> Result<()> {
 }
 
 fn copy_regular_file(src: &PathBuf, dst: &PathBuf) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        if clonefile(src, dst).is_ok() {
-            return Ok(());
-        }
-    }
-
     std::fs::copy(src, dst)?;
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
-    let src_c = CString::new(src.as_os_str().as_bytes())?;
-    let dst_c = CString::new(dst.as_os_str().as_bytes())?;
-    let result = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
 }
 
 pub fn confirm_prompt(message: &str) -> Result<bool> {

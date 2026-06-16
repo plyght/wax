@@ -139,6 +139,20 @@ impl Drop for CriticalSection {
     }
 }
 
+pub struct ActiveMultiGuard;
+
+impl ActiveMultiGuard {
+    pub fn new() -> Self {
+        ActiveMultiGuard
+    }
+}
+
+impl Drop for ActiveMultiGuard {
+    fn drop(&mut self) {
+        clear_active_multi();
+    }
+}
+
 pub fn install_handler() {
     let _ = ctrlc::set_handler(move || {
         let op = get_current_op();

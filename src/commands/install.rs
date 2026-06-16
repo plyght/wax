@@ -11,7 +11,7 @@ use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::formula_parser::{BuildSystem, FormulaParser};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
-use crate::signal::{check_cancelled, clear_active_multi, set_active_multi, CriticalSection};
+use crate::signal::{check_cancelled, set_active_multi, CriticalSection};
 use crate::system_pm::SystemPm;
 use crate::tap::TapManager;
 use crate::ui::{
@@ -1021,9 +1021,12 @@ async fn install_impl(
 
     let multi = MultiProgress::new();
     let owns_formula_multi = crate::signal::clone_active_multi().is_none();
-    if owns_formula_multi {
+    let _multi_guard = if owns_formula_multi {
         set_active_multi(multi.clone());
-    }
+        Some(crate::signal::ActiveMultiGuard::new())
+    } else {
+        None
+    };
 
     let packages_to_install: Vec<_> = all_to_install
         .iter()
@@ -1409,9 +1412,6 @@ async fn install_impl(
     }
 
     check_cancelled()?;
-    if owns_formula_multi {
-        clear_active_multi();
-    }
     drop(multi);
 
     let state_snapshot = state.load().await?;
@@ -1900,9 +1900,12 @@ async fn install_casks(
     // Register our MultiProgress for nested cask helpers (preflight, etc.) only once we know
     // we are past early returns; standalone installs own the global slot until phase 2 ends.
     let owns_multi_globals = crate::signal::clone_active_multi().is_none();
-    if owns_multi_globals {
+    let _multi_guard = if owns_multi_globals {
         crate::signal::set_active_multi((*multi).clone());
-    }
+        Some(crate::signal::ActiveMultiGuard::new())
+    } else {
+        None
+    };
 
     let cask_count = resolved.len();
 
@@ -2107,10 +2110,6 @@ async fn install_casks(
                 failed.push(name);
             }
         }
-    }
-
-    if owns_multi_globals {
-        crate::signal::clear_active_multi();
     }
 
     // Drop multi before summary to keep output stable.

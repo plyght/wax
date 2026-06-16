@@ -34,7 +34,8 @@ jobs:
         id: check
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            VERSION="${github.ref_name#v}"
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
             echo "Tag push for v$VERSION"
             PREV_TAG=$(git tag --list 'v*' --sort=-version:refname | grep -v "^v${VERSION}$" | head -1 || echo "")
             echo "Previous tag: $PREV_TAG"

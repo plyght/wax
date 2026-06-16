@@ -414,6 +414,7 @@ impl CaskState {
     }
 
     pub async fn sync_from_caskrooms(&self) -> Result<HashSet<String>> {
+        let _guard = cask_state_write_lock().lock().await;
         let mut casks = self.load().await?;
         let mut synced_names = HashSet::new();
         let mut roots = vec![Self::caskroom_dir()];
@@ -1302,11 +1303,24 @@ impl CaskInstaller {
 
     /// Rejects paths that contain parent-directory traversal components.
     fn reject_traversal(path: &Path) -> Result<()> {
-        if path.as_os_str().as_encoded_bytes().contains(&0) {
-            return Err(WaxError::InstallError(format!(
-                "Path contains NUL byte: {}",
-                path.display()
-            )));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            if path.as_os_str().as_bytes().contains(&0) {
+                return Err(WaxError::InstallError(format!(
+                    "Path contains NUL byte: {}",
+                    path.display()
+                )));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if path.as_os_str().to_string_lossy().contains('\0') {
+                return Err(WaxError::InstallError(format!(
+                    "Path contains NUL byte: {}",
+                    path.display()
+                )));
+            }
         }
         if path
             .components()
