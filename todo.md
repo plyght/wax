@@ -1,2 +1,2 @@
-- system package management completeness nix parity
 - test winget/scoop/choco install on real Windows system (OS-gated, can't test on macOS)
+- fix some ui issues like flashing all progress bar, leftovers at the top from not updated download bars or whatever words arent working right now like one will always be 0/0 eta 0s and then the other will just be like uncompleted but it actually has completed. also some packages displayed will disappear until everythings finished.
