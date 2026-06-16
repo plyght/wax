@@ -23,40 +23,43 @@ impl DependencyGraph {
     pub fn topological_sort(&self) -> Result<Vec<String>> {
         debug!("Performing topological sort on dependency graph");
 
-        let mut in_degree: HashMap<String, usize> = HashMap::new();
-        let mut adj_list: HashMap<String, Vec<String>> = HashMap::new();
+        let mut in_degree: HashMap<&str, usize> = HashMap::new();
+        let mut adj_list: HashMap<&str, Vec<&str>> = HashMap::new();
 
         for (node, deps) in &self.nodes {
-            in_degree.entry(node.clone()).or_insert(0);
+            in_degree.entry(node.as_str()).or_insert(0);
 
             for dep in deps {
-                in_degree.entry(dep.clone()).or_insert(0);
-                adj_list.entry(dep.clone()).or_default().push(node.clone());
+                in_degree.entry(dep.as_str()).or_insert(0);
+                adj_list
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(node.as_str());
             }
         }
 
         for (node, deps) in &self.nodes {
             let count = deps.len();
-            *in_degree.entry(node.clone()).or_insert(0) = count;
+            *in_degree.entry(node.as_str()).or_insert(0) = count;
         }
 
-        let mut queue: VecDeque<String> = in_degree
+        let mut queue: VecDeque<&str> = in_degree
             .iter()
             .filter(|(_, &count)| count == 0)
-            .map(|(node, _)| node.clone())
+            .map(|(&node, _)| node)
             .collect();
 
         let mut result = Vec::new();
 
         while let Some(node) = queue.pop_front() {
-            result.push(node.clone());
+            result.push(node.to_string());
 
-            if let Some(neighbors) = adj_list.get(&node) {
-                for neighbor in neighbors {
+            if let Some(neighbors) = adj_list.get(node) {
+                for &neighbor in neighbors {
                     if let Some(count) = in_degree.get_mut(neighbor) {
                         *count -= 1;
                         if *count == 0 {
-                            queue.push_back(neighbor.clone());
+                            queue.push_back(neighbor);
                         }
                     }
                 }

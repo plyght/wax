@@ -1,5 +1,6 @@
 use crate::error::{Result, WaxError};
 use crate::signal;
+#[cfg(not(test))]
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -72,12 +73,21 @@ fn sudo_password_prompt() -> String {
     "[wax] Password for %p: ".to_string()
 }
 
+#[cfg(not(test))]
 fn interactive_terminal_available() -> bool {
     std::fs::OpenOptions::new()
         .read(true)
         .open("/dev/tty")
         .map(|f| f.is_terminal())
         .unwrap_or_else(|_| std::io::stdin().is_terminal())
+}
+
+#[cfg(test)]
+static MOCK_INTERACTIVE_TERMINAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn interactive_terminal_available() -> bool {
+    MOCK_INTERACTIVE_TERMINAL.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Prompt for administrator credentials when needed.
@@ -104,21 +114,35 @@ pub fn acquire_sudo_for(reason: Option<&str>) -> Result<()> {
         eprintln!();
         eprintln!("Administrator privileges are required. Enter your password when prompted.");
 
-        let mut cmd = Command::new("sudo");
-        cmd.args(["-v", "-p", &sudo_password_prompt()]);
+        let password = inquire::Password::new(&sudo_password_prompt())
+            .with_display_mode(inquire::PasswordDisplayMode::Hidden)
+            .without_confirmation()
+            .prompt()
+            .map_err(|e| {
+                WaxError::InstallError(format!("Failed to read password securely: {}", e))
+            })?;
 
-        if let Ok(tty) = std::fs::File::open("/dev/tty") {
-            cmd.stdin(Stdio::from(tty.try_clone().map_err(WaxError::IoError)?))
-                .stderr(Stdio::from(tty));
-        } else {
-            cmd.stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit());
+        let mut cmd = Command::new("sudo");
+        cmd.args(["-v", "-S", "-p", ""]);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| WaxError::InstallError(format!("failed to spawn sudo: {}", e)))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            stdin.write_all(password.as_bytes())
+                .map_err(|e| WaxError::InstallError(format!("failed to write password to sudo: {}", e)))?;
+            stdin.write_all(b"\n")
+                .map_err(|e| WaxError::InstallError(format!("failed to write newline to sudo: {}", e)))?;
         }
 
-        let status = cmd
-            .status()
-            .map_err(|e| WaxError::InstallError(format!("failed to run sudo: {}", e)))?;
+        let status = child
+            .wait()
+            .map_err(|e| WaxError::InstallError(format!("failed to wait on sudo: {}", e)))?;
 
         if !status.success() {
             return Err(WaxError::InstallError(
@@ -277,7 +301,7 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_file_exists_error, is_permission_error, normalize_path, sudo_copy, sudo_password_prompt, SUDO_VALIDATED};
+    use super::{acquire_sudo_for, is_file_exists_error, is_permission_error, is_running_as_root, normalize_path, sudo_copy, sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED};
     use crate::error::WaxError;
     use std::io::{Error, ErrorKind};
     use std::path::Path;
@@ -459,5 +483,115 @@ fi
 
         let result = sudo_copy(&src, &dst);
         assert!(result.is_err(), "sudo_copy should have failed");
+    }
+
+    struct EnvGuard {
+        original_path: std::ffi::OsString,
+        original_sudo_state: bool,
+        original_mock_terminal: bool,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                original_path: std::env::var_os("PATH").unwrap_or_default(),
+                original_sudo_state: SUDO_VALIDATED.load(Ordering::SeqCst),
+                original_mock_terminal: MOCK_INTERACTIVE_TERMINAL.load(Ordering::SeqCst),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::set_var("PATH", &self.original_path);
+            SUDO_VALIDATED.store(self.original_sudo_state, Ordering::SeqCst);
+            MOCK_INTERACTIVE_TERMINAL.store(self.original_mock_terminal, Ordering::SeqCst);
+        }
+    }
+
+    fn setup_fake_sudo(dir: &std::path::Path, behavior: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let sudo_path = dir.join("sudo");
+        let script = match behavior {
+            "success" => {
+                "#!/bin/sh\nif [ \"$1\" = \"-n\" ] && [ \"$2\" = \"true\" ]; then\n    exit 1\nfi\nif [ \"$1\" = \"-v\" ]; then\n    exit 0\nfi\nexit 1\n"
+            }
+            "failure" => {
+                "#!/bin/sh\nexit 1\n"
+            }
+            _ => "#!/bin/sh\nexit 1\n",
+        };
+        std::fs::write(&sudo_path, script).unwrap();
+        let mut perms = std::fs::metadata(&sudo_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&sudo_path, perms).unwrap();
+    }
+
+    #[test]
+    fn test_acquire_sudo_for_cached() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = EnvGuard::new();
+
+        SUDO_VALIDATED.store(true, Ordering::SeqCst);
+
+        let result = acquire_sudo_for(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore] // requires real terminal for inquire::Password prompt
+    fn test_acquire_sudo_for_prompt_success() {
+        if is_running_as_root() {
+            return;
+        }
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = EnvGuard::new();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        setup_fake_sudo(temp_dir.path(), "success");
+        let mut new_path = temp_dir.path().to_path_buf().into_os_string();
+        new_path.push(":");
+        new_path.push(&_env_guard.original_path);
+        std::env::set_var("PATH", new_path);
+
+        SUDO_VALIDATED.store(false, Ordering::SeqCst);
+        MOCK_INTERACTIVE_TERMINAL.store(true, Ordering::SeqCst);
+
+        let result = acquire_sudo_for(Some("test successful prompt"));
+        assert!(result.is_ok());
+        assert!(SUDO_VALIDATED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    #[ignore] // requires real terminal for inquire::Password prompt
+    fn test_acquire_sudo_for_prompt_failure() {
+        if is_running_as_root() {
+            return;
+        }
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = EnvGuard::new();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        setup_fake_sudo(temp_dir.path(), "failure");
+        let mut new_path = temp_dir.path().to_path_buf().into_os_string();
+        new_path.push(":");
+        new_path.push(&_env_guard.original_path);
+        std::env::set_var("PATH", new_path);
+
+        SUDO_VALIDATED.store(false, Ordering::SeqCst);
+        MOCK_INTERACTIVE_TERMINAL.store(true, Ordering::SeqCst);
+
+        let result = acquire_sudo_for(Some("test failing prompt"));
+
+        match result {
+            Err(WaxError::InstallError(msg)) => {
+                assert!(msg.contains("sudo authentication failed or was cancelled") || msg.contains("failed to spawn sudo"));
+            }
+            _ => panic!("Expected InstallError for failed sudo prompt"),
+        }
+
+        assert!(!SUDO_VALIDATED.load(Ordering::SeqCst));
     }
 }

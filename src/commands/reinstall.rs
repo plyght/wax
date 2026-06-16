@@ -31,14 +31,11 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             installed_casks.keys().cloned().collect()
         } else {
             let mut names: Vec<String> = installed.keys().cloned().collect();
-            for name in installed_casks.keys() {
-                if !names.contains(name) {
-                    names.push(name.clone());
-                }
-            }
+            names.extend(installed_casks.keys().cloned());
             names
         };
         names.sort();
+        names.dedup();
         names
     } else {
         if packages.is_empty() {

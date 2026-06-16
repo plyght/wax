@@ -1436,6 +1436,26 @@ impl CaskInstaller {
                 )));
             }
 
+            // Verify the PKG file signature before executing it with elevated privileges.
+            let verify_output = tokio::process::Command::new("pkgutil")
+                .arg("--check-signature")
+                .arg(&source)
+                .output()
+                .await?;
+
+            if !verify_output.status.success() {
+                let err_msg = String::from_utf8_lossy(&verify_output.stderr);
+                let err_msg = if err_msg.trim().is_empty() {
+                    String::from_utf8_lossy(&verify_output.stdout)
+                } else {
+                    err_msg
+                };
+                return Err(WaxError::InstallError(format!(
+                    "PKG signature verification failed: {}",
+                    err_msg.trim()
+                )));
+            }
+
             // Acquire sudo credentials interactively before spawning the installer.
             // Progress bars are suspended inside acquire_sudo_for so the password prompt is visible.
             tokio::task::spawn_blocking(|| {
