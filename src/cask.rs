@@ -1831,6 +1831,65 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn test_detect_artifact_type_from_disposition() {
+        // Standard filename
+        assert_eq!(
+            detect_artifact_type_from_disposition("attachment; filename=\"app-1.0.dmg\""),
+            Some("dmg")
+        );
+        assert_eq!(
+            detect_artifact_type_from_disposition("attachment; filename=app-1.0.pkg"),
+            Some("pkg")
+        );
+        assert_eq!(
+            detect_artifact_type_from_disposition("filename=\"archive.zip\""),
+            Some("zip")
+        );
+        assert_eq!(
+            detect_artifact_type_from_disposition("filename=\"source.tar.gz\""),
+            Some("tar.gz")
+        );
+
+        // RFC 5987 encoded filename
+        assert_eq!(
+            detect_artifact_type_from_disposition(
+                "attachment; filename*=UTF-8''app%201.0.dmg"
+            ),
+            Some("dmg")
+        );
+        assert_eq!(
+            detect_artifact_type_from_disposition(
+                "attachment; filename=\"ignore.txt\"; filename*=UTF-8''app.zip"
+            ),
+            Some("zip")
+        );
+
+        // Multiple parts and spacing
+        assert_eq!(
+            detect_artifact_type_from_disposition(
+                "  attachment  ;  filename=\"app.pkg\"  "
+            ),
+            Some("pkg")
+        );
+
+        // Unsupported types
+        assert_eq!(
+            detect_artifact_type_from_disposition("attachment; filename=\"app.txt\""),
+            None
+        );
+        assert_eq!(
+            detect_artifact_type_from_disposition("attachment; filename=\"app.exe\""),
+            None
+        );
+
+        // No filename
+        assert_eq!(
+            detect_artifact_type_from_disposition("attachment"),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn test_resolve_source_path() {
         let installer = CaskInstaller::new();
