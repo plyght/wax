@@ -2077,4 +2077,38 @@ mod tests {
         assert_eq!(detect_artifact_type("https://example.com/app"), None);
         assert_eq!(detect_artifact_type("https://example.com/app?v=1"), None);
     }
+
+    #[test]
+    fn test_detect_artifact_type_from_content_type() {
+        // dmg
+        assert_eq!(detect_artifact_type_from_content_type("application/x-apple-diskimage"), Some("dmg"));
+
+        // binary
+        assert_eq!(detect_artifact_type_from_content_type("application/octet-stream"), Some("binary"));
+
+        // zip
+        assert_eq!(detect_artifact_type_from_content_type("application/zip"), Some("zip"));
+        assert_eq!(detect_artifact_type_from_content_type("application/x-zip-compressed"), Some("zip"));
+
+        // tar.gz
+        assert_eq!(detect_artifact_type_from_content_type("application/x-tar"), Some("tar.gz"));
+        assert_eq!(detect_artifact_type_from_content_type("application/gzip"), Some("tar.gz"));
+        assert_eq!(detect_artifact_type_from_content_type("application/x-gzip"), Some("tar.gz"));
+
+        // pkg
+        assert_eq!(detect_artifact_type_from_content_type("application/x-pkg"), Some("pkg"));
+        assert_eq!(detect_artifact_type_from_content_type("application/vnd.apple.installer+xml"), Some("pkg"));
+
+        // With parameters (e.g. charset)
+        assert_eq!(detect_artifact_type_from_content_type("application/zip; charset=utf-8"), Some("zip"));
+        assert_eq!(detect_artifact_type_from_content_type("application/x-apple-diskimage; version=1"), Some("dmg"));
+
+        // With spacing
+        assert_eq!(detect_artifact_type_from_content_type("  application/zip  ; charset=utf-8"), Some("zip"));
+
+        // Unsupported/unknown
+        assert_eq!(detect_artifact_type_from_content_type("text/html"), None);
+        assert_eq!(detect_artifact_type_from_content_type("application/json"), None);
+        assert_eq!(detect_artifact_type_from_content_type(""), None);
+    }
 }
