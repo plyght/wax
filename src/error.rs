@@ -122,3 +122,66 @@ pub fn validate_package_name(name: &str) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_package_name_valid() {
+        assert!(validate_package_name("foo").is_ok());
+        assert!(validate_package_name("foo-bar").is_ok());
+        assert!(validate_package_name("foo_bar").is_ok());
+        assert!(validate_package_name("foo.bar").is_ok());
+        assert!(validate_package_name("foo+bar").is_ok());
+        assert!(validate_package_name("foo@1.0").is_ok());
+        assert!(validate_package_name("user/repo/formula").is_ok());
+    }
+
+    #[test]
+    fn test_validate_package_name_empty() {
+        let err = validate_package_name("").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_validate_package_name_invalid_slashes() {
+        let err = validate_package_name("/foo").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+
+        let err = validate_package_name("foo/").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_validate_package_name_empty_segment() {
+        let err = validate_package_name("foo//bar").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_validate_package_name_invalid_segment() {
+        let err = validate_package_name("foo/./bar").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+
+        let err = validate_package_name("foo/../bar").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_validate_package_name_path_traversal() {
+        let err = validate_package_name("foo..bar").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_validate_package_name_invalid_chars() {
+        let err = validate_package_name("foo:bar").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+
+        let err = validate_package_name("foo\\bar").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+
+        let err = validate_package_name("foo bar").unwrap_err();
+        assert!(matches!(err, WaxError::InvalidInput(_)));
+    }
+}
