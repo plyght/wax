@@ -277,10 +277,73 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_file_exists_error, is_permission_error, normalize_path, sudo_password_prompt};
+    use super::{is_file_exists_error, is_permission_error, normalize_path, sudo_copy, sudo_password_prompt, SUDO_VALIDATED};
     use crate::error::WaxError;
     use std::io::{Error, ErrorKind};
     use std::path::Path;
+    use std::sync::atomic::Ordering;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct MockSudoEnv {
+        _dir: tempfile::TempDir,
+        old_path: Option<std::ffi::OsString>,
+    }
+
+    impl MockSudoEnv {
+        fn setup() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let sudo_path = dir.path().join("sudo");
+
+            // A mock sudo script that acts like `cp` if called with `cp`,
+            // and returns success for `-n true` (to mock cached sudo).
+            let script = r#"#!/bin/bash
+if [ "$1" = "-n" ] && [ "$2" = "true" ]; then
+    /usr/bin/env true
+elif [ "$1" = "cp" ]; then
+    shift
+    cp "$@"
+else
+    /usr/bin/env false
+fi
+"#;
+            std::fs::write(&sudo_path, script).unwrap();
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&sudo_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+
+            let old_path = std::env::var_os("PATH");
+            let mut new_path = std::ffi::OsString::new();
+            new_path.push(dir.path());
+            if let Some(old) = &old_path {
+                new_path.push(":");
+                new_path.push(old);
+            }
+            std::env::set_var("PATH", new_path);
+
+            // Force cache to be invalid initially so acquire_sudo uses our mock
+            SUDO_VALIDATED.store(false, Ordering::SeqCst);
+
+            Self {
+                _dir: dir,
+                old_path,
+            }
+        }
+    }
+
+    impl Drop for MockSudoEnv {
+        fn drop(&mut self) {
+            if let Some(old_path) = self.old_path.take() {
+                std::env::set_var("PATH", old_path);
+            } else {
+                std::env::remove_var("PATH");
+            }
+        }
+    }
 
     #[test]
     fn sudo_password_prompt_is_wax_branded() {
@@ -346,5 +409,55 @@ mod tests {
 
         let err = WaxError::CacheError("Corrupted cache".to_string());
         assert!(!is_file_exists_error(&err));
+    }
+
+    #[test]
+    fn test_sudo_copy_file_success() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env = MockSudoEnv::setup();
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.txt");
+        let dst = dir.path().join("dest.txt");
+
+        std::fs::write(&src, "hello world").unwrap();
+
+        let result = sudo_copy(&src, &dst);
+        assert!(result.is_ok(), "sudo_copy failed: {:?}", result.err());
+        assert!(dst.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_sudo_copy_dir_success() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env = MockSudoEnv::setup();
+
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src_dir");
+        std::fs::create_dir(&src_dir).unwrap();
+        let src_file = src_dir.join("test.txt");
+        std::fs::write(&src_file, "nested data").unwrap();
+
+        let dst_dir = dir.path().join("dst_dir");
+
+        let result = sudo_copy(&src_dir, &dst_dir);
+        assert!(result.is_ok(), "sudo_copy failed: {:?}", result.err());
+        assert!(dst_dir.exists());
+        assert!(dst_dir.join("test.txt").exists());
+        assert_eq!(std::fs::read_to_string(dst_dir.join("test.txt")).unwrap(), "nested data");
+    }
+
+    #[test]
+    fn test_sudo_copy_failure() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env = MockSudoEnv::setup();
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("does_not_exist.txt");
+        let dst = dir.path().join("dest.txt");
+
+        let result = sudo_copy(&src, &dst);
+        assert!(result.is_err(), "sudo_copy should have failed");
     }
 }
