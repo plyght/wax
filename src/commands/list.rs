@@ -261,7 +261,7 @@ fn print_summary(total: usize, formula_count: usize, cask_count: usize, windows_
         parts.push(format!(
             "{} {}",
             windows_count,
-            if windows_count == 1 { "windows" } else { "windows" }
+            if windows_count == 1 { "window" } else { "windows" }
         ));
     }
 
