@@ -32,10 +32,78 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     let formulae = cache.load_formulae().await?;
     let state = InstallState::new()?;
+    let installed_packages = load_installed_packages(&state, &formulae).await?;
+
+    let casks = cache.load_casks().await?;
+    let cask_state = CaskState::new()?;
+    let installed_casks = load_installed_casks(&cask_state, &casks).await?;
+
+    let current_platform = detect_platform();
+
+    let actions = compute_sync_actions(
+        &lockfile,
+        &installed_packages,
+        &installed_casks,
+    );
+
+    if print_sync_preview(&actions) {
+        return Ok(());
+    }
+
+    let sync_package_count = actions.packages_to_install.len();
+
+    if sync_package_count > 0 {
+        let entries = build_sync_entries(
+            actions.packages_to_install,
+            &formulae,
+            &current_platform,
+        )?;
+
+        let temp_dir = Arc::new(TempDir::new()?);
+        let extracted_packages = download_and_extract_packages(entries, Arc::clone(&temp_dir)).await?;
+
+        install_extracted_packages(extracted_packages, &state).await?;
+    }
+
+    if !actions.casks_to_install.is_empty() {
+        println!();
+        crate::commands::install::install_quiet(
+            cache,
+            &actions.casks_to_install,
+            true,  // cask
+            false, // user
+            false, // global
+        )
+        .await?;
+    }
+
+    let elapsed = start.elapsed();
+
+    let total_synced = sync_package_count + actions.casks_to_install.len();
+
+    println!();
+    println!(
+        "{} {} synced{}",
+        total_synced,
+        if total_synced == 1 {
+            "package/cask"
+        } else {
+            "packages/casks"
+        },
+        crate::timing::elapsed_suffix(elapsed)
+    );
+
+    Ok(())
+}
+
+async fn load_installed_packages(
+    state: &InstallState,
+    formulae: &[crate::api::Formula],
+) -> Result<HashMap<String, InstalledPackage>> {
     let mut installed_packages = state.load().await?;
 
     if cfg!(target_os = "linux") {
-        for (name, package) in discover_linux_system_packages(&formulae).await? {
+        for (name, package) in discover_linux_system_packages(formulae).await? {
             installed_packages.entry(name).or_insert(package);
         }
     }
@@ -45,21 +113,25 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         state.save(&installed_packages).await?;
     }
 
-    let casks = cache.load_casks().await?;
-    let cask_state = CaskState::new()?;
-    let mut installed_casks = cask_state.load().await?;
+    Ok(installed_packages)
+}
 
-    if cfg!(target_os = "macos") {
-        for (name, cask) in discover_manually_installed_casks(&casks).await? {
-            installed_casks.entry(name).or_insert(cask);
-        }
-        cask_state.save(&installed_casks).await?;
-    }
+struct SyncActions {
+    packages_to_install: Vec<(String, crate::lockfile::LockfilePackage)>,
+    casks_to_install: Vec<String>,
+    up_to_date: Vec<String>,
+    upgrades: Vec<(String, String, String)>,
+    casks_up_to_date: Vec<String>,
+    cask_upgrades: Vec<(String, String, String)>,
+}
 
-    let current_platform = detect_platform();
+fn compute_sync_actions(
+    lockfile: &Lockfile,
+    installed_packages: &HashMap<String, InstalledPackage>,
+    installed_casks: &HashMap<String, crate::cask::InstalledCask>,
+) -> SyncActions {
     let mut packages_to_install = Vec::new();
     let mut casks_to_install = Vec::new();
-
     let mut up_to_date = Vec::new();
     let mut upgrades = Vec::new();
 
@@ -107,13 +179,23 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         }
     }
 
-    // Show diff preview
-    if !packages_to_install.is_empty() || !upgrades.is_empty() {
-        let upgrade_index: HashMap<_, _> = upgrades
+    SyncActions {
+        packages_to_install,
+        casks_to_install,
+        up_to_date,
+        upgrades,
+        casks_up_to_date,
+        cask_upgrades,
+    }
+}
+
+fn print_sync_preview(actions: &SyncActions) -> bool {
+    if !actions.packages_to_install.is_empty() || !actions.upgrades.is_empty() {
+        let upgrade_index: HashMap<_, _> = actions.upgrades
             .iter()
             .map(|(name, old_ver, new_ver)| (name.as_str(), (old_ver.as_str(), new_ver.as_str())))
             .collect();
-        for (name, lock_pkg) in &packages_to_install {
+        for (name, lock_pkg) in &actions.packages_to_install {
             if let Some((old_ver, new_ver)) = upgrade_index.get(name.as_str()) {
                 println!(
                     "  {} {} {} → {}",
@@ -133,12 +215,12 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         }
     }
 
-    if !casks_to_install.is_empty() || !cask_upgrades.is_empty() {
-        let cask_upgrade_index: HashMap<_, _> = cask_upgrades
+    if !actions.casks_to_install.is_empty() || !actions.cask_upgrades.is_empty() {
+        let cask_upgrade_index: HashMap<_, _> = actions.cask_upgrades
             .iter()
             .map(|(name, old_ver, new_ver)| (name.as_str(), (old_ver.as_str(), new_ver.as_str())))
             .collect();
-        for name in &casks_to_install {
+        for name in &actions.casks_to_install {
             if let Some((old_ver, new_ver)) = cask_upgrade_index.get(name.as_str()) {
                 println!(
                     "  {} {} {} {} → {}",
@@ -159,245 +241,248 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         }
     }
 
-    if packages_to_install.is_empty() && casks_to_install.is_empty() {
-        if !up_to_date.is_empty() || !casks_up_to_date.is_empty() {
-            let total_up_to_date = up_to_date.len() + casks_up_to_date.len();
+    if actions.packages_to_install.is_empty() && actions.casks_to_install.is_empty() {
+        if !actions.up_to_date.is_empty() || !actions.casks_up_to_date.is_empty() {
+            let total_up_to_date = actions.up_to_date.len() + actions.casks_up_to_date.len();
             println!(
                 "{} {} packages/casks up to date",
                 style("✓").green(),
                 total_up_to_date
             );
         }
-        return Ok(());
+        return true;
     }
 
-    let sync_package_count = packages_to_install.len();
+    false
+}
 
-    if sync_package_count > 0 {
-        let multi = MultiProgress::new();
-        let downloader = Arc::new(BottleDownloader::new());
-        // All packages download simultaneously; the semaphore only caps extreme cases.
-        let concurrent_limit = sync_package_count.clamp(1, 32);
-        let semaphore = Arc::new(Semaphore::new(concurrent_limit));
-        let temp_dir = Arc::new(TempDir::new()?);
+struct SyncEntry {
+    name: String,
+    version: String,
+    platform: String,
+    url: String,
+    sha256: String,
+}
 
-        // Collect download entries and probe sizes concurrently for connection allocation.
-        struct SyncEntry {
-            name: String,
-            version: String,
-            platform: String,
-            url: String,
-            sha256: String,
-        }
-
-        let mut entries: Vec<SyncEntry> = Vec::new();
-        for (name, lock_pkg) in packages_to_install {
-            let formula = formulae
-                .iter()
-                .find(|f| f.name == name)
-                .ok_or_else(|| WaxError::FormulaNotFound(name.clone()))?;
-
-            if formula.versions.stable != lock_pkg.version {
-                return Err(WaxError::LockfileError(format!(
-                    "Package {} version mismatch: lockfile specifies {} but latest available is {}. The locked version may no longer be available.",
-                    name, lock_pkg.version, formula.versions.stable
-                )));
-            }
-
-            if lock_pkg.bottle != current_platform {
-                println!(
-                    "platform mismatch for {}: {} → {}",
-                    name, lock_pkg.bottle, current_platform
-                );
-            }
-
-            let bottle_info = formula
-                .bottle
-                .as_ref()
-                .and_then(|b| b.stable.as_ref())
-                .ok_or_else(|| {
-                    WaxError::BottleNotAvailable(format!("{} (no bottle info)", name))
-                })?;
-
-            let bottle_file = bottle_info
-                .file_for_platform(&lock_pkg.bottle)
-                .ok_or_else(|| {
-                    WaxError::BottleNotAvailable(format!(
-                        "{} for platform {}",
-                        name, lock_pkg.bottle
-                    ))
-                })?;
-
-            entries.push(SyncEntry {
-                name: name.clone(),
-                version: lock_pkg.version.clone(),
-                platform: lock_pkg.bottle.clone(),
-                url: bottle_file.url.clone(),
-                sha256: bottle_file.sha256.clone(),
-            });
-        }
-
-        // Probe all URLs concurrently for sizes so each download gets an appropriate
-        // connection count (larger files get more parallel connections).
-        let probe_tasks: Vec<_> = entries
+fn build_sync_entries(
+    packages_to_install: Vec<(String, crate::lockfile::LockfilePackage)>,
+    formulae: &[crate::api::Formula],
+    current_platform: &str,
+) -> Result<Vec<SyncEntry>> {
+    let mut entries = Vec::new();
+    for (name, lock_pkg) in packages_to_install {
+        let formula = formulae
             .iter()
-            .map(|e| {
-                let dl = Arc::clone(&downloader);
-                let url = e.url.clone();
-                tokio::spawn(async move { dl.probe_size(&url).await })
-            })
-            .collect();
+            .find(|f| f.name == name)
+            .ok_or_else(|| WaxError::FormulaNotFound(name.clone()))?;
 
-        let mut sizes: Vec<u64> = Vec::with_capacity(entries.len());
-        for task in probe_tasks {
-            sizes.push(task.await.unwrap_or(0));
+        if formula.versions.stable != lock_pkg.version {
+            return Err(WaxError::LockfileError(format!(
+                "Package {} version mismatch: lockfile specifies {} but latest available is {}. The locked version may no longer be available.",
+                name, lock_pkg.version, formula.versions.stable
+            )));
         }
 
-        let mut tasks = Vec::new();
-        for (entry, size) in entries.into_iter().zip(sizes) {
-            let conns = BottleDownloader::num_connections(
-                size,
-                BottleDownloader::MAX_CONNECTIONS_PER_DOWNLOAD,
+        if lock_pkg.bottle != current_platform {
+            println!(
+                "platform mismatch for {}: {} → {}",
+                name, lock_pkg.bottle, current_platform
             );
-
-            let downloader = Arc::clone(&downloader);
-            let semaphore = Arc::clone(&semaphore);
-            let temp_dir = Arc::clone(&temp_dir);
-
-            let pb = multi.add(ProgressBar::new(0));
-            let style = ProgressStyle::default_bar()
-                .template(PROGRESS_BAR_TEMPLATE)
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS);
-            pb.set_style(style);
-            pb.set_message(entry.name.clone());
-
-            let task = tokio::spawn(async move {
-                let permit = match semaphore.acquire().await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return Err(WaxError::InstallError(format!(
-                            "Failed to acquire semaphore permit: {}",
-                            e
-                        )));
-                    }
-                };
-
-                let tarball_path = temp_dir
-                    .path()
-                    .join(format!("{}-{}.tar.gz", entry.name, entry.version));
-
-                downloader
-                    .download(&entry.url, &tarball_path, Some(&pb), conns, None)
-                    .await?;
-                pb.finish_and_clear();
-
-                // Release permit before extraction so another download can start.
-                drop(permit);
-
-                BottleDownloader::verify_checksum(&tarball_path, &entry.sha256)?;
-
-                let extract_dir = temp_dir.path().join(&entry.name);
-                BottleDownloader::extract(&tarball_path, &extract_dir)?;
-
-                Ok::<_, WaxError>((entry.name, entry.version, entry.platform, extract_dir))
-            });
-
-            tasks.push(task);
         }
 
-        let results = futures::future::join_all(tasks).await;
+        let bottle_info = formula
+            .bottle
+            .as_ref()
+            .and_then(|b| b.stable.as_ref())
+            .ok_or_else(|| {
+                WaxError::BottleNotAvailable(format!("{} (no bottle info)", name))
+            })?;
 
-        let mut extracted_packages = Vec::new();
-        for result in results {
-            match result {
-                Ok(Ok(data)) => extracted_packages.push(data),
-                Ok(Err(e)) => return Err(e),
+        let bottle_file = bottle_info
+            .file_for_platform(&lock_pkg.bottle)
+            .ok_or_else(|| {
+                WaxError::BottleNotAvailable(format!(
+                    "{} for platform {}",
+                    name, lock_pkg.bottle
+                ))
+            })?;
+
+        entries.push(SyncEntry {
+            name: name.clone(),
+            version: lock_pkg.version.clone(),
+            platform: lock_pkg.bottle.clone(),
+            url: bottle_file.url.clone(),
+            sha256: bottle_file.sha256.clone(),
+        });
+    }
+    Ok(entries)
+}
+
+async fn download_and_extract_packages(
+    entries: Vec<SyncEntry>,
+    temp_dir: Arc<TempDir>,
+) -> Result<Vec<(String, String, String, std::path::PathBuf)>> {
+    let multi = MultiProgress::new();
+    let downloader = Arc::new(BottleDownloader::new());
+    // All packages download simultaneously; the semaphore only caps extreme cases.
+    let concurrent_limit = entries.len().clamp(1, 32);
+    let semaphore = Arc::new(Semaphore::new(concurrent_limit));
+
+    // Probe all URLs concurrently for sizes so each download gets an appropriate
+    // connection count (larger files get more parallel connections).
+    let probe_tasks: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            let dl = Arc::clone(&downloader);
+            let url = e.url.clone();
+            tokio::spawn(async move { dl.probe_size(&url).await })
+        })
+        .collect();
+
+    let mut sizes: Vec<u64> = Vec::with_capacity(entries.len());
+    for task in probe_tasks {
+        sizes.push(task.await.unwrap_or(0));
+    }
+
+    let mut tasks = Vec::new();
+    for (entry, size) in entries.into_iter().zip(sizes) {
+        let conns = BottleDownloader::num_connections(
+            size,
+            BottleDownloader::MAX_CONNECTIONS_PER_DOWNLOAD,
+        );
+
+        let downloader = Arc::clone(&downloader);
+        let semaphore = Arc::clone(&semaphore);
+        let temp_dir = Arc::clone(&temp_dir);
+
+        let pb = multi.add(ProgressBar::new(0));
+        let style = ProgressStyle::default_bar()
+            .template(PROGRESS_BAR_TEMPLATE)
+            .unwrap()
+            .progress_chars(PROGRESS_BAR_CHARS);
+        pb.set_style(style);
+        pb.set_message(entry.name.clone());
+
+        let task = tokio::spawn(async move {
+            let permit = match semaphore.acquire().await {
+                Ok(p) => p,
                 Err(e) => {
                     return Err(WaxError::InstallError(format!(
-                        "Download task failed: {}",
+                        "Failed to acquire semaphore permit: {}",
                         e
-                    )))
+                    )));
                 }
-            }
-        }
-
-        let install_mode = InstallMode::detect();
-        install_mode.validate()?;
-
-        let cellar = install_mode.cellar_path()?;
-
-        check_cancelled()?;
-
-        println!();
-        for (name, version, platform, extract_dir) in extracted_packages {
-            let _critical = CriticalSection::new();
-            let formula_cellar = cellar.join(&name).join(&version);
-            tokio::fs::create_dir_all(&formula_cellar).await?;
-
-            let actual_content_dir = extract_dir.join(&name).join(&version);
-            if actual_content_dir.exists() {
-                copy_dir_all(&actual_content_dir, &formula_cellar)?;
-            } else {
-                copy_dir_all(&extract_dir, &formula_cellar)?;
-            }
-
-            create_symlinks(
-                &name,
-                &version,
-                &cellar,
-                false, /* dry_run */
-                install_mode,
-            )
-            .await?;
-
-            let package = InstalledPackage {
-                name: name.clone(),
-                version: version.clone(),
-                platform: platform.clone(),
-                install_date: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64,
-                install_mode,
-                from_source: false,
-                bottle_rebuild: 0,
-                bottle_sha256: None,
-                pinned: false,
             };
-            state.add(package).await?;
 
-            println!("+ {}", style(&name).magenta());
+            let tarball_path = temp_dir
+                .path()
+                .join(format!("{}-{}.tar.gz", entry.name, entry.version));
+
+            downloader
+                .download(&entry.url, &tarball_path, Some(&pb), conns, None)
+                .await?;
+            pb.finish_and_clear();
+
+            // Release permit before extraction so another download can start.
+            drop(permit);
+
+            BottleDownloader::verify_checksum(&tarball_path, &entry.sha256)?;
+
+            let extract_dir = temp_dir.path().join(&entry.name);
+            BottleDownloader::extract(&tarball_path, &extract_dir)?;
+
+            Ok::<_, WaxError>((entry.name, entry.version, entry.platform, extract_dir))
+        });
+
+        tasks.push(task);
+    }
+
+    let results = futures::future::join_all(tasks).await;
+
+    let mut extracted_packages = Vec::new();
+    for result in results {
+        match result {
+            Ok(Ok(data)) => extracted_packages.push(data),
+            Ok(Err(e)) => return Err(e),
+            Err(e) => {
+                return Err(WaxError::InstallError(format!(
+                    "Download task failed: {}",
+                    e
+                )))
+            }
         }
     }
 
-    if !casks_to_install.is_empty() {
-        println!();
-        crate::commands::install::install_quiet(
-            cache,
-            &casks_to_install,
-            true,  // cask
-            false, // user
-            false, // global
-        )
-        .await?;
-    }
+    Ok(extracted_packages)
+}
 
-    let elapsed = start.elapsed();
+async fn install_extracted_packages(
+    extracted_packages: Vec<(String, String, String, std::path::PathBuf)>,
+    state: &InstallState,
+) -> Result<()> {
+    let install_mode = InstallMode::detect();
+    install_mode.validate()?;
 
-    let total_synced = sync_package_count + casks_to_install.len();
+    let cellar = install_mode.cellar_path()?;
+
+    check_cancelled()?;
 
     println!();
-    println!(
-        "{} {} synced{}",
-        total_synced,
-        if total_synced == 1 {
-            "package/cask"
+    for (name, version, platform, extract_dir) in extracted_packages {
+        let _critical = CriticalSection::new();
+        let formula_cellar = cellar.join(&name).join(&version);
+        tokio::fs::create_dir_all(&formula_cellar).await?;
+
+        let actual_content_dir = extract_dir.join(&name).join(&version);
+        if actual_content_dir.exists() {
+            copy_dir_all(&actual_content_dir, &formula_cellar)?;
         } else {
-            "packages/casks"
-        },
-        crate::timing::elapsed_suffix(elapsed)
-    );
+            copy_dir_all(&extract_dir, &formula_cellar)?;
+        }
+
+        create_symlinks(
+            &name,
+            &version,
+            &cellar,
+            false, /* dry_run */
+            install_mode,
+        )
+        .await?;
+
+        let package = InstalledPackage {
+            name: name.clone(),
+            version: version.clone(),
+            platform: platform.clone(),
+            install_date: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
+            install_mode,
+            from_source: false,
+            bottle_rebuild: 0,
+            bottle_sha256: None,
+            pinned: false,
+        };
+        state.add(package).await?;
+
+        println!("+ {}", style(&name).magenta());
+    }
 
     Ok(())
+}
+
+async fn load_installed_casks(
+    cask_state: &CaskState,
+    casks: &[crate::api::Cask],
+) -> Result<HashMap<String, crate::cask::InstalledCask>> {
+    let mut installed_casks = cask_state.load().await?;
+
+    if cfg!(target_os = "macos") {
+        for (name, cask) in discover_manually_installed_casks(casks).await? {
+            installed_casks.entry(name).or_insert(cask);
+        }
+        cask_state.save(&installed_casks).await?;
+    }
+
+    Ok(installed_casks)
 }
