@@ -113,12 +113,22 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         let pkg_start = Instant::now();
         if is_cask {
             set_current_op(format!("installing {}", name));
-            install::install_quiet_force(
+            install::install_impl(
                 cache,
                 std::slice::from_ref(name),
-                true,
-                user_flag,
-                global_flag,
+                install::InstallArgs {
+                    dry_run: false,
+                    ask: false,
+                    cask: true,
+                    user: user_flag,
+                    global: global_flag,
+                    build_from_source: false,
+                    head: false,
+                    run_scripts: true,
+                    quiet: true,
+                    force_reinstall: true,
+                    external_pb: None,
+                },
             )
             .await?;
         } else {
@@ -134,14 +144,22 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
             pb.set_message(style(name).magenta().to_string());
 
             set_current_op(format!("downloading {}", name));
-            install::install_quiet_with_progress(
+            install::install_impl(
                 cache,
                 std::slice::from_ref(name),
-                false,
-                user_flag,
-                global_flag,
-                &pb,
-                true,
+                install::InstallArgs {
+                    dry_run: false,
+                    ask: false,
+                    cask: false,
+                    user: user_flag,
+                    global: global_flag,
+                    build_from_source: false,
+                    head: false,
+                    run_scripts: true,
+                    quiet: true,
+                    force_reinstall: true,
+                    external_pb: Some(&pb),
+                },
             )
             .await?;
             pb.finish_and_clear();

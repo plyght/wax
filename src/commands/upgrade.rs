@@ -330,14 +330,22 @@ async fn apply_one_formula_package_upgrade(
                         .progress_chars(PROGRESS_BAR_CHARS),
                 );
                 pb.enable_steady_tick(std::time::Duration::from_millis(80));
-                let r = install::install_quiet_with_progress(
+                let r = install::install_impl(
                     cache,
                     std::slice::from_ref(&pkg.name),
-                    false,
-                    user_flag,
-                    global_flag,
-                    &pb,
-                    false,
+                    install::InstallArgs {
+                        dry_run: false,
+                        ask: false,
+                        cask: false,
+                        user: user_flag,
+                        global: global_flag,
+                        build_from_source: false,
+                        head: false,
+                        run_scripts: true,
+                        quiet: true,
+                        force_reinstall: false,
+                        external_pb: Some(&pb),
+                    },
                 )
                 .await;
                 pb.finish_and_clear();
@@ -363,7 +371,7 @@ async fn upgrade_all(
     if outdated.is_empty() {
         println!("all packages are up to date");
         if crate::timing::enabled() {
-            println!("\n{} done", crate::timing::elapsed_text(start.elapsed()));
+            println!("\n[{}ms] done", start.elapsed().as_millis());
         }
         return Ok(());
     }
@@ -827,7 +835,24 @@ async fn upgrade_all(
                     "upgrading {} casks",
                     cask_only_total_display.max(1)
                 ));
-                let r = install::install_quiet_force(&cache, &cask_names, true, false, false).await;
+                let r = install::install_impl(
+                    &cache,
+                    &cask_names,
+                    install::InstallArgs {
+                        dry_run: false,
+                        ask: false,
+                        cask: true,
+                        user: false,
+                        global: false,
+                        build_from_source: false,
+                        head: false,
+                        run_scripts: true,
+                        quiet: true,
+                        force_reinstall: true,
+                        external_pb: None,
+                    },
+                )
+                .await;
                 clear_current_op();
 
                 match r {
@@ -1106,12 +1131,23 @@ async fn upgrade_formula_internal(
         None => (false, false),
     };
 
-    install::install_quiet(
+    let formula_names = vec![formula_name.to_string()];
+    install::install_impl(
         cache,
-        &[formula_name.to_string()],
-        false,
-        user_flag,
-        global_flag,
+        &formula_names,
+        install::InstallArgs {
+            dry_run: false,
+            ask: false,
+            cask: false,
+            user: user_flag,
+            global: global_flag,
+            build_from_source: false,
+            head: false,
+            run_scripts: true,
+            quiet: true,
+            force_reinstall: false,
+            external_pb: None,
+        },
     )
     .await?;
 
@@ -1121,7 +1157,25 @@ async fn upgrade_formula_internal(
 async fn upgrade_cask_internal(cache: &Cache, cask_name: &str) -> Result<()> {
     let _critical = CriticalSection::new();
 
-    install::install_quiet_force(cache, &[cask_name.to_string()], true, false, false).await?;
+    let cask_names = vec![cask_name.to_string()];
+    install::install_impl(
+        cache,
+        &cask_names,
+        install::InstallArgs {
+            dry_run: false,
+            ask: false,
+            cask: true,
+            user: false,
+            global: false,
+            build_from_source: false,
+            head: false,
+            run_scripts: true,
+            quiet: true,
+            force_reinstall: true,
+            external_pb: None,
+        },
+    )
+    .await?;
 
     Ok(())
 }

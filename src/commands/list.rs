@@ -247,7 +247,11 @@ fn print_summary(total: usize, formula_count: usize, cask_count: usize, windows_
         parts.push(format!(
             "{} {}",
             formula_count,
-            if formula_count == 1 { "formula" } else { "formulae" }
+            if formula_count == 1 {
+                "formula"
+            } else {
+                "formulae"
+            }
         ));
     }
     if cask_count > 0 {
@@ -261,7 +265,11 @@ fn print_summary(total: usize, formula_count: usize, cask_count: usize, windows_
         parts.push(format!(
             "{} {}",
             windows_count,
-            if windows_count == 1 { "window" } else { "windows" }
+            if windows_count == 1 {
+                "window"
+            } else {
+                "windows"
+            }
         ));
     }
 

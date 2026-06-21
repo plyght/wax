@@ -195,7 +195,7 @@ fn list_without_time_flag_omits_elapsed_footer() {
 fn upgrade_batches_cask_force_reinstalls() {
     let source = std::fs::read_to_string("src/commands/upgrade.rs").unwrap();
     assert!(
-        source.contains("install::install_quiet_force(&cache, &cask_names, true, false, false)"),
+        source.contains("&cask_names") && source.contains("force_reinstall: true"),
         "upgrade should pass all outdated casks into one force reinstall pipeline"
     );
 }

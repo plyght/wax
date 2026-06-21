@@ -502,7 +502,7 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
         let _ = std::fs::remove_dir_all(&staging);
     }
     std::fs::create_dir_all(staging.parent().unwrap())?;
-    scoop::copy_dir_all(&extract_root, &staging)?;
+    crate::ui::copy_dir_all(&extract_root, &staging)?;
 
     let mut files = windows_state::collect_files(&staging)?;
     files.extend(bin_links.iter().cloned());

@@ -882,7 +882,7 @@ async fn run() -> Result<()> {
     result?;
 
     if cli.time_to_action && !command_prints_own_timing {
-        println!("{}", timing::elapsed_text(action_timer.elapsed()));
+        println!("[{}ms]", action_timer.elapsed().as_millis());
     }
 
     Ok(())

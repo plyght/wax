@@ -121,7 +121,7 @@ pub async fn install_portable_tools(id: &str) -> Result<()> {
     if staging.exists() {
         let _ = std::fs::remove_dir_all(&staging);
     }
-    scoop::copy_dir_all(&tools_dir, &staging)?;
+    crate::ui::copy_dir_all(&tools_dir, &staging)?;
 
     let mut copy_actions = Vec::new();
     for src in &exes {

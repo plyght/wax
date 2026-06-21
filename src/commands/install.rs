@@ -15,8 +15,8 @@ use crate::signal::{check_cancelled, set_active_multi, CriticalSection};
 use crate::system_pm::SystemPm;
 use crate::tap::TapManager;
 use crate::ui::{
-    confirm_prompt, copy_dir_all, dirs, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE,
-    PROGRESS_BAR_TEMPLATE,
+    confirm_prompt, copy_dir_all, dirs, find_in_path, PROGRESS_BAR_CHARS,
+    PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
 };
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -534,18 +534,18 @@ async fn install_from_head_task(
     Ok(())
 }
 
-struct InstallArgs<'a> {
-    dry_run: bool,
-    ask: bool,
-    cask: bool,
-    user: bool,
-    global: bool,
-    build_from_source: bool,
-    head: bool,
-    run_scripts: bool,
-    quiet: bool,
-    force_reinstall: bool,
-    external_pb: Option<&'a ProgressBar>,
+pub(crate) struct InstallArgs<'a> {
+    pub(crate) dry_run: bool,
+    pub(crate) ask: bool,
+    pub(crate) cask: bool,
+    pub(crate) user: bool,
+    pub(crate) global: bool,
+    pub(crate) build_from_source: bool,
+    pub(crate) head: bool,
+    pub(crate) run_scripts: bool,
+    pub(crate) quiet: bool,
+    pub(crate) force_reinstall: bool,
+    pub(crate) external_pb: Option<&'a ProgressBar>,
 }
 
 #[instrument(skip(cache))]
@@ -577,101 +577,6 @@ pub async fn install(
             quiet: false,
             force_reinstall: false,
             external_pb: None,
-        },
-    )
-    .await
-}
-
-pub async fn install_quiet(
-    cache: &Cache,
-    package_names: &[impl AsRef<str>],
-    cask: bool,
-    user: bool,
-    global: bool,
-) -> Result<()> {
-    let names: Vec<String> = package_names
-        .iter()
-        .map(|s| s.as_ref().to_string())
-        .collect();
-    install_impl(
-        cache,
-        &names,
-        InstallArgs {
-            dry_run: false,
-            ask: false,
-            cask,
-            user,
-            global,
-            build_from_source: false,
-            head: false,
-            run_scripts: true,
-            quiet: true,
-            force_reinstall: false,
-            external_pb: None,
-        },
-    )
-    .await
-}
-
-pub async fn install_quiet_force(
-    cache: &Cache,
-    package_names: &[impl AsRef<str>],
-    cask: bool,
-    user: bool,
-    global: bool,
-) -> Result<()> {
-    let names: Vec<String> = package_names
-        .iter()
-        .map(|s| s.as_ref().to_string())
-        .collect();
-    install_impl(
-        cache,
-        &names,
-        InstallArgs {
-            dry_run: false,
-            ask: false,
-            cask,
-            user,
-            global,
-            build_from_source: false,
-            head: false,
-            run_scripts: true,
-            quiet: true,
-            force_reinstall: true,
-            external_pb: None,
-        },
-    )
-    .await
-}
-
-pub async fn install_quiet_with_progress(
-    cache: &Cache,
-    package_names: &[impl AsRef<str>],
-    cask: bool,
-    user: bool,
-    global: bool,
-    pb: &ProgressBar,
-    force_reinstall: bool,
-) -> Result<()> {
-    let names: Vec<String> = package_names
-        .iter()
-        .map(|s| s.as_ref().to_string())
-        .collect();
-    install_impl(
-        cache,
-        &names,
-        InstallArgs {
-            dry_run: false,
-            ask: false,
-            cask,
-            user,
-            global,
-            build_from_source: false,
-            head: false,
-            run_scripts: true,
-            quiet: true,
-            force_reinstall,
-            external_pb: Some(pb),
         },
     )
     .await
@@ -718,7 +623,7 @@ fn hint_user_prefix_path_if_needed(install_mode: InstallMode, quiet: bool) {
     println!("  export PATH=\"{}:$PATH\"", bin_dir.display());
 }
 
-async fn install_impl(
+pub(crate) async fn install_impl(
     cache: &Cache,
     package_names: &[String],
     args: InstallArgs<'_>,
@@ -822,9 +727,9 @@ async fn install_impl(
                 remaining.push(spec.name);
             } else if spec.force.is_some() {
                 // scoop/, choco/, winget/ — handled by ecosystem_install
-                if crate::ecosystem_install::install_one_qualified(
-                    cache, name, dry_run, false,
-                ).await? {
+                if crate::ecosystem_install::install_one_qualified(cache, name, dry_run, false)
+                    .await?
+                {
                     continue;
                 }
                 // If ecosystem_install didn't handle it, try remaining as formula name
@@ -1649,7 +1554,7 @@ pub async fn install_extracted_bottle(
     } else if name_dir.exists() {
         copy_dir_all(&name_dir, &formula_cellar)?;
     } else {
-        copy_dir_all(&extract_dir.to_path_buf(), &formula_cellar)?;
+        copy_dir_all(extract_dir, &formula_cellar)?;
     }
 
     step!("relocating...");
@@ -2229,14 +2134,6 @@ async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -
     }
 
     Ok(())
-}
-
-fn find_in_path(program: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|dir| dir.join(program))
-        .find(|path| path.is_file())
 }
 
 /// Install a cask from an already-downloaded file (skips download).

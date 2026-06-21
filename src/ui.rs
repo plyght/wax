@@ -4,7 +4,7 @@ use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::Confirm;
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::debug;
 
@@ -15,7 +15,7 @@ pub const PROGRESS_BAR_PREFIX_TEMPLATE: &str =
     "{prefix:.bold} {wide_bar:.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}  eta {eta}";
 pub const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
-pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
+pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     match copy_dir_all_inner(src, dst) {
         Ok(()) => Ok(()),
         Err(ref e) if sudo::is_permission_error(e) || sudo::is_file_exists_error(e) => {
@@ -31,7 +31,7 @@ pub fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<()> {
     }
 }
 
-fn copy_dir_all_inner(src: &PathBuf, dst: &PathBuf) -> Result<()> {
+fn copy_dir_all_inner(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
 
     for entry in std::fs::read_dir(src)? {
@@ -83,9 +83,22 @@ fn copy_dir_all_inner(src: &PathBuf, dst: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn copy_regular_file(src: &PathBuf, dst: &PathBuf) -> Result<()> {
+fn copy_regular_file(src: &Path, dst: &Path) -> Result<()> {
     std::fs::copy(src, dst)?;
     Ok(())
+}
+
+pub fn find_in_path(program: &str) -> Option<PathBuf> {
+    if program.contains(std::path::MAIN_SEPARATOR) {
+        let path = PathBuf::from(program);
+        return path.is_file().then_some(path);
+    }
+
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|dir| dir.join(program))
+        .find(|path| path.is_file())
 }
 
 pub fn confirm_prompt(message: &str) -> Result<bool> {

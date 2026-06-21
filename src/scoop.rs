@@ -437,25 +437,6 @@ fn resolved_staging_dir(package: &str, version: &str) -> Result<PathBuf> {
         .join(version))
 }
 
-pub(crate) fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_all(&from, &to)?;
-        } else {
-            if let Some(p) = to.parent() {
-                std::fs::create_dir_all(p)?;
-            }
-            std::fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

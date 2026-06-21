@@ -1,5 +1,6 @@
 use crate::error::{Result, WaxError};
 use crate::formula_parser::{BuildSystem, ParsedFormula};
+use crate::ui::find_in_path;
 use indicatif::ProgressBar;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,7 +28,10 @@ impl Builder {
     }
 
     fn detect_cpu_cores() -> usize {
-        Self::calculate_cores(num_cpus::get())
+        let cpus = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1);
+        Self::calculate_cores(cpus)
     }
 
     fn calculate_cores(available_cpus: usize) -> usize {
@@ -399,19 +403,6 @@ impl Builder {
     fn has_ninja() -> bool {
         find_in_path("ninja").is_some()
     }
-}
-
-fn find_in_path(program: &str) -> Option<PathBuf> {
-    if program.contains(std::path::MAIN_SEPARATOR) {
-        let path = PathBuf::from(program);
-        return path.is_file().then_some(path);
-    }
-
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|dir| dir.join(program))
-        .find(|path| path.is_file())
 }
 
 impl Default for Builder {

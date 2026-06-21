@@ -83,7 +83,8 @@ fn interactive_terminal_available() -> bool {
 }
 
 #[cfg(test)]
-static MOCK_INTERACTIVE_TERMINAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MOCK_INTERACTIVE_TERMINAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 fn interactive_terminal_available() -> bool {
@@ -134,10 +135,12 @@ pub fn acquire_sudo_for(reason: Option<&str>) -> Result<()> {
 
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
-            stdin.write_all(password.as_bytes())
-                .map_err(|e| WaxError::InstallError(format!("failed to write password to sudo: {}", e)))?;
-            stdin.write_all(b"\n")
-                .map_err(|e| WaxError::InstallError(format!("failed to write newline to sudo: {}", e)))?;
+            stdin.write_all(password.as_bytes()).map_err(|e| {
+                WaxError::InstallError(format!("failed to write password to sudo: {}", e))
+            })?;
+            stdin.write_all(b"\n").map_err(|e| {
+                WaxError::InstallError(format!("failed to write newline to sudo: {}", e))
+            })?;
         }
 
         let status = child
@@ -301,7 +304,10 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{acquire_sudo_for, is_file_exists_error, is_permission_error, is_running_as_root, normalize_path, sudo_copy, sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED};
+    use super::{
+        acquire_sudo_for, is_file_exists_error, is_permission_error, is_running_as_root,
+        normalize_path, sudo_copy, sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED,
+    };
     use crate::error::WaxError;
     use std::io::{Error, ErrorKind};
     use std::path::Path;
@@ -337,7 +343,8 @@ fi
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&sudo_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                std::fs::set_permissions(&sudo_path, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
             }
 
             let old_path = std::env::var_os("PATH");
@@ -469,7 +476,10 @@ fi
         assert!(result.is_ok(), "sudo_copy failed: {:?}", result.err());
         assert!(dst_dir.exists());
         assert!(dst_dir.join("test.txt").exists());
-        assert_eq!(std::fs::read_to_string(dst_dir.join("test.txt")).unwrap(), "nested data");
+        assert_eq!(
+            std::fs::read_to_string(dst_dir.join("test.txt")).unwrap(),
+            "nested data"
+        );
     }
 
     #[test]
@@ -587,7 +597,10 @@ fi
 
         match result {
             Err(WaxError::InstallError(msg)) => {
-                assert!(msg.contains("sudo authentication failed or was cancelled") || msg.contains("failed to spawn sudo"));
+                assert!(
+                    msg.contains("sudo authentication failed or was cancelled")
+                        || msg.contains("failed to spawn sudo")
+                );
             }
             _ => panic!("Expected InstallError for failed sudo prompt"),
         }

@@ -29,11 +29,6 @@ impl Cache {
         Ok(Self { cache_dir })
     }
 
-    /// Path to the cache directory root.
-    pub fn cache_dir_path(&self) -> &std::path::Path {
-        &self.cache_dir
-    }
-
     pub async fn ensure_cache_dir(&self) -> Result<()> {
         fs::create_dir_all(&self.cache_dir).await?;
         Ok(())

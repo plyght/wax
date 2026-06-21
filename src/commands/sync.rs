@@ -40,11 +40,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     let current_platform = detect_platform();
 
-    let actions = compute_sync_actions(
-        &lockfile,
-        &installed_packages,
-        &installed_casks,
-    );
+    let actions = compute_sync_actions(&lockfile, &installed_packages, &installed_casks);
 
     if print_sync_preview(&actions) {
         return Ok(());
@@ -53,26 +49,34 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     let sync_package_count = actions.packages_to_install.len();
 
     if sync_package_count > 0 {
-        let entries = build_sync_entries(
-            actions.packages_to_install,
-            &formulae,
-            &current_platform,
-        )?;
+        let entries =
+            build_sync_entries(actions.packages_to_install, &formulae, &current_platform)?;
 
         let temp_dir = Arc::new(TempDir::new()?);
-        let extracted_packages = download_and_extract_packages(entries, Arc::clone(&temp_dir)).await?;
+        let extracted_packages =
+            download_and_extract_packages(entries, Arc::clone(&temp_dir)).await?;
 
         install_extracted_packages(extracted_packages, &state).await?;
     }
 
     if !actions.casks_to_install.is_empty() {
         println!();
-        crate::commands::install::install_quiet(
+        crate::commands::install::install_impl(
             cache,
             &actions.casks_to_install,
-            true,  // cask
-            false, // user
-            false, // global
+            crate::commands::install::InstallArgs {
+                dry_run: false,
+                ask: false,
+                cask: true,
+                user: false,
+                global: false,
+                build_from_source: false,
+                head: false,
+                run_scripts: true,
+                quiet: true,
+                force_reinstall: false,
+                external_pb: None,
+            },
         )
         .await?;
     }
@@ -191,7 +195,8 @@ fn compute_sync_actions(
 
 fn print_sync_preview(actions: &SyncActions) -> bool {
     if !actions.packages_to_install.is_empty() || !actions.upgrades.is_empty() {
-        let upgrade_index: HashMap<_, _> = actions.upgrades
+        let upgrade_index: HashMap<_, _> = actions
+            .upgrades
             .iter()
             .map(|(name, old_ver, new_ver)| (name.as_str(), (old_ver.as_str(), new_ver.as_str())))
             .collect();
@@ -216,7 +221,8 @@ fn print_sync_preview(actions: &SyncActions) -> bool {
     }
 
     if !actions.casks_to_install.is_empty() || !actions.cask_upgrades.is_empty() {
-        let cask_upgrade_index: HashMap<_, _> = actions.cask_upgrades
+        let cask_upgrade_index: HashMap<_, _> = actions
+            .cask_upgrades
             .iter()
             .map(|(name, old_ver, new_ver)| (name.as_str(), (old_ver.as_str(), new_ver.as_str())))
             .collect();
@@ -294,17 +300,12 @@ fn build_sync_entries(
             .bottle
             .as_ref()
             .and_then(|b| b.stable.as_ref())
-            .ok_or_else(|| {
-                WaxError::BottleNotAvailable(format!("{} (no bottle info)", name))
-            })?;
+            .ok_or_else(|| WaxError::BottleNotAvailable(format!("{} (no bottle info)", name)))?;
 
         let bottle_file = bottle_info
             .file_for_platform(&lock_pkg.bottle)
             .ok_or_else(|| {
-                WaxError::BottleNotAvailable(format!(
-                    "{} for platform {}",
-                    name, lock_pkg.bottle
-                ))
+                WaxError::BottleNotAvailable(format!("{} for platform {}", name, lock_pkg.bottle))
             })?;
 
         entries.push(SyncEntry {
@@ -346,10 +347,8 @@ async fn download_and_extract_packages(
 
     let mut tasks = Vec::new();
     for (entry, size) in entries.into_iter().zip(sizes) {
-        let conns = BottleDownloader::num_connections(
-            size,
-            BottleDownloader::MAX_CONNECTIONS_PER_DOWNLOAD,
-        );
+        let conns =
+            BottleDownloader::num_connections(size, BottleDownloader::MAX_CONNECTIONS_PER_DOWNLOAD);
 
         let downloader = Arc::clone(&downloader);
         let semaphore = Arc::clone(&semaphore);

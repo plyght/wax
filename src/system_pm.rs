@@ -7,9 +7,9 @@
 
 use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
+use crate::ui::find_in_path;
 use console::style;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
 use tokio::process::Command;
 use tracing::{debug, warn};
 
@@ -358,14 +358,6 @@ async fn which(bin: &str) -> bool {
     find_in_path(bin).is_some()
 }
 
-fn find_in_path(program: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|dir| dir.join(program))
-        .find(|path| path.is_file())
-}
-
 /// Run a command, inheriting stdin/stdout/stderr so the user sees all output
 /// and can interact (e.g. sudo password prompt).
 async fn run_visible(program: &str, args: &[&str]) -> Result<()> {
@@ -431,14 +423,14 @@ mod tests {
 
     #[test]
     fn test_find_in_path_existing() {
-        let path = find_in_path("sh");
+        let path = crate::ui::find_in_path("sh");
         assert!(path.is_some());
         assert!(path.unwrap().is_file());
     }
 
     #[test]
     fn test_find_in_path_nonexistent() {
-        let path = find_in_path("some_nonexistent_binary_that_should_never_exist_12345");
+        let path = crate::ui::find_in_path("some_nonexistent_binary_that_should_never_exist_12345");
         assert!(path.is_none());
     }
 }
