@@ -1424,44 +1424,25 @@ fn check_invalid_signatures(fix: bool) -> DiagResult {
             return d;
         }
 
-        if d.fix {
-            d.warn(&format!(
-                "{} packages have invalid code signatures — re-signing...",
-                invalid.len()
-            ));
-            for (name, version) in &invalid {
-                let ver_dir = cellar.join(name).join(version);
-                let resigned = resign_macho_binaries(&ver_dir);
-                if resigned > 0 {
-                    d.fixed(&format!(
-                        "re-signed {}@{} ({} binaries)",
-                        name, version, resigned
-                    ));
-                } else {
-                    d.fail(&format!("failed to re-sign {}@{}", name, version));
-                }
-            }
-        } else {
-            for (i, (name, version)) in invalid.iter().enumerate() {
-                if i < 5 {
-                    d.fail(&format!(
-                        "invalid code signature: {}@{} (modified without re-signing — causes SIGKILL on Apple Silicon)",
-                        style(name).magenta(),
-                        version
-                    ));
-                }
-            }
-            if invalid.len() > 5 {
+        for (i, (name, version)) in invalid.iter().enumerate() {
+            if i < 5 {
                 d.fail(&format!(
-                    "... and {} more with invalid signatures",
-                    invalid.len() - 5
+                    "invalid code signature: {}@{} (modified without re-signing — causes SIGKILL on Apple Silicon)",
+                    style(name).magenta(),
+                    version
                 ));
             }
-            d.warn(&format!(
-                "run {} to re-sign affected packages",
-                style("wax doctor --fix").yellow()
+        }
+        if invalid.len() > 5 {
+            d.fail(&format!(
+                "... and {} more with invalid signatures",
+                invalid.len() - 5
             ));
         }
+        d.warn(&format!(
+            "run {} to reinstall affected packages",
+            style("wax reinstall <name>").yellow()
+        ));
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1470,26 +1451,6 @@ fn check_invalid_signatures(fix: bool) -> DiagResult {
     d
 }
 
-/// Re-sign all Mach-O binaries under a package version with an ad-hoc signature.
-/// Returns the number of successfully re-signed files.
-#[cfg(target_os = "macos")]
-fn resign_macho_binaries(ver_dir: &Path) -> usize {
-    use std::process::Command;
-
-    mach_o_files_under(ver_dir)
-        .into_par_iter()
-        .filter(|file| {
-            let Some(path_str) = file.to_str() else {
-                return false;
-            };
-            Command::new("codesign")
-                .args(["--force", "--sign", "-", path_str])
-                .output()
-                .map(|out| out.status.success())
-                .unwrap_or(false)
-        })
-        .count()
-}
 
 fn check_tools(fix: bool) -> DiagResult {
     let mut d = DiagResult::new(fix);
