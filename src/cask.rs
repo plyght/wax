@@ -1443,12 +1443,23 @@ impl CaskInstaller {
                 .output()
                 .await?;
 
-            if !verify_output.status.success() {
-                let err_msg = String::from_utf8_lossy(&verify_output.stderr);
-                let err_msg = if err_msg.trim().is_empty() {
-                    String::from_utf8_lossy(&verify_output.stdout)
+            let stdout_str = String::from_utf8_lossy(&verify_output.stdout);
+            let stderr_str = String::from_utf8_lossy(&verify_output.stderr);
+
+            // pkgutil may exit with 0 even if the package is unsigned.
+            // We must explicitly check the output for an invalid signature status.
+            let is_unsigned = stdout_str.contains("Status: no signature")
+                || stdout_str.contains("Status: unsigned")
+                || stdout_str.contains("invalid signature")
+                || stderr_str.contains("Status: no signature")
+                || stderr_str.contains("Status: unsigned")
+                || stderr_str.contains("invalid signature");
+
+            if !verify_output.status.success() || is_unsigned {
+                let err_msg = if stderr_str.trim().is_empty() {
+                    stdout_str.into_owned()
                 } else {
-                    err_msg
+                    stderr_str.into_owned()
                 };
                 return Err(WaxError::InstallError(format!(
                     "PKG signature verification failed: {}",
