@@ -140,37 +140,72 @@ mod tests {
     #[test]
     fn test_validate_package_name_empty() {
         let err = validate_package_name("").unwrap_err();
-        assert!(matches!(err, WaxError::InvalidInput(_)));
+        match err {
+            WaxError::InvalidInput(msg) => assert_eq!(msg, "Package name cannot be empty"),
+            _ => panic!("Expected InvalidInput"),
+        }
     }
 
     #[test]
     fn test_validate_package_name_invalid_slashes() {
         let err = validate_package_name("/foo").unwrap_err();
-        assert!(matches!(err, WaxError::InvalidInput(_)));
+        match err {
+            WaxError::InvalidInput(msg) => {
+                assert_eq!(msg, "Package name must not start or end with '/': /foo")
+            }
+            _ => panic!("Expected InvalidInput"),
+        }
 
         let err = validate_package_name("foo/").unwrap_err();
-        assert!(matches!(err, WaxError::InvalidInput(_)));
+        match err {
+            WaxError::InvalidInput(msg) => {
+                assert_eq!(msg, "Package name must not start or end with '/': foo/")
+            }
+            _ => panic!("Expected InvalidInput"),
+        }
     }
 
     #[test]
     fn test_validate_package_name_empty_segment() {
         let err = validate_package_name("foo//bar").unwrap_err();
-        assert!(matches!(err, WaxError::InvalidInput(_)));
+        match err {
+            WaxError::InvalidInput(msg) => {
+                assert_eq!(msg, "Package name contains empty path segment: foo//bar")
+            }
+            _ => panic!("Expected InvalidInput"),
+        }
     }
 
     #[test]
     fn test_validate_package_name_invalid_segment() {
         let err = validate_package_name("foo/./bar").unwrap_err();
-        assert!(matches!(err, WaxError::InvalidInput(_)));
+        match err {
+            WaxError::InvalidInput(msg) => assert_eq!(
+                msg,
+                "Package name contains invalid path segment '.': foo/./bar"
+            ),
+            _ => panic!("Expected InvalidInput"),
+        }
 
         let err = validate_package_name("foo/../bar").unwrap_err();
-        assert!(matches!(err, WaxError::InvalidInput(_)));
+        match err {
+            WaxError::InvalidInput(msg) => assert_eq!(
+                msg,
+                "Package name contains invalid path segment '..': foo/../bar"
+            ),
+            _ => panic!("Expected InvalidInput"),
+        }
     }
 
     #[test]
     fn test_validate_package_name_path_traversal() {
         let err = validate_package_name("foo..bar").unwrap_err();
-        assert!(matches!(err, WaxError::InvalidInput(_)));
+        match err {
+            WaxError::InvalidInput(msg) => {
+                assert_eq!(msg, "Package name contains path traversal: foo..bar")
+            }
+            _ => panic!("Expected InvalidInput"),
+        }
     }
 
     #[test]

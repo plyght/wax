@@ -50,11 +50,6 @@ static RE_VERSION: OnceLock<Regex> = OnceLock::new();
 static RE_HEAD: OnceLock<Regex> = OnceLock::new();
 static RE_CASK_URL: OnceLock<Regex> = OnceLock::new();
 static RE_CASK_SHA: OnceLock<Regex> = OnceLock::new();
-static RE_CONFIGURE_QUOTED: OnceLock<Regex> = OnceLock::new();
-static RE_CONFIGURE_WORD_ARRAY: OnceLock<Regex> = OnceLock::new();
-static RE_CONFIGURE_BARE_ARG: OnceLock<Regex> = OnceLock::new();
-static RE_BIN_INSTALL: OnceLock<Regex> = OnceLock::new();
-static RE_DIR_BIN_INSTALL: OnceLock<Regex> = OnceLock::new();
 
 /// Linux artifact extracted from a Homebrew cask's `on_linux` block.
 #[derive(Debug, Clone)]
@@ -283,15 +278,12 @@ impl FormulaParser {
 
     fn extract_configure_args(install_block: &str) -> Vec<String> {
         // Match args in double quotes: "--flag" or "-DFLAG=val"
-        let re_quoted = RE_CONFIGURE_QUOTED.get_or_init(|| {
-            Regex::new(r#""(?P<arg>(?:--[a-z0-9\-_=#{}/]+|-D[A-Za-z0-9_=\-#{}/.:+]+))""#).unwrap()
-        });
+        let re_quoted =
+            Regex::new(r#""(?P<arg>(?:--[a-z0-9\-_=#{}/]+|-D[A-Za-z0-9_=\-#{}/.:+]+))""#).unwrap();
         // Match bare args inside %W[...] or %w[...] word arrays (no quotes)
-        let re_word_array = RE_CONFIGURE_WORD_ARRAY
-            .get_or_init(|| Regex::new(r#"%[Ww]\[(?P<body>[^\]]*)\]"#).unwrap());
-        let re_bare_arg = RE_CONFIGURE_BARE_ARG.get_or_init(|| {
-            Regex::new(r"(?P<arg>(?:--[a-z0-9\-_=]+|-D[A-Za-z0-9_=\-.:+]+))").unwrap()
-        });
+        let re_word_array = Regex::new(r#"%[Ww]\[(?P<body>[^\]]*)\]"#).unwrap();
+        let re_bare_arg =
+            Regex::new(r"(?P<arg>(?:--[a-z0-9\-_=]+|-D[A-Za-z0-9_=\-.:+]+))").unwrap();
 
         let mut args = Vec::new();
 
@@ -338,12 +330,9 @@ impl FormulaParser {
     }
 
     pub(crate) fn extract_bin_install_targets(install_block: &str) -> Vec<BinInstall> {
-        let re = RE_BIN_INSTALL.get_or_init(|| {
-            Regex::new(r#"bin\.install\s+"([^"]+)"(?:\s*=>\s*"([^"]+)")?"#).unwrap()
-        });
-        let dir_re = RE_DIR_BIN_INSTALL.get_or_init(|| {
-            Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap()
-        });
+        let re = Regex::new(r#"bin\.install\s+"([^"]+)"(?:\s*=>\s*"([^"]+)")?"#).unwrap();
+        let dir_re =
+            Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap();
         let mut targets: Vec<BinInstall> = Vec::new();
         for line in install_block.lines() {
             targets.extend(re.captures_iter(line).map(|c| {
@@ -925,6 +914,75 @@ end
         assert_eq!(
             parsed.head_url.as_deref(),
             Some("https://github.com/undivisible/drift-wallpaper.git")
+        );
+    }
+
+    #[test]
+    fn test_parse_ruby_formula_comprehensive() {
+        let formula = r#"
+class Fastfetch < Formula
+  desc "Like neofetch, but much faster"
+  homepage "https://github.com/fastfetch-cli/fastfetch"
+  license "MIT"
+  url "https://github.com/fastfetch-cli/fastfetch/archive/refs/tags/2.11.2.tar.gz"
+  sha256 "0f24ce73295b9c512033c46e01766a5035e076735e160eafebbdc86db254bdba"
+
+  depends_on "cmake" => :build
+  depends_on "pkg-config" => :build
+  depends_on "glib"
+  depends_on "vulkan-loader"
+
+  def install
+    system "cmake", "-S", ".", "-B", "build", *std_cmake_args
+    system "cmake", "--build", "build"
+    system "cmake", "--install", "build"
+    bash_completion.install share/"bash-completion/completions/fastfetch"
+  end
+end
+        "#;
+
+        let parsed = FormulaParser::parse_ruby_formula("fastfetch", formula).unwrap();
+
+        assert_eq!(parsed.name, "fastfetch");
+        assert_eq!(
+            parsed.desc.as_deref(),
+            Some("Like neofetch, but much faster")
+        );
+        assert_eq!(
+            parsed.homepage.as_deref(),
+            Some("https://github.com/fastfetch-cli/fastfetch")
+        );
+        assert_eq!(parsed.license.as_deref(), Some("MIT"));
+        assert_eq!(
+            parsed.source.url,
+            "https://github.com/fastfetch-cli/fastfetch/archive/refs/tags/2.11.2.tar.gz"
+        );
+        assert_eq!(
+            parsed.source.sha256,
+            "0f24ce73295b9c512033c46e01766a5035e076735e160eafebbdc86db254bdba"
+        );
+        assert_eq!(parsed.source.version, "2.11.2");
+        assert!(parsed.head_url.is_none());
+
+        assert_eq!(parsed.build_dependencies, vec!["cmake", "pkg-config"]);
+        assert_eq!(parsed.runtime_dependencies, vec!["glib", "vulkan-loader"]);
+        assert_eq!(parsed.build_system, BuildSystem::CMake);
+    }
+
+    #[test]
+    fn test_parse_ruby_formula_no_url_or_head() {
+        let formula = r#"
+class Fastfetch < Formula
+  desc "Like neofetch, but much faster"
+  homepage "https://github.com/fastfetch-cli/fastfetch"
+  license "MIT"
+end
+        "#;
+
+        let result = FormulaParser::parse_ruby_formula("fastfetch", formula);
+        assert!(
+            result.is_err(),
+            "Expected error when formula lacks both url and head"
         );
     }
 }

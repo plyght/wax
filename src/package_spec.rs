@@ -94,6 +94,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_all_known_ecosystems() {
+        let cases = vec![
+            ("chocolatey/foo", Ecosystem::Chocolatey),
+            ("choco/foo", Ecosystem::Chocolatey),
+            ("scoop/foo", Ecosystem::Scoop),
+            ("winget/foo", Ecosystem::Winget),
+            ("brew/foo", Ecosystem::Brew),
+            ("homebrew/foo", Ecosystem::Brew),
+        ];
+
+        for (input, expected_eco) in cases {
+            let spec = parse_package_spec(input);
+            assert_eq!(spec.force, Some(expected_eco));
+            assert_eq!(spec.name, "foo");
+        }
+    }
+
+    #[test]
+    fn unrecognized_prefixes_are_plain_names() {
+        let spec = parse_package_spec("apt/foo");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "apt/foo");
+
+        let spec = parse_package_spec("npm/bar");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "npm/bar");
+    }
+
+    #[test]
+    fn prefix_without_slash_is_plain_name() {
+        let spec = parse_package_spec("brew-foo");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "brew-foo");
+    }
+
+    #[test]
+    fn empty_name_after_prefix() {
+        let spec = parse_package_spec("brew/");
+        assert_eq!(spec.force, Some(Ecosystem::Brew));
+        assert_eq!(spec.name, "");
+    }
+
+    #[test]
     fn parse_search_query_strips_known_prefixes() {
         let (f, q) = parse_search_query("choco/git");
         assert_eq!(f, Some(Ecosystem::Chocolatey));

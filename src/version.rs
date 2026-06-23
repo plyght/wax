@@ -98,6 +98,48 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_missing_revision_after_underscore() {
+        let v = BrewVersion::parse("1.2.3_");
+        assert_eq!(v.base, "1.2.3_");
+        assert_eq!(v.revision, 0);
+    }
+
+    #[test]
+    fn test_parse_non_numeric_revision_after_underscore() {
+        let v = BrewVersion::parse("1.2.3_abc");
+        assert_eq!(v.base, "1.2.3_abc");
+        assert_eq!(v.revision, 0);
+    }
+
+    #[test]
+    fn test_parse_multiple_underscores() {
+        let v = BrewVersion::parse("1.2.3_1_2");
+        assert_eq!(v.base, "1.2.3_1");
+        assert_eq!(v.revision, 2);
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        let v = BrewVersion::parse("");
+        assert_eq!(v.base, "");
+        assert_eq!(v.revision, 0);
+    }
+
+    #[test]
+    fn test_parse_large_revision_number() {
+        let v = BrewVersion::parse("1.2.3_4294967295");
+        assert_eq!(v.base, "1.2.3");
+        assert_eq!(v.revision, 4294967295);
+    }
+
+    #[test]
+    fn test_parse_revision_overflow() {
+        let v = BrewVersion::parse("1.2.3_4294967296");
+        assert_eq!(v.base, "1.2.3_4294967296");
+        assert_eq!(v.revision, 0);
+    }
+
+    #[test]
     fn test_revision_is_newer() {
         let v1 = BrewVersion::parse("2.52.0");
         let v2 = BrewVersion::parse("2.52.0_1");
