@@ -10,6 +10,7 @@ use crate::windows_state::{self, WindowsPackageManifest};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tempfile::TempDir;
 use tracing::debug;
 
@@ -21,6 +22,8 @@ fn client() -> Result<reqwest::Client> {
         .map_err(|e| WaxError::InstallError(e.to_string()))
 }
 
+static SEARCH_RE: OnceLock<Regex> = OnceLock::new();
+
 /// Search chocolatey.org web UI; returns package ids (lowercase) matching the query.
 pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>> {
     if query.trim().is_empty() {
@@ -31,8 +34,9 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
         urlencoding::encode(query)
     );
     let html = client()?.get(&url).send().await?.text().await?;
-    let re = Regex::new(r##"href="/packages/([^"#?]+)"##)
-        .map_err(|e| WaxError::ParseError(e.to_string()))?;
+    let re = SEARCH_RE.get_or_init(|| {
+        Regex::new(r##"href="/packages/([^"#?]+)"##).expect("Invalid regex in chocolatey search")
+    });
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for cap in re.captures_iter(&html) {
