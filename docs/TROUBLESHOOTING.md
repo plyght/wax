@@ -425,7 +425,7 @@ Include in bug report:
 5. Relevant log entries (with `--verbose`)
 6. Steps to reproduce
 
-Submit to: https://github.com/semitechnological/wax/issues
+Submit to: https://github.com/plyght/wax/issues
 
 ### Community Support
 

@@ -11,7 +11,7 @@
 ### Building from Source
 
 ```bash
-git clone https://github.com/semitechnological/wax.git
+git clone https://github.com/plyght/wax.git
 cd wax
 cargo build --release
 ```

@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 # Wax installer - from a clone: builds with cargo. Otherwise: GitHub Releases.
 # Usage:
-#   irm https://raw.githubusercontent.com/semitechnological/wax/winget-integration/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/plyght/wax/winget-integration/install.ps1 | iex
 #   .\install.ps1
 #   $env:WAX_USE_RELEASE = '1'; .\install.ps1
 #
@@ -12,7 +12,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'semitechnological/wax'
+$Repo = 'plyght/wax'
 $installDir = if ($env:WAX_INSTALL_DIR) {
     $env:WAX_INSTALL_DIR
 } else {

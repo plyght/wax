@@ -7,7 +7,7 @@
 #
 set -euo pipefail
 
-REPO="semitechnological/wax"
+REPO="plyght/wax"
 INSTALL_DIR="${WAX_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${WAX_VERSION:-}"
 

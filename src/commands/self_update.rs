@@ -6,7 +6,7 @@ use inquire::Confirm;
 use std::io::IsTerminal;
 use tracing::{info, instrument};
 
-const GITHUB_REPO_URL: &str = "https://github.com/semitechnological/wax";
+const GITHUB_REPO_URL: &str = "https://github.com/plyght/wax";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Channel {
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn nightly_update_uses_release_repository() {
-        assert_eq!(GITHUB_REPO_URL, "https://github.com/semitechnological/wax");
+        assert_eq!(GITHUB_REPO_URL, "https://github.com/plyght/wax");
     }
 
     #[test]
