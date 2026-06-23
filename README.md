@@ -50,9 +50,9 @@ To **force** a pre-built release while standing in a clone, set `WAX_USE_RELEASE
 GitHub Releases ship **Linux** and **macOS** binaries (`wax-linux-*`, `wax-macos-*`) with `.sha256` sidecars when published by CI.
 The installer requires checksum verification by default. Set `WAX_NO_VERIFY=1` only when you explicitly accept installing without a `.sha256` sidecar.
 
-**will fix homebrew tap sometime**
+**Homebrew tap** — coming soon.
 
-**Cargo (older version):**
+**Cargo:**
 
 ```bash
 cargo install waxpkg
