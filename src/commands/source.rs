@@ -3,7 +3,6 @@ use crate::error::{Result, WaxError};
 use console::style;
 use std::collections::HashMap;
 use tracing::instrument;
-
 fn is_safe_url(url_str: &str) -> bool {
     if let Ok(url) = reqwest::Url::parse(url_str) {
         matches!(url.scheme(), "http" | "https")
@@ -12,13 +11,6 @@ fn is_safe_url(url_str: &str) -> bool {
     }
 }
 
-fn is_safe_url(url_str: &str) -> bool {
-    if let Ok(url) = reqwest::Url::parse(url_str) {
-        matches!(url.scheme(), "http" | "https")
-    } else {
-        false
-    }
-}
 
 #[instrument(skip(cache))]
 pub async fn source(cache: &Cache, formula_name: &str) -> Result<()> {
@@ -93,7 +85,6 @@ pub async fn source(cache: &Cache, formula_name: &str) -> Result<()> {
     }
 
     Err(WaxError::FormulaNotFound(formula_name.to_string()))
-}
 }
 
 #[cfg(test)]
