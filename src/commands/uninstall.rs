@@ -540,7 +540,7 @@ async fn read_app_version_from_plist(path: &Path) -> Option<String> {
 async fn uninstall_windows_package(
     manifest: &WindowsPackageManifest,
     dry_run: bool,
-    start: std::time::Instant,
+    _start: std::time::Instant,
     quiet: bool,
     prefix: &str,
 ) -> Result<()> {

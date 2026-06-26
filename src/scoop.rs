@@ -10,6 +10,7 @@
 use crate::bottle::BottleDownloader;
 use crate::error::{Result, WaxError};
 use crate::package_spec::Ecosystem;
+use crate::ui::copy_dir_all;
 use crate::windows_state::{self, WindowsPackageManifest};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;

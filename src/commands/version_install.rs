@@ -218,10 +218,10 @@ pub async fn version_install(
     spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
     spinner.set_message("Authenticating with ghcr.io...");
-    let token = get_ghcr_token(&client, formula_name).await?;
+    let token = get_ghcr_token(client, formula_name).await?;
 
     spinner.set_message("Listing available versions...");
-    let tags = list_available_versions(&client, formula_name, &token).await?;
+    let tags = list_available_versions(client, formula_name, &token).await?;
 
     if !tags.contains(&version.to_string()) {
         spinner.finish_and_clear();
@@ -253,7 +253,7 @@ pub async fn version_install(
     ));
 
     let (blob_url, sha256) =
-        resolve_bottle_for_platform(&client, formula_name, version, &platform, &token).await?;
+        resolve_bottle_for_platform(client, formula_name, version, &platform, &token).await?;
 
     spinner.finish_and_clear();
     check_cancelled()?;

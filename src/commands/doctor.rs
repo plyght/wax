@@ -1035,6 +1035,7 @@ fn check_glibc_version(fix: bool) -> DiagResult {
     d
 }
 
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(unused_mut))]
 fn check_metal_toolchain(fix: bool) -> DiagResult {
     let mut d = DiagResult::new(fix);
     #[cfg(target_os = "macos")]

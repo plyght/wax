@@ -558,6 +558,7 @@ fi
         }
     }
 
+    #[cfg(unix)]
     fn setup_fake_sudo(dir: &std::path::Path, behavior: &str) {
         use std::os::unix::fs::PermissionsExt;
         let sudo_path = dir.join("sudo");
@@ -588,6 +589,7 @@ fi
     }
 
     #[test]
+    #[cfg(unix)]
     #[ignore] // requires real terminal for inquire::Password prompt
     fn test_acquire_sudo_for_prompt_success() {
         if is_running_as_root() {
@@ -613,6 +615,7 @@ fi
     }
 
     #[test]
+    #[cfg(unix)]
     #[ignore] // requires real terminal for inquire::Password prompt
     fn test_acquire_sudo_for_prompt_failure() {
         if is_running_as_root() {

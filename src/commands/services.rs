@@ -5,6 +5,7 @@ use console::style;
 #[cfg(target_os = "macos")]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tokio::process::Command;
 use tracing::instrument;
 
@@ -276,6 +277,7 @@ pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()>
             style("✓").green(),
             style(formula_name).magenta()
         );
+        return Ok(());
     }
 
     #[cfg(target_os = "linux")]
@@ -322,16 +324,13 @@ pub async fn services_start(formula_name: &str, nice: Option<i32>) -> Result<()>
             style("✓").green(),
             style(formula_name).magenta()
         );
+        return Ok(());
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        return Err(WaxError::ServiceError(
-            "Service management not supported on this platform".to_string(),
-        ));
-    }
-
-    Ok(())
+    return Err(WaxError::ServiceError(
+        "Service management not supported on this platform".to_string(),
+    ));
 }
 
 #[instrument]
@@ -423,6 +422,10 @@ pub async fn services_restart(formula_name: &str, nice: Option<i32>) -> Result<(
     services_start(formula_name, nice).await
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    allow(unused_variables)
+)]
 async fn get_service_status(formula_name: &str) -> ServiceStatus {
     #[cfg(target_os = "macos")]
     {
@@ -478,6 +481,10 @@ async fn get_service_status(formula_name: &str) -> ServiceStatus {
     ServiceStatus::Stopped
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    allow(unused_variables)
+)]
 async fn get_service_pid(formula_name: &str) -> Option<u32> {
     #[cfg(target_os = "macos")]
     {

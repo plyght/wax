@@ -551,9 +551,9 @@ pub async fn remove_symlinks(
         .await?;
     }
 
-    let opt_link = prefix.join("opt").join(formula_name);
     #[cfg(unix)]
     {
+        let opt_link = prefix.join("opt").join(formula_name);
         if let Ok(metadata) = fs::symlink_metadata(&opt_link).await {
             if metadata.is_symlink() {
                 if let Ok(link_target) = fs::read_link(&opt_link).await {
@@ -583,23 +583,29 @@ fn unlink_directory_recursive<'a>(
     removed_links: &'a mut Vec<PathBuf>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
-        let mut entries = match fs::read_dir(source_dir).await {
-            Ok(e) => e,
-            Err(_) => return Ok(()),
-        };
+        #[cfg(not(unix))]
+        {
+            let _ = (source_dir, target_dir, formula_path, dry_run, removed_links);
+            return Ok(());
+        }
 
-        while let Some(entry) = entries.next_entry().await? {
-            let file_name = entry.file_name();
-            let source_path = entry.path();
-            let target_path = target_dir.join(&file_name);
-
-            let target_meta = match fs::symlink_metadata(&target_path).await {
-                Ok(m) => m,
-                Err(_) => continue,
+        #[cfg(unix)]
+        {
+            let mut entries = match fs::read_dir(source_dir).await {
+                Ok(e) => e,
+                Err(_) => return Ok(()),
             };
 
-            #[cfg(unix)]
-            {
+            while let Some(entry) = entries.next_entry().await? {
+                let file_name = entry.file_name();
+                let source_path = entry.path();
+                let target_path = target_dir.join(&file_name);
+
+                let target_meta = match fs::symlink_metadata(&target_path).await {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
                 if target_meta.is_symlink() {
                     if let Ok(link_target) = fs::read_link(&target_path).await {
                         let link_target = dunce::canonicalize(&link_target).unwrap_or(link_target);

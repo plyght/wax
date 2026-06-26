@@ -22,6 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
 #[cfg(target_os = "macos")]
 use tracing::debug;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

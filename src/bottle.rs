@@ -741,10 +741,10 @@ impl BottleDownloader {
         let mut content = content;
         let metadata = std::fs::metadata(path)?;
         let original_permissions = metadata.permissions();
-        let mut perms = original_permissions.clone();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let mut perms = original_permissions.clone();
             perms.set_mode(perms.mode() | 0o200);
             std::fs::set_permissions(path, perms)?;
         }
