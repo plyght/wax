@@ -342,8 +342,10 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 mod tests {
     #[cfg(unix)]
     use super::is_running_as_root;
+    #[cfg(unix)]
+    use super::sudo_copy;
     use super::{
-        acquire_sudo_for, is_file_exists_error, is_permission_error, normalize_path, sudo_copy,
+        acquire_sudo_for, is_file_exists_error, is_permission_error, normalize_path,
         sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED, SUDO_VALIDATED_AT,
     };
     use crate::error::WaxError;
@@ -354,11 +356,13 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(unix)]
     struct MockSudoEnv {
         _dir: tempfile::TempDir,
         old_path: Option<std::ffi::OsString>,
     }
 
+    #[cfg(unix)]
     impl MockSudoEnv {
         fn setup() -> Self {
             let dir = tempfile::tempdir().unwrap();
@@ -404,6 +408,7 @@ fi
         }
     }
 
+    #[cfg(unix)]
     impl Drop for MockSudoEnv {
         fn drop(&mut self) {
             if let Some(old_path) = self.old_path.take() {
