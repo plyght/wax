@@ -59,19 +59,35 @@ function Hint-Path {
     }
 }
 
+function Get-WaxWindowsAsset {
+    # PROCESSOR_ARCHITEW6432 is set for WOW64 (32-bit PowerShell on 64-bit Windows).
+    $procArch = if ($env:PROCESSOR_ARCHITEW6432) {
+        $env:PROCESSOR_ARCHITEW6432
+    } else {
+        $env:PROCESSOR_ARCHITECTURE
+    }
+
+    switch ($procArch) {
+        'AMD64' { return 'wax-windows-x64.exe' }
+        'ARM64' { return 'wax-windows-arm64.exe' }
+    }
+
+    $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    switch ($osArch) {
+        'X64' { return 'wax-windows-x64.exe' }
+        'Arm64' { return 'wax-windows-arm64.exe' }
+    }
+
+    $detail = ('PROCESSOR_ARCHITECTURE={0}; PROCESSOR_ARCHITEW6432={1}; OSArchitecture={2}' -f $env:PROCESSOR_ARCHITECTURE, $env:PROCESSOR_ARCHITEW6432, $osArch)
+    throw ('Unsupported Windows CPU architecture for pre-built wax ({0}). Clone https://github.com/plyght/wax and run install.ps1 to build locally.' -f $detail)
+}
+
 function Install-FromRelease {
     if (-not [Environment]::Is64BitOperatingSystem) {
         Write-Error 'Wax pre-built Windows installers require 64-bit Windows.'
     }
 
-    $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    $asset = switch ($osArch) {
-        ([System.Runtime.InteropServices.Architecture]::X64) { 'wax-windows-x64.exe' }
-        ([System.Runtime.InteropServices.Architecture]::Arm64) { 'wax-windows-arm64.exe' }
-        default {
-            throw ('Unsupported Windows CPU architecture for pre-built wax: {0} (clone the repo and run install.ps1 to build).' -f $osArch)
-        }
-    }
+    $asset = Get-WaxWindowsAsset
 
     $archLabel = if ($asset -match 'arm64') { 'windows/arm64' } else { 'windows/x64' }
 
