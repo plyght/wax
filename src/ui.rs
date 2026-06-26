@@ -162,9 +162,14 @@ pub mod dirs {
     use std::path::PathBuf;
 
     pub fn home_dir() -> Result<PathBuf> {
+        #[cfg(windows)]
+        if let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
+            return Ok(home);
+        }
+
         std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
             WaxError::InstallError(
-                "$HOME environment variable is not set. Cannot determine home directory."
+                "Home directory is not set ($HOME or USERPROFILE). Cannot determine home directory."
                     .to_string(),
             )
         })

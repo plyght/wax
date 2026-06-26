@@ -408,6 +408,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn test_which_existing_binary() {
         // 'sh' should be available on almost all unix-like systems
         assert!(which("sh").await);
@@ -419,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_find_in_path_existing() {
         let path = crate::ui::find_in_path("sh");
         assert!(path.is_some());

@@ -266,7 +266,7 @@ mod tests {
                 path.strip_prefix(root)
                     .unwrap()
                     .to_string_lossy()
-                    .to_string()
+                    .replace('\\', "/")
             })
             .collect();
         assert_eq!(names, vec!["bin/tool.exe", "readme.txt"]);

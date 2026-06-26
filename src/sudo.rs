@@ -481,6 +481,7 @@ fi
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_sudo_copy_file_success() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _env = MockSudoEnv::setup();
@@ -498,6 +499,7 @@ fi
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_sudo_copy_dir_success() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _env = MockSudoEnv::setup();
@@ -521,6 +523,7 @@ fi
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_sudo_copy_failure() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _env = MockSudoEnv::setup();

@@ -1897,6 +1897,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(target_os = "macos")]
     async fn test_resolve_source_path() {
         let installer = CaskInstaller::new();
         let temp = tempdir().unwrap();
@@ -1963,6 +1964,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn artifact_dest_rejects_absolute_system_path() {
         let err = CaskInstaller::resolve_artifact_dest("/etc/launchd.conf")
             .expect_err("absolute system path should be rejected");
