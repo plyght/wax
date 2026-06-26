@@ -1,20 +1,18 @@
-#Requires -Version 5.1
-<#
-.SYNOPSIS
-  Install wax on Windows from GitHub Releases or a local clone.
-
-.DESCRIPTION
-  One-liner:
-    irm https://raw.githubusercontent.com/plyght/wax/master/install.ps1 | iex
-
-  From a clone (builds with cargo):
-    .\install.ps1
-
-  Force a release binary while in a clone:
-    $env:WAX_USE_RELEASE = '1'; .\install.ps1
-#>
+# Wax Windows installer
+# One-liner: irm https://raw.githubusercontent.com/plyght/wax/master/install.ps1 | iex
+# From clone: .\install.ps1
+# Force release binary in clone: $env:WAX_USE_RELEASE = '1'; .\install.ps1
+#
+# Note: #Requires cannot be used here — it breaks Invoke-Expression (iex) pipelines.
 
 $ErrorActionPreference = 'Stop'
+
+if ($PSVersionTable.PSVersion.Major -lt 5) {
+    throw 'PowerShell 5.1 or later is required.'
+}
+if ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -lt 1) {
+    throw 'PowerShell 5.1 or later is required.'
+}
 
 $Repo = 'plyght/wax'
 $installDir = if ($env:WAX_INSTALL_DIR) {

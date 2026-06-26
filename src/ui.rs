@@ -183,6 +183,11 @@ pub mod dirs {
     }
 
     pub fn wax_cache_dir() -> Result<PathBuf> {
+        if let Ok(dir) = std::env::var("WAX_CACHE_DIR") {
+            if !dir.is_empty() {
+                return Ok(PathBuf::from(dir));
+            }
+        }
         Ok(wax_dir()?.join("cache"))
     }
 
@@ -226,6 +231,10 @@ mod tests {
             dirs::wax_cache_dir().unwrap(),
             dummy_home.join(".wax/cache")
         );
+        let override_cache = dummy_home.join("override-cache");
+        env::set_var("WAX_CACHE_DIR", &override_cache);
+        assert_eq!(dirs::wax_cache_dir().unwrap(), override_cache);
+        env::remove_var("WAX_CACHE_DIR");
         assert_eq!(dirs::wax_logs_dir().unwrap(), dummy_home.join(".wax/logs"));
 
         env::remove_var("HOME");

@@ -1,0 +1,6 @@
+# Windows debug binaries embed a large async state machine; default 1MB stack overflows.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-args=/STACK:16777216"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "link-args=/STACK:16777216"]

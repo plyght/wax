@@ -4,12 +4,21 @@
 //! command dispatch path.  Network-dependent tests are gated behind the
 //! `INTEGRATION` env var so they don't run in CI without connectivity.
 
+use std::path::Path;
 use std::process::Command;
 
 fn wax() -> Command {
     // Use the debug binary built by `cargo test --test cli`.
     let bin = env!("CARGO_BIN_EXE_wax");
     Command::new(bin)
+}
+
+fn wax_with_home(home: &Path) -> Command {
+    let mut cmd = wax();
+    cmd.env("HOME", home);
+    #[cfg(windows)]
+    cmd.env("USERPROFILE", home);
+    cmd
 }
 
 // ── basic smoke tests ────────────────────────────────────────────────────────
@@ -135,10 +144,8 @@ fn has_timing_line(stdout: &str) -> bool {
 #[test]
 fn time_to_action_flag_prints_elapsed_footer() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = wax()
-        .env("HOME", tmp.path())
-        .env("WAX_CACHE_DIR", tmp.path())
-        .env("CI", "1")
+    let out = wax_with_home(tmp.path()).env("CI", "1")
+        .env("WAX_CACHE_DIR", tmp.path().join("cache"))
         .args(["--time-to-action", "list"])
         .output()
         .unwrap();
@@ -155,10 +162,8 @@ fn time_to_action_flag_prints_elapsed_footer() {
 fn time_to_action_aliases_print_elapsed_footer() {
     for alias in ["--tta", "--time"] {
         let tmp = tempfile::tempdir().unwrap();
-        let out = wax()
-            .env("HOME", tmp.path())
-            .env("WAX_CACHE_DIR", tmp.path())
-            .env("CI", "1")
+        let out = wax_with_home(tmp.path()).env("CI", "1")
+            .env("WAX_CACHE_DIR", tmp.path().join("cache"))
             .args([alias, "list"])
             .output()
             .unwrap();
@@ -175,10 +180,8 @@ fn time_to_action_aliases_print_elapsed_footer() {
 #[test]
 fn list_without_time_flag_omits_elapsed_footer() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = wax()
-        .env("HOME", tmp.path())
-        .env("WAX_CACHE_DIR", tmp.path())
-        .env("CI", "1")
+    let out = wax_with_home(tmp.path()).env("CI", "1")
+        .env("WAX_CACHE_DIR", tmp.path().join("cache"))
         .args(["list"])
         .output()
         .unwrap();
@@ -246,10 +249,8 @@ fn single_formula_upgrade_does_not_reinstall_dependents() {
 fn list_exits_zero() {
     // `wax list` works without a populated cache (just shows an empty list).
     let tmp = tempfile::tempdir().unwrap();
-    let out = wax()
-        .env("HOME", tmp.path())
-        .env("WAX_CACHE_DIR", tmp.path())
-        .env("CI", "1")
+    let out = wax_with_home(tmp.path()).env("CI", "1")
+        .env("WAX_CACHE_DIR", tmp.path().join("cache"))
         .arg("list")
         .output()
         .unwrap();
@@ -264,10 +265,8 @@ fn list_exits_zero() {
 #[test]
 fn list_with_query_exits_zero() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = wax()
-        .env("HOME", tmp.path())
-        .env("WAX_CACHE_DIR", tmp.path())
-        .env("CI", "1")
+    let out = wax_with_home(tmp.path()).env("CI", "1")
+        .env("WAX_CACHE_DIR", tmp.path().join("cache"))
         .args(["list", "rust"])
         .output()
         .unwrap();
@@ -288,11 +287,9 @@ fn list_plain_shows_test_cellar_formulae() {
     let cache = tmp.path().join("cache");
     std::fs::create_dir_all(&cache).unwrap();
 
-    let out = wax()
-        .env("HOME", tmp.path())
+    let out = wax_with_home(tmp.path()).env("CI", "1")
         .env("WAX_CACHE_DIR", &cache)
         .env("WAX_TEST_CELLAR", &cellar)
-        .env("CI", "1")
         .arg("list")
         .output()
         .unwrap();
@@ -321,11 +318,9 @@ fn list_plain_filter_excludes_non_matching() {
     let cache = tmp.path().join("cache");
     std::fs::create_dir_all(&cache).unwrap();
 
-    let out = wax()
-        .env("HOME", tmp.path())
+    let out = wax_with_home(tmp.path()).env("CI", "1")
         .env("WAX_CACHE_DIR", &cache)
         .env("WAX_TEST_CELLAR", &cellar)
-        .env("CI", "1")
         .args(["list", "wax-b"])
         .output()
         .unwrap();
@@ -354,11 +349,9 @@ fn list_plain_no_match_reports_query() {
     std::fs::create_dir_all(&cache).unwrap();
 
     let needle = "zzz-nope-match";
-    let out = wax()
-        .env("HOME", tmp.path())
+    let out = wax_with_home(tmp.path()).env("CI", "1")
         .env("WAX_CACHE_DIR", &cache)
         .env("WAX_TEST_CELLAR", &cellar)
-        .env("CI", "1")
         .args(["list", needle])
         .output()
         .unwrap();
@@ -375,9 +368,8 @@ fn list_plain_no_match_reports_query() {
 #[test]
 fn tap_list_exits_zero() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = wax()
-        .env("HOME", tmp.path())
-        .env("WAX_CACHE_DIR", tmp.path())
+    let out = wax_with_home(tmp.path())
+        .env("WAX_CACHE_DIR", tmp.path().join("cache"))
         .arg("tap")
         .arg("list")
         .output()
@@ -436,9 +428,7 @@ fn unknown_subcommand_exits_nonzero() {
 #[test]
 fn reinstall_missing_package_exits_nonzero_without_installing() {
     let tmp = tempfile::tempdir().unwrap();
-    let out = wax()
-        .env("HOME", tmp.path())
-        .env("CI", "1")
+    let out = wax_with_home(tmp.path()).env("CI", "1")
         .args(["reinstall", "definitely-no-such-package"])
         .output()
         .unwrap();
