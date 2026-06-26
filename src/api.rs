@@ -189,8 +189,6 @@ impl Formula {
     }
 }
 
-static API_HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-
 pub struct ApiClient {
     client: reqwest::Client,
 }
@@ -205,18 +203,9 @@ pub struct FetchResult<T> {
 
 impl ApiClient {
     pub fn new() -> Self {
-        let client = API_HTTP_CLIENT
-            .get_or_init(|| {
-                reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(30))
-                    .gzip(true)
-                    .brotli(true)
-                    .build()
-                    .expect("Failed to create HTTP client")
-            })
-            .clone();
-
-        Self { client }
+        Self {
+            client: crate::http_client::api().clone(),
+        }
     }
 
     #[instrument(skip(self))]

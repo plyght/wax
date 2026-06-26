@@ -6,9 +6,7 @@ use crate::version::sort_versions;
 use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1198,10 +1196,7 @@ impl CaskInstaller {
     /// Falls back to a ranged GET if HEAD is not supported (e.g. 405).
     /// Returns None if type cannot be determined.
     pub async fn probe_artifact_type(&self, url: &str) -> Option<&'static str> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .ok()?;
+        let client = crate::http_client::default_client();
 
         let response = match client.head(url).send().await {
             Ok(r) if r.status().is_success() => r,
@@ -1268,37 +1263,7 @@ impl CaskInstaller {
     }
 
     pub fn verify_checksum(path: &Path, expected_sha256: &str) -> Result<()> {
-        // Homebrew uses "no_check" to skip checksum verification
-        if expected_sha256 == "no_check" {
-            debug!("Skipping checksum verification (no_check) for {:?}", path);
-            return Ok(());
-        }
-
-        debug!("Verifying checksum for {:?}", path);
-
-        let mut file = std::fs::File::open(path)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0u8; 8192];
-
-        loop {
-            let n = file.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buffer[..n]);
-        }
-
-        let hash = format!("{:x}", hasher.finalize());
-
-        if hash != expected_sha256 {
-            return Err(WaxError::ChecksumMismatch {
-                expected: expected_sha256.to_string(),
-                actual: hash,
-            });
-        }
-
-        debug!("Checksum verified: {}", hash);
-        Ok(())
+        crate::digest::verify_sha256_file(path, expected_sha256)
     }
 
     /// Rejects paths that contain parent-directory traversal components.
@@ -1447,15 +1412,16 @@ impl CaskInstaller {
             let stderr_str = String::from_utf8_lossy(&verify_output.stderr);
 
             // pkgutil may exit with 0 even if the package is unsigned.
-            // We must explicitly check the output for an invalid signature status.
-            let is_unsigned = stdout_str.contains("Status: no signature")
-                || stdout_str.contains("Status: unsigned")
-                || stdout_str.contains("invalid signature")
-                || stderr_str.contains("Status: no signature")
-                || stderr_str.contains("Status: unsigned")
-                || stderr_str.contains("invalid signature");
+            // Fail closed unless output clearly indicates a trusted signature.
+            let combined = format!("{stdout_str}{stderr_str}");
+            let is_unsigned = combined.contains("Status: no signature")
+                || combined.contains("Status: unsigned")
+                || combined.contains("invalid signature");
+            let looks_signed = combined.contains("Status: signed")
+                || combined.contains("Signed with a trusted timestamp")
+                || combined.contains("Developer ID Installer");
 
-            if !verify_output.status.success() || is_unsigned {
+            if !verify_output.status.success() || is_unsigned || !looks_signed {
                 let err_msg = if stderr_str.trim().is_empty() {
                     stdout_str.into_owned()
                 } else {

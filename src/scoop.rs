@@ -218,12 +218,7 @@ pub fn resolve_manifest_json(raw: &str) -> Result<ResolvedScoopPackage> {
 pub async fn scoop_manifest_exists(bucket_base: &str, package: &str) -> bool {
     let base = bucket_base.trim_end_matches('/');
     let url = format!("{base}/{}.json", package);
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-    else {
-        return false;
-    };
+    let client = crate::http_client::default_client();
     match client.head(&url).send().await {
         Ok(r) => r.status().is_success(),
         Err(_) => false,
@@ -234,10 +229,7 @@ async fn fetch_manifest_text(bucket_base: &str, package: &str) -> Result<String>
     let base = bucket_base.trim_end_matches('/');
     let url = format!("{base}/{}.json", package);
     debug!("Fetching Scoop manifest {}", url);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| WaxError::InstallError(e.to_string()))?;
+    let client = crate::http_client::default_client();
     let resp = client.get(&url).send().await?;
     if !resp.status().is_success() {
         return Err(WaxError::InstallError(format!(

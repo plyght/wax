@@ -8,12 +8,7 @@ use crate::error::Result;
 use crate::install::{create_symlinks, InstallMode, InstallState};
 use crate::ui::dirs;
 use console::style;
-use futures::future::BoxFuture;
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-#[cfg(target_os = "macos")]
-use rayon::prelude::*;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -71,11 +66,13 @@ impl DiagResult {
     }
 }
 
+type DiagFuture = std::pin::Pin<Box<dyn std::future::Future<Output = DiagResult> + Send>>;
+
 /// One diagnostic check: a display title and an async function that produces
 /// the result.
 struct Check {
     title: &'static str,
-    run: BoxFuture<'static, DiagResult>,
+    run: DiagFuture,
 }
 
 async fn check_wax_update(fix: bool) -> DiagResult {
@@ -246,23 +243,22 @@ async fn run_checks(checks: Vec<Check>) -> Vec<(&'static str, DiagResult, Durati
         spinners.push(pb);
     }
 
-    let mut fut: FuturesUnordered<BoxFuture<'static, (usize, DiagResult, Duration)>> =
-        FuturesUnordered::new();
     let mut titles: Vec<&'static str> = Vec::with_capacity(checks.len());
+    let mut set = tokio::task::JoinSet::new();
     for (idx, c) in checks.into_iter().enumerate() {
         titles.push(c.title);
         let run = c.run;
-        fut.push(Box::pin(async move {
+        set.spawn(async move {
             let t0 = Instant::now();
             let res = run.await;
             (idx, res, t0.elapsed())
-        })
-            as BoxFuture<'static, (usize, DiagResult, Duration)>);
+        });
     }
 
     let mut raw_results: Vec<Option<(DiagResult, Duration)>> =
         (0..titles.len()).map(|_| None).collect();
-    while let Some((idx, res, elapsed)) = fut.next().await {
+    while let Some(join_result) = set.join_next().await {
+        let (idx, res, elapsed) = join_result.expect("doctor check task panicked");
         spinners[idx].finish_and_clear();
         raw_results[idx] = Some((res, elapsed));
     }
@@ -1140,7 +1136,7 @@ fn check_unrelocated_bottles(fix: bool) -> DiagResult {
             .collect();
 
         let unrelocated: Vec<_> = unrelocated
-            .into_par_iter()
+            .into_iter()
             .filter(|(_, _, ver_dir)| has_unrelocated_bottle(ver_dir))
             .collect();
 
@@ -1202,7 +1198,7 @@ fn scan_dir_for_placeholders(dir: &Path) -> bool {
         Err(_) => return false,
     };
 
-    entries.par_iter().any(|path| {
+    entries.iter().any(|path| {
         if path.is_dir() {
             scan_dir_for_placeholders(path)
         } else if path.is_file() {
@@ -1395,7 +1391,7 @@ fn check_invalid_signatures(fix: bool) -> DiagResult {
             .collect();
 
         let invalid: Vec<(String, String)> = packages
-            .into_par_iter()
+            .into_iter()
             .filter_map(|(name, pkg_dir, version)| {
                 let ver_dir = pkg_dir.join(&version);
                 let mut pkg_invalid = false;

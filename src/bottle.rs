@@ -1,16 +1,15 @@
 use crate::error::{Result, WaxError};
 use flate2::read::GzDecoder;
 use indicatif::ProgressBar;
-use sha2::{Digest, Sha256};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tar::Archive;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::{debug, instrument};
 
 /// Tracks aggregate downloaded / expected bytes across concurrent downloads (e.g. multiple casks).
@@ -18,6 +17,33 @@ use tracing::{debug, instrument};
 pub struct DownloadTotals {
     pub downloaded: Arc<AtomicU64>,
     pub expected: Arc<AtomicU64>,
+}
+
+/// Maximum total bytes extracted from a single bottle tarball (5 GB).
+const MAX_EXTRACT_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+const PROBE_SIZE_CACHE_TTL: Duration = Duration::from_secs(3600);
+
+fn probe_size_cache() -> &'static Mutex<HashMap<String, (u64, Instant)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (u64, Instant)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_probe_size(url: &str) -> Option<u64> {
+    let guard = probe_size_cache().lock().ok()?;
+    let (size, fetched_at) = guard.get(url)?;
+    if fetched_at.elapsed() > PROBE_SIZE_CACHE_TTL {
+        return None;
+    }
+    Some(*size)
+}
+
+fn store_probe_size(url: &str, size: u64) {
+    if size == 0 {
+        return;
+    }
+    if let Ok(mut guard) = probe_size_cache().lock() {
+        guard.insert(url.to_string(), (size, Instant::now()));
+    }
 }
 
 pub struct BottleDownloader {
@@ -28,14 +54,9 @@ impl BottleDownloader {
     const TRANSIENT_RETRY_ATTEMPTS: usize = 3;
 
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
-            .gzip(false)
-            .brotli(false)
-            .build()
-            .expect("Failed to create HTTP client");
-
-        Self { client }
+        Self {
+            client: crate::http_client::download().clone(),
+        }
     }
 
     // Minimum file size to bother splitting across multiple connections.
@@ -55,15 +76,22 @@ impl BottleDownloader {
     /// Probe a URL to get its download size. Used before starting downloads to
     /// allocate connections proportionally across packages by file size.
     pub async fn probe_size(&self, url: &str) -> u64 {
+        if let Some(size) = cached_probe_size(url) {
+            return size;
+        }
+
         let auth_token: Option<String> = if url.contains("ghcr.io") {
             self.get_ghcr_token(url).await.ok()
         } else {
             None
         };
-        self.probe_url(url, &auth_token)
+        let size = self
+            .probe_url(url, &auth_token)
             .await
             .map(|(_, size, _)| size)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        store_probe_size(url, size);
+        size
     }
 
     /// Returns how many connections to use for a file of the given size,
@@ -269,34 +297,28 @@ impl BottleDownloader {
                     )));
                 }
 
-                // Stream chunk bytes, counting progress, then write at the
-                // correct file offset in a blocking thread.
-                let mut data = Vec::with_capacity((end - start + 1) as usize);
-                let mut stream = response.bytes_stream();
-                use futures::StreamExt;
-                while let Some(piece) = stream.next().await {
+                // Stream chunk bytes directly to the file offset (no full-chunk buffer).
+                let mut file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&dest)
+                    .await?;
+                file.seek(std::io::SeekFrom::Start(start))
+                    .await
+                    .map_err(WaxError::from)?;
+
+                let mut response = response;
+                while let Some(piece) = response.chunk().await.map_err(WaxError::from)? {
                     if crate::signal::is_shutdown_requested() {
                         return Err(WaxError::Interrupted);
                     }
-                    let piece = piece.map_err(WaxError::from)?;
                     let n = piece.len() as u64;
                     counter.fetch_add(n, Ordering::Relaxed);
                     if let Some(ref t) = totals_chunk {
                         t.downloaded.fetch_add(n, Ordering::Relaxed);
                     }
-                    data.extend_from_slice(&piece);
+                    file.write_all(&piece).await.map_err(WaxError::from)?;
                 }
-
-                // Write directly to the correct byte offset — no in-memory assembly needed.
-                tokio::task::spawn_blocking(move || {
-                    use std::io::{Seek, SeekFrom, Write};
-                    let mut f = std::fs::OpenOptions::new().write(true).open(&dest)?;
-                    f.seek(SeekFrom::Start(start))?;
-                    f.write_all(&data)?;
-                    Ok::<(), std::io::Error>(())
-                })
-                .await
-                .map_err(|e| WaxError::InstallError(format!("join error: {}", e)))??;
+                file.flush().await.map_err(WaxError::from)?;
 
                 Ok::<(), WaxError>(())
             }));
@@ -396,16 +418,13 @@ impl BottleDownloader {
 
         let mut file = tokio::fs::File::create(dest_path).await?;
         let mut downloaded = 0u64;
-        let mut stream = response.bytes_stream();
-
-        use futures::StreamExt;
-        while let Some(chunk) = stream.next().await {
+        let mut response = response;
+        while let Some(chunk) = response.chunk().await? {
             if crate::signal::is_shutdown_requested() {
                 drop(file);
                 let _ = tokio::fs::remove_file(dest_path).await;
                 return Err(crate::error::WaxError::Interrupted);
             }
-            let chunk = chunk?;
             file.write_all(&chunk).await?;
             let n = chunk.len() as u64;
             downloaded += n;
@@ -504,31 +523,7 @@ impl BottleDownloader {
     }
 
     pub fn verify_checksum(path: &Path, expected_sha256: &str) -> Result<()> {
-        debug!("Verifying checksum for {:?}", path);
-
-        let mut file = std::fs::File::open(path)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0u8; 8192];
-
-        loop {
-            let n = file.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buffer[..n]);
-        }
-
-        let hash = format!("{:x}", hasher.finalize());
-
-        if hash != expected_sha256 {
-            return Err(WaxError::ChecksumMismatch {
-                expected: expected_sha256.to_string(),
-                actual: hash,
-            });
-        }
-
-        debug!("Checksum verified: {}", hash);
-        Ok(())
+        crate::digest::verify_sha256_file(path, expected_sha256)
     }
 
     pub fn extract(tarball_path: &Path, dest_dir: &Path) -> Result<()> {
@@ -541,6 +536,7 @@ impl BottleDownloader {
         let mut archive = Archive::new(decoder);
 
         let canonical_dest = dunce::canonicalize(dest_dir)?;
+        let mut extracted_bytes: u64 = 0;
 
         for entry in archive.entries()? {
             let mut entry = entry?;
@@ -558,6 +554,21 @@ impl BottleDownloader {
             }
 
             let full_path = canonical_dest.join(&path);
+            if !full_path.starts_with(&canonical_dest) {
+                return Err(WaxError::InstallError(format!(
+                    "Tar entry escapes destination: {}",
+                    path.display()
+                )));
+            }
+
+            let entry_size = entry.header().size()?;
+            extracted_bytes = extracted_bytes.saturating_add(entry_size);
+            if extracted_bytes > MAX_EXTRACT_BYTES {
+                return Err(WaxError::InstallError(format!(
+                    "Bottle extraction exceeds size limit ({} bytes)",
+                    MAX_EXTRACT_BYTES
+                )));
+            }
 
             match entry.header().entry_type() {
                 t if t.is_symlink() => {
@@ -599,11 +610,11 @@ impl BottleDownloader {
                                 }
                             }
                             if !normalized.starts_with(&canonical_dest) {
-                                tracing::warn!(
-                                    "Skipping symlink that points outside bottle: {} -> {}",
+                                return Err(WaxError::InstallError(format!(
+                                    "Symlink escapes destination: {} -> {}",
                                     path.display(),
                                     link_name.display()
-                                );
+                                )));
                             } else {
                                 std::fs::create_dir_all(parent)?;
                                 if full_path.symlink_metadata().is_ok() {
@@ -1491,12 +1502,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn extract_skips_relative_symlink_that_escapes_destination() {
+    fn extract_rejects_relative_symlink_that_escapes_destination() {
         let (_archive_dir, tarball) = archive_with_symlink("bin/tool", "../../outside");
         let dest = tempfile::tempdir().unwrap();
 
-        BottleDownloader::extract(&tarball, dest.path()).unwrap();
-
+        let result = BottleDownloader::extract(&tarball, dest.path());
+        assert!(result.is_err());
         assert!(dest.path().join("bin/tool").symlink_metadata().is_err());
     }
 

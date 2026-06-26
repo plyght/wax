@@ -71,11 +71,7 @@ async fn load_or_fetch_scoop_index(cache_dir: &std::path::Path) -> Result<Vec<St
     }
 
     debug!("Refreshing Scoop Main bucket index via GitHub API…");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .user_agent(concat!("wax/", env!("CARGO_PKG_VERSION"), " (scoop-index)"))
-        .build()
-        .map_err(|e| crate::error::WaxError::InstallError(e.to_string()))?;
+    let client = crate::http_client::default_client();
 
     let resp = client
         .get("https://api.github.com/repos/ScoopInstaller/Main/git/trees/master?recursive=1")

@@ -666,26 +666,32 @@ pub(crate) async fn install_impl(
     tap_manager.load().await?;
 
     if !dry_run {
-        let mut tapped = HashSet::new();
+        let mut updated_taps = HashSet::new();
         for package_name in package_names {
-            if let Some(tap_name) = tap_name_from_qualified_package(package_name) {
-                if tapped.contains(&tap_name) {
-                    continue;
-                }
-                if tap_manager.has_tap(&tap_name).await {
-                    if !quiet {
-                        println!("updating tap {}", style(&tap_name).cyan());
-                    }
-                    tap_manager.update_tap(&tap_name).await?;
-                } else {
-                    if !quiet {
-                        println!("tapping {}", style(&tap_name).cyan());
-                    }
-                    tap_manager.add_tap(&tap_name).await?;
-                }
-                cache.invalidate_tap_cache(&tap_name).await?;
-                tapped.insert(tap_name);
+            let Some(tap_name) = tap_name_from_qualified_package(package_name) else {
+                continue;
+            };
+            if updated_taps.contains(&tap_name) {
+                continue;
             }
+            if !tap_manager.has_tap(&tap_name).await {
+                return Err(WaxError::TapError(format!(
+                    "Tap '{}' is not installed. Add and trust it first:\n  wax tap add {} --trust",
+                    tap_name, tap_name
+                )));
+            }
+            if !tap_manager.is_tap_trusted(&tap_name) {
+                return Err(WaxError::TapError(format!(
+                    "Tap '{}' is untrusted. Trust it before installing formulae from it:\n  wax tap trust {}",
+                    tap_name, tap_name
+                )));
+            }
+            if !quiet {
+                println!("updating tap {}", style(&tap_name).cyan());
+            }
+            tap_manager.update_tap(&tap_name).await?;
+            cache.invalidate_tap_cache(&tap_name).await?;
+            updated_taps.insert(tap_name);
         }
     }
 
@@ -913,9 +919,9 @@ pub(crate) async fn install_impl(
         None
     } else {
         let cask_names = detected_casks.clone();
+        let cache_for_casks = cache.clone();
         Some(tokio::spawn(async move {
-            let local_cache = Cache::new()?;
-            install_casks(&local_cache, &cask_names, dry_run, ask, quiet, false).await
+            install_casks(&cache_for_casks, &cask_names, dry_run, ask, quiet, false).await
         }))
     };
 
@@ -2063,7 +2069,7 @@ async fn install_casks(
                 } else {
                     "casks"
                 },
-                crate::timing::elapsed_suffix(elapsed)
+                crate::ui::elapsed_suffix(elapsed)
             );
         }
         Ok(())
@@ -2074,7 +2080,7 @@ async fn install_casks(
                 installed_count,
                 installed_count + failed.len(),
                 failed.len(),
-                crate::timing::elapsed_suffix(elapsed)
+                crate::ui::elapsed_suffix(elapsed)
             );
         }
         Err(WaxError::InstallError(format!(

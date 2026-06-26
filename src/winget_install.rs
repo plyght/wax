@@ -42,20 +42,12 @@ fn package_id_to_content_path(id: &str) -> Result<String> {
     Ok(format!("manifests/{}/{}", first, parts.join("/")))
 }
 
-fn github_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .user_agent(concat!(
-            "wax/",
-            env!("CARGO_PKG_VERSION"),
-            " (winget-resolve)"
-        ))
-        .build()
-        .map_err(|e| WaxError::InstallError(e.to_string()))
+fn github_client() -> &'static reqwest::Client {
+    crate::http_client::default_client()
 }
 
 async fn gh_get_json(url: &str) -> Result<Vec<GhContentEntry>> {
-    let client = github_client()?;
+    let client = github_client();
     let resp = client.get(url).send().await?;
     if !resp.status().is_success() {
         return Err(WaxError::InstallError(format!(
@@ -405,7 +397,7 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
     let yaml_path = &installer_yaml.path;
     let raw_url = format!("{WINGET_PKGS_RAW}/{yaml_path}");
     debug!("Fetching winget installer yaml {}", raw_url);
-    let yaml_text = github_client()?
+    let yaml_text = github_client()
         .get(&raw_url)
         .send()
         .await?

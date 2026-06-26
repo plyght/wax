@@ -382,7 +382,7 @@ async fn upgrade_all(
 
     if outdated.is_empty() {
         println!("all packages are up to date");
-        if crate::timing::enabled() {
+        if crate::ui::timing_enabled() {
             println!("\n[{}ms] done", start.elapsed().as_millis());
         }
         return Ok(());
@@ -961,14 +961,14 @@ async fn upgrade_all(
             "\n{} upgraded, {} failed{}",
             style(success_count).green(),
             style(fail_count).red(),
-            crate::timing::elapsed_suffix(elapsed)
+            crate::ui::elapsed_suffix(elapsed)
         );
     } else {
         println!(
             "\n{} package{} upgraded{}",
             style(success_count).green(),
             if success_count == 1 { "" } else { "s" },
-            crate::timing::elapsed_suffix(elapsed)
+            crate::ui::elapsed_suffix(elapsed)
         );
     }
 

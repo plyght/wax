@@ -351,6 +351,7 @@ impl TapManager {
             WaxError::TapError("Cannot clone tap without a valid URL".to_string())
         })?;
         debug!("Cloning tap from {}", url);
+        Self::validate_clone_url(&url)?;
 
         let output = tokio::process::Command::new("git")
             .arg("clone")
@@ -448,6 +449,50 @@ impl TapManager {
 
     pub async fn has_tap(&self, tap_name: &str) -> bool {
         self.taps.contains_key(tap_name)
+    }
+
+    pub fn is_tap_trusted(&self, tap_name: &str) -> bool {
+        self.taps
+            .get(tap_name)
+            .is_some_and(|tap| tap.trusted)
+    }
+
+    /// Allowed remote hosts for `git clone` tap sources.
+    fn is_allowed_clone_host(host: &str) -> bool {
+        matches!(
+            host,
+            "github.com" | "gitlab.com" | "codeberg.org" | "bitbucket.org"
+        )
+    }
+
+    /// Reject tap clone URLs outside the trusted host allowlist.
+    pub fn validate_clone_url(url: &str) -> Result<()> {
+        if url.starts_with("file://") {
+            return Ok(());
+        }
+
+        let host = if let Some(rest) = url.strip_prefix("git@") {
+            rest.split(':').next().unwrap_or("").to_string()
+        } else if let Ok(parsed) = reqwest::Url::parse(url) {
+            if parsed.scheme() != "https" {
+                return Err(WaxError::TapError(format!(
+                    "Insecure tap URL scheme '{}'; use https:// or git@",
+                    parsed.scheme()
+                )));
+            }
+            parsed.host_str().unwrap_or("").to_string()
+        } else {
+            return Err(WaxError::TapError(format!("Invalid tap URL: {}", url)));
+        };
+
+        if Self::is_allowed_clone_host(&host) {
+            Ok(())
+        } else {
+            Err(WaxError::TapError(format!(
+                "Tap host '{}' is not in the allowlist (github.com, gitlab.com, codeberg.org, bitbucket.org)",
+                host
+            )))
+        }
     }
 
     #[instrument(skip(self))]

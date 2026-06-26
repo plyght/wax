@@ -1,10 +1,12 @@
 mod api;
+mod http_client;
 mod bottle;
 mod builder;
 mod cache;
 mod cask;
 mod commands;
 mod deps;
+mod digest;
 mod discovery;
 mod error;
 mod formula_parser;
@@ -14,7 +16,6 @@ mod signal;
 mod sudo;
 mod system_pm;
 mod tap;
-mod timing;
 mod ui;
 mod version;
 
@@ -85,7 +86,36 @@ fn command_prints_timing(command: &Commands) -> bool {
     )
 }
 
+const REFRESH_DEBOUNCE_SECS: u64 = 60;
+
 async fn refresh_state_in_child_process() {
+    let Ok(cache_dir) = ui::dirs::wax_cache_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let lock_path = cache_dir.join(".refresh_state.lock");
+
+    if let Ok(meta) = std::fs::metadata(&lock_path) {
+        if let Ok(modified) = meta.modified() {
+            if let Ok(age) = modified.elapsed() {
+                if age.as_secs() < REFRESH_DEBOUNCE_SECS {
+                    return;
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    let Ok(mut lock) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    else {
+        return;
+    };
+    use std::io::Write;
+    let _ = writeln!(lock, "{}", std::process::id());
+
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
@@ -654,7 +684,7 @@ async fn run() -> Result<()> {
     let command_prints_own_timing = command_prints_timing(&command);
     let api_client = ApiClient::new();
     let cache = Cache::new()?;
-    timing::set_enabled(cli.time_to_action);
+    ui::set_timing_enabled(cli.time_to_action);
 
     let result = match command {
         Commands::Update {

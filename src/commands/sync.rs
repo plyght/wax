@@ -94,7 +94,7 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         } else {
             "packages/casks"
         },
-        crate::timing::elapsed_suffix(elapsed)
+        crate::ui::elapsed_suffix(elapsed)
     );
 
     Ok(())
@@ -396,10 +396,9 @@ async fn download_and_extract_packages(
         tasks.push(task);
     }
 
-    let results = futures::future::join_all(tasks).await;
-
     let mut extracted_packages = Vec::new();
-    for result in results {
+    for result in tasks {
+        let result = result.await;
         match result {
             Ok(Ok(data)) => extracted_packages.push(data),
             Ok(Err(e)) => return Err(e),

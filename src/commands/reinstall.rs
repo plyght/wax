@@ -176,7 +176,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
                     .unwrap_or("latest")
             )
             .dim(),
-            style(crate::timing::elapsed_suffix(pkg_start.elapsed())).dim(),
+            style(crate::ui::elapsed_suffix(pkg_start.elapsed())).dim(),
         );
     }
 
@@ -184,7 +184,7 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
         "\n{} {} reinstalled{}",
         style(total).bold(),
         if total == 1 { "package" } else { "packages" },
-        crate::timing::elapsed_suffix(start.elapsed())
+        crate::ui::elapsed_suffix(start.elapsed())
     );
 
     Ok(())

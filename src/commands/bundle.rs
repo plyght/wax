@@ -423,7 +423,7 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
             "{} installed, {} skipped{}",
             style(success).green(),
             style(skipped).dim(),
-            crate::timing::elapsed_suffix(elapsed)
+            crate::ui::elapsed_suffix(elapsed)
         );
     } else {
         println!(
@@ -431,7 +431,7 @@ pub async fn bundle(cache: &Cache, waxfile_path: Option<&str>, dry_run: bool) ->
             style(success).green(),
             style(failed).red(),
             style(skipped).dim(),
-            crate::timing::elapsed_suffix(elapsed)
+            crate::ui::elapsed_suffix(elapsed)
         );
     }
 

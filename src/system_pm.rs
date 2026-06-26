@@ -282,10 +282,7 @@ impl SystemPm {
             ext
         );
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(600))
-            .build()
-            .map_err(|e| WaxError::InstallError(format!("HTTP client: {}", e)))?;
+        let client = crate::http_client::download();
 
         let response = client
             .get(url)

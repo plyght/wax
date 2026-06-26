@@ -14,12 +14,8 @@ use std::sync::OnceLock;
 use tempfile::TempDir;
 use tracing::debug;
 
-fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .user_agent(concat!("wax/", env!("CARGO_PKG_VERSION"), " (chocolatey)"))
-        .build()
-        .map_err(|e| WaxError::InstallError(e.to_string()))
+fn client() -> &'static reqwest::Client {
+    crate::http_client::default_client()
 }
 
 static SEARCH_RE: OnceLock<Regex> = OnceLock::new();
@@ -33,7 +29,7 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
         "https://community.chocolatey.org/packages?q={}",
         urlencoding::encode(query)
     );
-    let html = client()?.get(&url).send().await?.text().await?;
+    let html = client().get(&url).send().await?.text().await?;
     let re = SEARCH_RE.get_or_init(|| {
         Regex::new(r##"href="/packages/([^"#?]+)"##).expect("Invalid regex in chocolatey search")
     });
@@ -53,11 +49,8 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
 
 #[cfg(target_os = "windows")]
 pub async fn package_exists(id: &str) -> bool {
-    let Ok(c) = client() else {
-        return false;
-    };
     let url = format!("https://community.chocolatey.org/api/v2/package/{}", id);
-    match c.head(&url).send().await {
+    match client().head(&url).send().await {
         Ok(r) => r.status().is_success(),
         Err(_) => false,
     }

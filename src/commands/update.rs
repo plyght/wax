@@ -139,7 +139,7 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
             style(cask_count).cyan(),
             style(tap_count).cyan(),
             if tap_count == 1 { "tap" } else { "taps" },
-            crate::timing::elapsed_suffix(elapsed)
+            crate::ui::elapsed_suffix(elapsed)
         );
     } else {
         println!(
@@ -148,7 +148,7 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
             core_status,
             style(formula_count).cyan(),
             style(cask_count).cyan(),
-            crate::timing::elapsed_suffix(elapsed)
+            crate::ui::elapsed_suffix(elapsed)
         );
     }
 

@@ -4,11 +4,14 @@ use crate::signal;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
 static SUDO_VALIDATED: AtomicBool = AtomicBool::new(false);
+static SUDO_VALIDATED_AT: AtomicU64 = AtomicU64::new(0);
+const SUDO_CACHE_TTL_SECS: u64 = 15 * 60;
 static IS_ROOT: OnceLock<bool> = OnceLock::new();
 
 pub fn is_permission_error(err: &WaxError) -> bool {
@@ -50,9 +53,41 @@ pub fn is_running_as_root() -> bool {
     })
 }
 
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn sudo_cache_expired() -> bool {
+    if !SUDO_VALIDATED.load(Ordering::SeqCst) {
+        return true;
+    }
+    let validated_at = SUDO_VALIDATED_AT.load(Ordering::SeqCst);
+    if validated_at == 0 {
+        return false;
+    }
+    now_unix_secs().saturating_sub(validated_at) > SUDO_CACHE_TTL_SECS
+}
+
+fn mark_sudo_validated() {
+    SUDO_VALIDATED.store(true, Ordering::SeqCst);
+    SUDO_VALIDATED_AT.store(now_unix_secs(), Ordering::SeqCst);
+}
+
+fn clear_sudo_validated() {
+    SUDO_VALIDATED.store(false, Ordering::SeqCst);
+    SUDO_VALIDATED_AT.store(0, Ordering::SeqCst);
+}
+
 pub fn has_sudo_cached() -> bool {
     if SUDO_VALIDATED.load(Ordering::SeqCst) {
-        return true;
+        if sudo_cache_expired() {
+            clear_sudo_validated();
+        } else {
+            return true;
+        }
     }
 
     let cached = Command::new("sudo")
@@ -64,7 +99,7 @@ pub fn has_sudo_cached() -> bool {
         .unwrap_or(false);
 
     if cached {
-        SUDO_VALIDATED.store(true, Ordering::SeqCst);
+        mark_sudo_validated();
     }
     cached
 }
@@ -153,7 +188,7 @@ pub fn acquire_sudo_for(reason: Option<&str>) -> Result<()> {
             ));
         }
 
-        SUDO_VALIDATED.store(true, Ordering::SeqCst);
+        mark_sudo_validated();
         debug!("sudo credentials acquired");
         Ok(())
     })
@@ -307,6 +342,7 @@ mod tests {
     use super::{
         acquire_sudo_for, is_file_exists_error, is_permission_error, is_running_as_root,
         normalize_path, sudo_copy, sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED,
+        SUDO_VALIDATED_AT,
     };
     use crate::error::WaxError;
     use std::io::{Error, ErrorKind};
@@ -498,6 +534,7 @@ fi
     struct EnvGuard {
         original_path: std::ffi::OsString,
         original_sudo_state: bool,
+        original_sudo_validated_at: u64,
         original_mock_terminal: bool,
     }
 
@@ -506,6 +543,7 @@ fi
             Self {
                 original_path: std::env::var_os("PATH").unwrap_or_default(),
                 original_sudo_state: SUDO_VALIDATED.load(Ordering::SeqCst),
+                original_sudo_validated_at: SUDO_VALIDATED_AT.load(Ordering::SeqCst),
                 original_mock_terminal: MOCK_INTERACTIVE_TERMINAL.load(Ordering::SeqCst),
             }
         }
@@ -515,6 +553,7 @@ fi
         fn drop(&mut self) {
             std::env::set_var("PATH", &self.original_path);
             SUDO_VALIDATED.store(self.original_sudo_state, Ordering::SeqCst);
+            SUDO_VALIDATED_AT.store(self.original_sudo_validated_at, Ordering::SeqCst);
             MOCK_INTERACTIVE_TERMINAL.store(self.original_mock_terminal, Ordering::SeqCst);
         }
     }

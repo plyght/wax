@@ -39,7 +39,7 @@ pub async fn outdated(cache: &Cache, scope: Option<InstallMode>) -> Result<()> {
         "\n{} package{} can be upgraded{}",
         style(outdated.len()).cyan(),
         if outdated.len() == 1 { "" } else { "s" },
-        crate::timing::elapsed_suffix(elapsed)
+        crate::ui::elapsed_suffix(elapsed)
     );
 
     Ok(())

@@ -3,9 +3,44 @@ use crate::error::Result;
 use crate::tap::TapManager;
 use crate::ui::{create_spinner, dirs};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tracing::{debug, info, instrument};
+
+struct FormulaeIndexCache {
+    signature: u64,
+    formulae: Arc<Vec<Formula>>,
+}
+
+static FORMULAE_INDEX_CACHE: Mutex<Option<FormulaeIndexCache>> = Mutex::new(None);
+
+fn clear_formulae_index_cache() {
+    if let Ok(mut guard) = FORMULAE_INDEX_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+async fn formulae_index_signature(cache: &Cache, tap_names: &[String]) -> Result<u64> {
+    let mut hasher = DefaultHasher::new();
+    if let Ok(meta) = fs::metadata(cache.formulae_path()).await {
+        if let Ok(mtime) = meta.modified() {
+            mtime.hash(&mut hasher);
+        }
+    }
+    for tap_name in tap_names {
+        tap_name.hash(&mut hasher);
+        let path = cache.tap_cache_path(tap_name);
+        if let Ok(meta) = fs::metadata(&path).await {
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(&mut hasher);
+            }
+        }
+    }
+    Ok(hasher.finish())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMetadata {
@@ -156,6 +191,7 @@ impl Cache {
         self.ensure_cache_dir().await?;
         let json = serde_json::to_string(formulae)?;
         fs::write(self.formulae_path(), json).await?;
+        clear_formulae_index_cache();
         info!("Saved {} formulae to cache", formulae.len());
         Ok(())
     }
@@ -250,6 +286,7 @@ impl Cache {
             fs::remove_file(&path).await?;
             debug!("Invalidated tap cache for {}", tap_name);
         }
+        clear_formulae_index_cache();
         Ok(())
     }
 
@@ -259,14 +296,30 @@ impl Cache {
             fs::remove_dir_all(&taps_dir).await?;
             debug!("Invalidated all tap caches");
         }
+        clear_formulae_index_cache();
         Ok(())
     }
 
     pub async fn load_all_formulae(&self) -> Result<Vec<Formula>> {
-        let mut all = self.load_formulae().await?;
-
         let mut tap_manager = TapManager::new()?;
         tap_manager.load().await?;
+
+        let tap_names: Vec<String> = tap_manager
+            .trusted_taps()
+            .into_iter()
+            .map(|tap| tap.full_name.clone())
+            .collect();
+        let signature = formulae_index_signature(self, &tap_names).await?;
+        if let Ok(guard) = FORMULAE_INDEX_CACHE.lock() {
+            if let Some(cached) = guard.as_ref() {
+                if cached.signature == signature {
+                    debug!("Using in-process formulae index cache");
+                    return Ok((*cached.formulae).clone());
+                }
+            }
+        }
+
+        let mut all = self.load_formulae().await?;
 
         for tap in tap_manager.trusted_taps() {
             let tap_cache_path = self.tap_cache_path(&tap.full_name);
@@ -299,6 +352,13 @@ impl Cache {
             };
 
             all.extend(tap_formulae);
+        }
+
+        if let Ok(mut guard) = FORMULAE_INDEX_CACHE.lock() {
+            *guard = Some(FormulaeIndexCache {
+                signature,
+                formulae: Arc::new(all.clone()),
+            });
         }
 
         Ok(all)

@@ -94,12 +94,8 @@ pub async fn self_update(
 }
 
 pub async fn available_stable_update() -> Result<Option<String>> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| WaxError::SelfUpdateError(format!("HTTP client error: {e}")))?;
-
-    let latest_version = fetch_latest_crate_version(&client).await?;
+    let client = crate::http_client::api();
+    let latest_version = fetch_latest_crate_version(client).await?;
 
     if is_newer(CURRENT_VERSION, &latest_version) {
         Ok(Some(latest_version))
@@ -109,13 +105,9 @@ pub async fn available_stable_update() -> Result<Option<String>> {
 }
 
 async fn update_from_crates(force: bool) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| WaxError::SelfUpdateError(format!("HTTP client error: {e}")))?;
-
+    let client = crate::http_client::api();
     let spinner = create_spinner("Checking for updates…");
-    let latest_version = fetch_latest_crate_version(&client).await?;
+    let latest_version = fetch_latest_crate_version(client).await?;
     spinner.finish_and_clear();
 
     println!(
@@ -145,7 +137,7 @@ async fn update_from_crates(force: bool) -> Result<()> {
         style("cargo install waxpkg --bin wax --force").yellow()
     );
 
-    let mut args = vec!["install", "waxpkg", "--bin", "wax"];
+    let mut args = vec!["install", "waxpkg", "--bin", "wax", "--locked"];
     if force || is_newer(CURRENT_VERSION, &latest_version) {
         args.push("--force");
     }
