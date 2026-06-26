@@ -629,7 +629,7 @@ fn unlink_directory_recursive<'a>(
                     .await?;
                 }
             }
+            Ok(())
         }
-        Ok(())
     })
 }

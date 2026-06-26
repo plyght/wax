@@ -847,6 +847,7 @@ impl StagingContext {
     /// Returns the permanent on-disk directory for this cask version.
     /// For DMG installs the staging root is a temporary mount point; the parent
     /// is the actual version directory that survives after the image is detached.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn permanent_dir(&self) -> PathBuf {
         match &self.mount_point {
             Some(mp) => mp
@@ -857,6 +858,7 @@ impl StagingContext {
         }
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn is_mounted(&self) -> bool {
         self.mount_point.is_some()
     }

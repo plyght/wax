@@ -40,10 +40,10 @@ pub async fn install_one_qualified(
             install_forced(eco, &spec.name, dry_run).await?;
             return Ok(true);
         }
-        return Err(WaxError::FormulaNotFound(format!(
+        Err(WaxError::FormulaNotFound(format!(
             "no matching package '{}' in brew index, Scoop Main, winget-pkgs, or Chocolatey",
             spec.name
-        )));
+        )))
     }
 
     #[cfg(not(target_os = "windows"))]

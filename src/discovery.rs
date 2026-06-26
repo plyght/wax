@@ -687,12 +687,14 @@ fn parse_apk_inventory_lines(stdout: &[u8], package_names: &[String]) -> Vec<(St
         })
         .collect()
 }
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn system_time_to_unix_seconds(time: SystemTime) -> Option<i64> {
     time.duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs() as i64)
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn unix_seconds_now() -> i64 {
     system_time_to_unix_seconds(SystemTime::now()).unwrap_or(0)
 }

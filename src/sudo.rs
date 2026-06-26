@@ -274,6 +274,7 @@ pub fn sudo_mkdir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 pub fn sudo_symlink(src: &Path, dst: &Path) -> Result<()> {
     acquire_sudo()?;
     let src = normalize_path(src);
@@ -339,10 +340,11 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::is_running_as_root;
     use super::{
-        acquire_sudo_for, is_file_exists_error, is_permission_error, is_running_as_root,
-        normalize_path, sudo_copy, sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED,
-        SUDO_VALIDATED_AT,
+        acquire_sudo_for, is_file_exists_error, is_permission_error, normalize_path, sudo_copy,
+        sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED, SUDO_VALIDATED_AT,
     };
     use crate::error::WaxError;
     use std::io::{Error, ErrorKind};

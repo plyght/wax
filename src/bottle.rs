@@ -739,8 +739,8 @@ impl BottleDownloader {
         }
 
         let mut content = content;
-        let metadata = std::fs::metadata(path)?;
-        let original_permissions = metadata.permissions();
+        #[cfg(unix)]
+        let original_permissions = std::fs::metadata(path)?.permissions();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -789,8 +789,8 @@ impl BottleDownloader {
             return Ok(());
         };
 
-        let metadata = std::fs::metadata(path)?;
-        let original_permissions = metadata.permissions();
+        #[cfg(unix)]
+        let original_permissions = std::fs::metadata(path)?.permissions();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
