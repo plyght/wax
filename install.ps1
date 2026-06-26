@@ -3,7 +3,7 @@
 # From clone: .\install.ps1
 # Force release binary in clone: $env:WAX_USE_RELEASE = '1'; .\install.ps1
 #
-# Note: #Requires cannot be used here — it breaks Invoke-Expression (iex) pipelines.
+# Note: #Requires cannot be used here - it breaks Invoke-Expression (iex) pipelines.
 
 $ErrorActionPreference = 'Stop'
 
@@ -82,12 +82,8 @@ function Install-FromRelease {
         $version = $rel.tag_name
         $assetNames = @($rel.assets | ForEach-Object { $_.name })
         if ($assetNames -notcontains $asset) {
-            throw (
-                'Latest release ({0}) has no Windows binary ({1}). ' +
-                'Available: {2}. Clone https://github.com/plyght/wax and run .\install.ps1 to build locally, ' +
-                'or set WAX_VERSION to a release that includes Windows assets.'
-                -f $version, $asset, ($assetNames -join ', ')
-            )
+            $available = $assetNames -join ', '
+            throw ('Latest release ({0}) has no Windows binary ({1}). Available: {2}. Clone https://github.com/plyght/wax and run install.ps1 locally, or set WAX_VERSION to a release with Windows assets.' -f $version, $asset, $available)
         }
     }
     if ($version -notmatch '^v') {
@@ -103,12 +99,8 @@ function Install-FromRelease {
         try {
             Invoke-WebRequest -Uri $exeUri -OutFile $tmp -UseBasicParsing
         } catch {
-            throw (
-                'Failed to download {0} from {1}. ' +
-                'If this release predates Windows builds, clone the repo and run .\install.ps1 locally. ' +
-                'Original error: {2}'
-                -f $asset, $exeUri, $_.Exception.Message
-            )
+            $dlErr = $_.Exception.Message
+            throw ('Failed to download {0} from {1}. Clone the repo and run install.ps1 locally, or set WAX_VERSION. Error: {2}' -f $asset, $exeUri, $dlErr)
         }
 
         $expected = $null
@@ -141,7 +133,7 @@ function Install-FromRelease {
     }
 }
 
-# iex/irm has no $PSScriptRoot — never Join-Path or Test-Path on an empty root.
+# iex/irm has no $PSScriptRoot - never Join-Path or Test-Path on an empty root.
 $repoRoot = $PSScriptRoot
 $invokedAsFile = $PSCommandPath -and ((Split-Path -Leaf $PSCommandPath) -eq 'install.ps1')
 $useLocalBuild = $false
