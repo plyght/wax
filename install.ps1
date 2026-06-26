@@ -47,15 +47,74 @@ function Install-FromRepo {
     $dest = Join-Path $installDir 'wax.exe'
     Copy-Item -LiteralPath $built -Destination $dest -Force
     Write-Host ('Installed to {0}' -f $dest)
-    Hint-Path
+    Ensure-WaxPath
 }
 
-function Hint-Path {
-    $dirs = ($env:PATH -split ';' | ForEach-Object { $_.TrimEnd('\') })
-    if ($installDir -notin $dirs) {
-        Write-Host ''
-        Write-Host 'Add this folder to your user PATH if wax.exe is not found:'
-        Write-Host ('  {0}' -f $installDir)
+function Show-WaxPathInstructions {
+    $dir = $installDir.TrimEnd('\')
+    Write-Host ''
+    Write-Host 'wax.exe is installed but not on your PATH. Add this folder:'
+    Write-Host ('  {0}' -f $dir)
+    Write-Host ''
+    Write-Host 'Windows 11 / 10 (Settings):'
+    Write-Host '  1. Press Win, search "environment variables"'
+    Write-Host '  2. Open "Edit environment variables for your account"'
+    Write-Host '  3. Select Path -> Edit -> New'
+    Write-Host ('  4. Paste: {0}' -f $dir)
+    Write-Host '  5. OK, then open a new PowerShell window'
+    Write-Host ''
+    Write-Host 'PowerShell (permanent, current user):'
+    Write-Host ('  [Environment]::SetEnvironmentVariable(''Path'', [Environment]::GetEnvironmentVariable(''Path'',''User'') + '';' + $dir + ''', ''User'')')
+    Write-Host ''
+    Write-Host 'PowerShell (this session only):'
+    Write-Host ('  $env:PATH += '';' + $dir)
+    Write-Host ''
+    Write-Host 'Command Prompt (permanent, current user):'
+    Write-Host ('  setx PATH "%PATH%;{0}"' -f $dir)
+}
+
+function Ensure-WaxPath {
+    $dir = $installDir.TrimEnd('\')
+    $pathEntries = @($env:PATH -split ';' | ForEach-Object { $_.TrimEnd('\') })
+    if ($dir -in $pathEntries) {
+        return
+    }
+
+    $added = $false
+    try {
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if (-not $userPath) {
+            $userPath = ''
+        }
+        $userEntries = @($userPath -split ';' | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') })
+        if ($dir -notin $userEntries) {
+            $newUserPath = if ($userPath -and -not $userPath.EndsWith(';')) {
+                $userPath + ';' + $dir
+            } elseif ($userPath) {
+                $userPath + $dir
+            } else {
+                $dir
+            }
+            [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+            if ($env:PATH) {
+                $env:PATH = $env:PATH.TrimEnd(';') + ';' + $dir
+            } else {
+                $env:PATH = $dir
+            }
+            Write-Host ('Added {0} to your user PATH.' -f $dir)
+            $added = $true
+        }
+    } catch {
+        Write-Warning ('Could not update user PATH automatically: {0}' -f $_.Exception.Message)
+    }
+
+    if ($added) {
+        if (-not (Get-Command wax -ErrorAction SilentlyContinue)) {
+            Write-Host 'Open a new terminal, or run this in the current session:'
+            Write-Host ('  $env:PATH += '';' + $dir)
+        }
+    } else {
+        Show-WaxPathInstructions
     }
 }
 
@@ -119,13 +178,17 @@ function Install-FromRelease {
             throw ('Failed to download {0} from {1}. Clone the repo and run install.ps1 locally, or set WAX_VERSION. Error: {2}' -f $asset, $exeUri, $dlErr)
         }
 
+        $shaUri = ('{0}/{1}.sha256' -f $base, $asset)
         $expected = $null
         try {
-            $shaUri = ('{0}/{1}.sha256' -f $base, $asset)
             $raw = (Invoke-WebRequest -Uri $shaUri -UseBasicParsing).Content.Trim()
             $expected = ($raw -split '\s+')[0]
         } catch {
-            Write-Warning ('No .sha256 file for {0} - skipping integrity check' -f $version)
+            if ($env:WAX_NO_VERIFY -eq '1') {
+                Write-Warning ('WAX_NO_VERIFY=1 set - installing {0} without checksum verification' -f $version)
+            } else {
+                throw ('No checksum file at {0}. Set WAX_NO_VERIFY=1 to install without verification, or use a release that publishes .sha256 sidecars.' -f $shaUri)
+            }
         }
 
         if ($expected) {
@@ -141,7 +204,7 @@ function Install-FromRelease {
         Move-Item -LiteralPath $tmp -Destination $dest -Force
         Write-Host ('Installed to {0}' -f $dest)
 
-        Hint-Path
+        Ensure-WaxPath
     } finally {
         if ($tmp -and (Test-Path -LiteralPath $tmp)) {
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue

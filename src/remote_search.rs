@@ -62,11 +62,13 @@ fn match_score_token(name: &str, query: &str) -> Option<i32> {
 
 async fn load_or_fetch_scoop_index(cache_dir: &std::path::Path) -> Result<Vec<String>> {
     let path: PathBuf = cache_dir.join(SCOOP_INDEX_CACHE);
-    if let Ok(text) = tokio::fs::read_to_string(&path).await {
-        if let Ok(idx) = serde_json::from_str::<ScoopIndexFile>(&text) {
-            if now_unix() - idx.fetched_unix < SCOOP_INDEX_MAX_AGE_SECS {
-                return Ok(idx.names);
-            }
+    let stale = tokio::fs::read_to_string(&path)
+        .await
+        .ok()
+        .and_then(|text| serde_json::from_str::<ScoopIndexFile>(&text).ok());
+    if let Some(idx) = &stale {
+        if now_unix() - idx.fetched_unix < SCOOP_INDEX_MAX_AGE_SECS {
+            return Ok(idx.names.clone());
         }
     }
 
@@ -78,6 +80,13 @@ async fn load_or_fetch_scoop_index(cache_dir: &std::path::Path) -> Result<Vec<St
         .send()
         .await?;
     if !resp.status().is_success() {
+        if let Some(idx) = stale {
+            debug!(
+                "Using stale Scoop index after GitHub API HTTP {}",
+                resp.status()
+            );
+            return Ok(idx.names.clone());
+        }
         return Err(crate::error::WaxError::InstallError(format!(
             "Scoop index GitHub API: HTTP {}",
             resp.status()

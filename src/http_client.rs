@@ -1,5 +1,6 @@
 //! Shared `reqwest` clients to avoid per-call TLS handshakes and builder overhead.
 
+use crate::version::WAX_VERSION;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -7,8 +8,14 @@ static API_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static DOWNLOAD_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static DEFAULT_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+fn user_agent() -> String {
+    format!("waxpkg/{WAX_VERSION} (https://github.com/plyght/wax)")
+}
+
 fn build_client(timeout: Duration, compress: bool) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder().timeout(timeout);
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent(user_agent());
     if compress {
         builder = builder.gzip(true).brotli(true);
     } else {
