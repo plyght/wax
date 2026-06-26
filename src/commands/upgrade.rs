@@ -12,7 +12,10 @@ use crate::signal::{
     CriticalSection,
 };
 use crate::tap::TapManager;
-use crate::ui::{confirm_prompt, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
+use crate::ui::{
+    confirm_prompt, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
+    SPINNER_TICK_CHARS,
+};
 use crate::version::{is_same_or_newer, WAX_VERSION};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -47,6 +50,7 @@ enum FormulaUpgradeMsg {
     Ready {
         pkg: OutdatedPackage,
         pre: PreDownloaded,
+        bar: ProgressBar,
     },
     Fallback(OutdatedPackage),
     DownloadFailed {
@@ -249,11 +253,13 @@ fn cask_failed_names_from_error(err: &WaxError) -> HashSet<String> {
         .unwrap_or_default()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn apply_one_formula_package_upgrade(
     cache: &Cache,
     multi: &MultiProgress,
     pkg: &OutdatedPackage,
     pre: Option<PreDownloaded>,
+    install_bar: Option<ProgressBar>,
     install_mode_global: InstallMode,
     platform: &str,
     install_state: &InstallState,
@@ -287,14 +293,20 @@ async fn apply_one_formula_package_upgrade(
             if let Some(dl) = pre {
                 let pkg_install_mode = pkg.install_mode.unwrap_or(install_mode_global);
                 let pkg_cellar = pkg_install_mode.cellar_path()?;
-                let install_pb = multi.insert_from_back(1, ProgressBar::new_spinner());
-                install_pb.set_style(
-                    ProgressStyle::default_spinner()
-                        .template("{spinner:.cyan} {msg}")
-                        .unwrap()
-                        .tick_chars(SPINNER_TICK_CHARS),
-                );
-                install_pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                let install_pb = if let Some(bar) = install_bar {
+                    install::reuse_download_bar_as_install_spinner(&bar, &dl.name);
+                    bar
+                } else {
+                    let install_pb = multi.insert_from_back(1, ProgressBar::new_spinner());
+                    install_pb.set_style(
+                        ProgressStyle::default_spinner()
+                            .template("{spinner:.cyan} {msg}")
+                            .unwrap()
+                            .tick_chars(SPINNER_TICK_CHARS),
+                    );
+                    install_pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                    install_pb
+                };
                 let r = install::install_extracted_bottle(
                     &dl.name,
                     &dl.version,
@@ -563,10 +575,12 @@ async fn upgrade_all(
         Some(tokio::spawn(async move {
             loop {
                 if hide.load(Ordering::Relaxed) {
+                    pb.finish_and_clear();
                     return;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 if hide.load(Ordering::Relaxed) {
+                    pb.finish_and_clear();
                     return;
                 }
                 let pos = totals.downloaded.load(Ordering::Relaxed);
@@ -592,12 +606,28 @@ async fn upgrade_all(
     let poller_task = update_formula_totals;
     let overall_pb_done = overall_formula_pb.clone();
 
+    let formula_download_bars: HashMap<String, ProgressBar> = formula_packages
+        .iter()
+        .map(|pkg| {
+            let pb = multi.add(ProgressBar::new(0));
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(PROGRESS_BAR_PREFIX_TEMPLATE)
+                    .unwrap()
+                    .progress_chars(PROGRESS_BAR_CHARS),
+            );
+            pb.set_prefix(pkg.name.clone());
+            (pkg.name.clone(), pb)
+        })
+        .collect();
+
     let connection_map_for_producer = upgrade_connections_map.clone();
     let producer_tx = tx.clone();
     let formula_packages_for_producer = formula_packages.clone();
     let upgrade_formulae_for_producer = Arc::clone(&upgrade_formulae);
     let platform_for_producer = platform.clone();
     let multi_for_producer = multi.clone();
+    let formula_download_bars_for_producer = formula_download_bars.clone();
     let producer_handle = tokio::spawn(async move {
         let mut producer_js: JoinSet<std::result::Result<(), WaxError>> = JoinSet::new();
         for pkg in formula_packages_for_producer.iter().cloned() {
@@ -642,6 +672,10 @@ async fn upgrade_all(
             let name = pkg.name.clone();
             let version = formula.versions.stable.clone();
             let rebuild = formula.bottle_rebuild();
+            let pb = formula_download_bars_for_producer
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| multi_ref.add(ProgressBar::new(0)));
 
             producer_js.spawn(async move {
                 let task_name = name.clone();
@@ -650,19 +684,10 @@ async fn upgrade_all(
                     crate::signal::check_cancelled()?;
 
                     let tarball = tmp.path().join(format!("{}-{}.tar.gz", name, version));
-                    let pb = multi_ref.insert_from_back(1, ProgressBar::new(0));
-                    pb.set_style(
-                        ProgressStyle::default_bar()
-                            .template(PROGRESS_BAR_TEMPLATE)
-                            .unwrap()
-                            .progress_chars(PROGRESS_BAR_CHARS),
-                    );
-                    pb.set_message(name.clone());
 
                     let download_result = dl
                         .download(&url, &tarball, Some(&pb), conns, Some(totals.as_ref()))
                         .await;
-                    pb.finish_and_clear();
                     download_result?;
 
                     drop(permit);
@@ -685,7 +710,9 @@ async fn upgrade_all(
 
                 match inner {
                     Ok(pre) => {
-                        let _ = tx.send(FormulaUpgradeMsg::Ready { pkg, pre }).await;
+                        let _ = tx
+                            .send(FormulaUpgradeMsg::Ready { pkg, pre, bar: pb })
+                            .await;
                     }
                     Err(e) => {
                         let _ = tx
@@ -749,6 +776,7 @@ async fn upgrade_all(
                             &multi,
                             &pkg,
                             None,
+                            None,
                             install_mode_global,
                             &platform,
                             &install_state,
@@ -777,12 +805,13 @@ async fn upgrade_all(
                             }
                         }
                     }
-                    FormulaUpgradeMsg::Ready { pkg, pre } => {
+                    FormulaUpgradeMsg::Ready { pkg, pre, bar } => {
                         match apply_one_formula_package_upgrade(
                             &cache,
                             &multi,
                             &pkg,
                             Some(pre),
+                            Some(bar),
                             install_mode_global,
                             &platform,
                             &install_state,
@@ -913,9 +942,14 @@ async fn upgrade_all(
         }
     };
 
-    let ((mut success_count, mut fail_count, mut failed_names), (c_succ, c_fail, c_failed)) = {
+    let (mut success_count, mut fail_count, mut failed_names) = {
         let _critical = CriticalSection::new();
-        tokio::try_join!(formula_stats, cask_fut)?
+        formula_stats.await?
+    };
+
+    let (c_succ, c_fail, c_failed) = {
+        let _critical = CriticalSection::new();
+        cask_fut.await?
     };
     success_count += c_succ;
     fail_count += c_fail;

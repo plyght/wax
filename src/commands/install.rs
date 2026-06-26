@@ -1622,7 +1622,7 @@ enum CaskPipelineFail {
     Install { name: String, err: WaxError },
 }
 
-fn reuse_download_bar_as_install_spinner(pb: &ProgressBar, prefix: &str) {
+pub(crate) fn reuse_download_bar_as_install_spinner(pb: &ProgressBar, prefix: &str) {
     pb.disable_steady_tick();
     pb.reset();
     pb.set_style(

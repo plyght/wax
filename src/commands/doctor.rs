@@ -1451,7 +1451,6 @@ fn check_invalid_signatures(fix: bool) -> DiagResult {
     d
 }
 
-
 fn check_tools(fix: bool) -> DiagResult {
     let mut d = DiagResult::new(fix);
     let tools: &[(&str, &[&str], &str)] = &[

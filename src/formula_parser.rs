@@ -329,10 +329,23 @@ impl FormulaParser {
             .collect()
     }
 
+    fn extract_dir_first_assignments(
+        install_block: &str,
+    ) -> std::collections::HashMap<String, String> {
+        let re = Regex::new(r#"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*Dir\["([^"]+)"\]\.first"#)
+            .unwrap();
+        re.captures_iter(install_block)
+            .map(|c| (c[1].to_string(), c[2].to_string()))
+            .collect()
+    }
+
     pub(crate) fn extract_bin_install_targets(install_block: &str) -> Vec<BinInstall> {
         let re = Regex::new(r#"bin\.install\s+"([^"]+)"(?:\s*=>\s*"([^"]+)")?"#).unwrap();
         let dir_re =
             Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap();
+        let var_re =
+            Regex::new(r#"bin\.install\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*=>\s*"([^"]+)")?"#).unwrap();
+        let dir_vars = Self::extract_dir_first_assignments(install_block);
         let mut targets: Vec<BinInstall> = Vec::new();
         for line in install_block.lines() {
             targets.extend(re.captures_iter(line).map(|c| {
@@ -361,6 +374,19 @@ impl FormulaParser {
                     optional: line.contains("if File.exist?"),
                     source,
                 }
+            }));
+            targets.extend(var_re.captures_iter(line).filter_map(|c| {
+                let var = c[1].to_string();
+                let glob = dir_vars.get(&var)?.clone();
+                let destination = c
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| var.clone());
+                Some(BinInstall {
+                    destination,
+                    optional: line.contains("if File.exist?"),
+                    source: glob,
+                })
             }));
         }
         targets
@@ -831,6 +857,18 @@ end
         let bins = FormulaParser::extract_bin_install_targets(install_block);
         assert_eq!(bins[0].source, "amp-*");
         assert_eq!(bins[0].destination, "amp");
+    }
+
+    #[test]
+    fn extract_bin_install_targets_resolves_dir_first_variable() {
+        let install_block = r#"
+    binary = Dir["folk-around-*"].first || "folk-around"
+    bin.install binary => "folk-around"
+"#;
+        let bins = FormulaParser::extract_bin_install_targets(install_block);
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].source, "folk-around-*");
+        assert_eq!(bins[0].destination, "folk-around");
     }
 
     #[test]

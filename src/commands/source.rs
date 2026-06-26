@@ -11,7 +11,6 @@ fn is_safe_url(url_str: &str) -> bool {
     }
 }
 
-
 #[instrument(skip(cache))]
 pub async fn source(cache: &Cache, formula_name: &str) -> Result<()> {
     cache.ensure_fresh().await?;
