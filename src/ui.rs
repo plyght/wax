@@ -162,17 +162,19 @@ pub mod dirs {
     use std::path::PathBuf;
 
     pub fn home_dir() -> Result<PathBuf> {
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            return Ok(home);
+        }
+
         #[cfg(windows)]
         if let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
             return Ok(home);
         }
 
-        std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
-            WaxError::InstallError(
-                "Home directory is not set ($HOME or USERPROFILE). Cannot determine home directory."
-                    .to_string(),
-            )
-        })
+        Err(WaxError::InstallError(
+            "Home directory is not set ($HOME or USERPROFILE). Cannot determine home directory."
+                .to_string(),
+        ))
     }
 
     /// Central wax data directory: ~/.wax
@@ -194,7 +196,6 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
-    use std::path::PathBuf;
     use std::sync::Mutex;
     use tempfile::tempdir;
 
@@ -212,30 +213,36 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
 
         let original_home = env::var_os("HOME");
-        let dummy_home = "/tmp/wax_test_home";
-        env::set_var("HOME", dummy_home);
+        #[cfg(windows)]
+        let original_userprofile = env::var_os("USERPROFILE");
+        let dummy_home = tempdir().unwrap().path().to_path_buf();
+        env::set_var("HOME", &dummy_home);
+        #[cfg(windows)]
+        env::remove_var("USERPROFILE");
 
-        assert_eq!(dirs::home_dir().unwrap(), PathBuf::from(dummy_home));
-        assert_eq!(
-            dirs::wax_dir().unwrap(),
-            PathBuf::from(dummy_home).join(".wax")
-        );
+        assert_eq!(dirs::home_dir().unwrap(), dummy_home);
+        assert_eq!(dirs::wax_dir().unwrap(), dummy_home.join(".wax"));
         assert_eq!(
             dirs::wax_cache_dir().unwrap(),
-            PathBuf::from(dummy_home).join(".wax/cache")
+            dummy_home.join(".wax/cache")
         );
-        assert_eq!(
-            dirs::wax_logs_dir().unwrap(),
-            PathBuf::from(dummy_home).join(".wax/logs")
-        );
+        assert_eq!(dirs::wax_logs_dir().unwrap(), dummy_home.join(".wax/logs"));
 
         env::remove_var("HOME");
+        #[cfg(windows)]
+        env::remove_var("USERPROFILE");
         assert!(dirs::home_dir().is_err());
 
         if let Some(h) = original_home {
             env::set_var("HOME", h);
         } else {
             env::remove_var("HOME");
+        }
+        #[cfg(windows)]
+        if let Some(p) = original_userprofile {
+            env::set_var("USERPROFILE", p);
+        } else {
+            env::remove_var("USERPROFILE");
         }
     }
 
