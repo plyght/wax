@@ -586,8 +586,10 @@ fn unlink_directory_recursive<'a>(
         #[cfg(not(unix))]
         {
             let _ = (source_dir, target_dir, formula_path, dry_run, removed_links);
-            return Ok(());
         }
+
+        #[cfg(not(unix))]
+        return Ok(());
 
         #[cfg(unix)]
         {
