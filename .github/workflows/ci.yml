@@ -35,4 +35,11 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        shell: bash
+        run: |
+          # CLI integration tests assume Unix cellar layout; Windows runs unit tests only.
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            cargo test --bin wax
+          else
+            cargo test
+          fi
