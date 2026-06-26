@@ -15,6 +15,9 @@ if ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -
 }
 
 $Repo = 'plyght/wax'
+if (-not $env:USERPROFILE) {
+    throw 'USERPROFILE is not set; cannot determine install directory.'
+}
 $installDir = if ($env:WAX_INSTALL_DIR) {
     $env:WAX_INSTALL_DIR
 } else {
@@ -23,6 +26,9 @@ $installDir = if ($env:WAX_INSTALL_DIR) {
 
 function Install-FromRepo {
     param([string]$Root)
+    if (-not $Root) {
+        throw 'Install-FromRepo: root path is empty.'
+    }
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         throw 'cargo not in PATH - install Rust from https://rustup.rs/ or set WAX_USE_RELEASE=1 to download a release binary.'
     }
@@ -74,6 +80,15 @@ function Install-FromRelease {
         $releaseUri = ('https://api.github.com/repos/{0}/releases/latest' -f $Repo)
         $rel = Invoke-RestMethod -Uri $releaseUri -Headers @{ 'User-Agent' = 'wax-install-ps1' }
         $version = $rel.tag_name
+        $assetNames = @($rel.assets | ForEach-Object { $_.name })
+        if ($assetNames -notcontains $asset) {
+            throw (
+                'Latest release ({0}) has no Windows binary ({1}). ' +
+                'Available: {2}. Clone https://github.com/plyght/wax and run .\install.ps1 to build locally, ' +
+                'or set WAX_VERSION to a release that includes Windows assets.'
+                -f $version, $asset, ($assetNames -join ', ')
+            )
+        }
     }
     if ($version -notmatch '^v') {
         $version = 'v' + $version
@@ -85,7 +100,16 @@ function Install-FromRelease {
     try {
         Write-Host ('Installing wax {0} ({1}) from GitHub Releases...' -f $version, $archLabel)
         $exeUri = ('{0}/{1}' -f $base, $asset)
-        Invoke-WebRequest -Uri $exeUri -OutFile $tmp -UseBasicParsing
+        try {
+            Invoke-WebRequest -Uri $exeUri -OutFile $tmp -UseBasicParsing
+        } catch {
+            throw (
+                'Failed to download {0} from {1}. ' +
+                'If this release predates Windows builds, clone the repo and run .\install.ps1 locally. ' +
+                'Original error: {2}'
+                -f $asset, $exeUri, $_.Exception.Message
+            )
+        }
 
         $expected = $null
         try {
@@ -111,30 +135,30 @@ function Install-FromRelease {
 
         Hint-Path
     } finally {
-        if (Test-Path -LiteralPath $tmp) {
+        if ($tmp -and (Test-Path -LiteralPath $tmp)) {
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
         }
     }
 }
 
+# iex/irm has no $PSScriptRoot — never Join-Path or Test-Path on an empty root.
 $repoRoot = $PSScriptRoot
-$invokedAsThisScript = $PSCommandPath -and ((Split-Path -Leaf $PSCommandPath) -eq 'install.ps1')
+$invokedAsFile = $PSCommandPath -and ((Split-Path -Leaf $PSCommandPath) -eq 'install.ps1')
+$useLocalBuild = $false
 
-$cargoTomlPath = Join-Path $repoRoot 'Cargo.toml'
-$cargoTomlIsWaxpkg = $false
-if (Test-Path -LiteralPath $cargoTomlPath) {
-    $tomlRaw = Get-Content -LiteralPath $cargoTomlPath -Raw
-    $q = [char]34
-    $needle = [string]::Concat('name = ', $q, 'waxpkg', $q)
-    $cargoTomlIsWaxpkg = $tomlRaw.IndexOf($needle, [System.StringComparison]::Ordinal) -ge 0
+if ($invokedAsFile -and $repoRoot -and ($env:WAX_USE_RELEASE -ne '1')) {
+    $cargoTomlPath = Join-Path $repoRoot 'Cargo.toml'
+    if (Test-Path -LiteralPath $cargoTomlPath) {
+        $tomlRaw = Get-Content -LiteralPath $cargoTomlPath -Raw
+        $q = [char]34
+        $needle = [string]::Concat('name = ', $q, 'waxpkg', $q)
+        if ($tomlRaw.IndexOf($needle, [System.StringComparison]::Ordinal) -ge 0) {
+            $useLocalBuild = $true
+        }
+    }
 }
 
-if (
-    $invokedAsThisScript -and
-    $repoRoot -and
-    ($env:WAX_USE_RELEASE -ne '1') -and
-    $cargoTomlIsWaxpkg
-) {
+if ($useLocalBuild) {
     Install-FromRepo -Root $repoRoot
 } else {
     Install-FromRelease
