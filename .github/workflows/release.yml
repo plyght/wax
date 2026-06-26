@@ -226,6 +226,20 @@ jobs:
             binary_name: wax
             asset_name: wax-macos-arm64
 
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            target: x86_64-pc-windows-msvc
+            binary_name: wax.exe
+            asset_name: wax-windows-x64.exe
+
+          - os: windows-latest
+            platform: windows
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+            binary_name: wax.exe
+            asset_name: wax-windows-arm64.exe
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -252,9 +266,12 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Prepare binary
+        shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.asset_name }}
-          chmod +x ${{ matrix.asset_name }}
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "${{ matrix.asset_name }}"
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            chmod +x "${{ matrix.asset_name }}"
+          fi
 
       - name: Upload binary to release
         uses: softprops/action-gh-release@v2

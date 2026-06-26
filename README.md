@@ -26,8 +26,11 @@ Wax reimagines package management by replacing Homebrew's git-based tap system w
 - **Smart Caching**: Local formula index for offline search and instant lookups
 - **Flexible Installation**: User-local (`~/.local/wax`) or system-wide deployment options
 - **Built-in Self-Updater**: Update wax itself from crates.io (stable) or GitHub HEAD (nightly)
+- **Windows Package Sources**: Scoop, winget, and Chocolatey integration via qualified names (`scoop/`, `winget/`, `choco/`) with portable installs to user-local paths
 
 ## Installation
+
+### Linux and macOS
 
 **One-liner (recommended)** — downloads the pre-built binary for your platform:
 
@@ -47,8 +50,30 @@ cd wax
 
 To **force** a pre-built release while standing in a clone, set `WAX_USE_RELEASE=1` before `./install.sh`.
 
-GitHub Releases ship **Linux** and **macOS** binaries (`wax-linux-*`, `wax-macos-*`) with `.sha256` sidecars when published by CI.
-The installer requires checksum verification by default. Set `WAX_NO_VERIFY=1` only when you explicitly accept installing without a `.sha256` sidecar.
+### Windows
+
+**One-liner (recommended)** — downloads the pre-built binary for your platform:
+
+```powershell
+irm https://raw.githubusercontent.com/plyght/wax/master/install.ps1 | iex
+```
+
+Installs to `%USERPROFILE%\.local\bin\wax.exe`. Override the destination with `$env:WAX_INSTALL_DIR = 'C:\Tools\bin'`.
+
+**From a git clone** (builds with your Rust toolchain; no GitHub download):
+
+```powershell
+git clone https://github.com/plyght/wax.git
+cd wax
+.\install.ps1
+```
+
+To **force** a pre-built release while standing in a clone, set `$env:WAX_USE_RELEASE = '1'` before `.\install.ps1`.
+
+### All platforms
+
+GitHub Releases ship **Linux**, **macOS**, and **Windows** binaries (`wax-linux-*`, `wax-macos-*`, `wax-windows-x64.exe`, `wax-windows-arm64.exe`) with `.sha256` sidecars when published by CI.
+The installer requires checksum verification by default. Set `WAX_NO_VERIFY=1` (or `$env:WAX_NO_VERIFY = '1'` on Windows) only when you explicitly accept installing without a `.sha256` sidecar.
 
 **Homebrew tap** — coming soon.
 
@@ -58,7 +83,7 @@ The installer requires checksum verification by default. Set `WAX_NO_VERIFY=1` o
 cargo install waxpkg
 ```
 
-**From source (manual)** — equivalent to `./install.sh` from a clone:
+**From source (manual)** — equivalent to `./install.sh` or `.\install.ps1` from a clone:
 
 ```bash
 git clone https://github.com/plyght/wax.git
@@ -66,6 +91,8 @@ cd wax
 cargo build --release
 cp target/release/wax ~/.local/bin/
 ```
+
+On Windows, copy `target\release\wax.exe` to a directory on your `PATH` (for example `%USERPROFILE%\.local\bin\`).
 
 ## Usage
 
@@ -113,9 +140,10 @@ wax install tree --no-script  # skip automatic post-install scripts
 wax cask iterm2
 wax c firefox
 
-# Manage custom taps
-wax tap add user/repo
+# Manage custom taps (third-party taps must be trusted before install)
+wax tap add user/repo --trust
 wax tap list
+wax tap trust user/repo
 wax tap update user/repo
 wax tap remove user/repo
 
@@ -149,6 +177,34 @@ wax bundle
 wax bundle --file Brewfile --dry-run
 wax bundle dump
 ```
+
+### Windows package sources
+
+On Windows, `wax install` and `wax search` accept **qualified package names** with an ecosystem prefix. Prefixes are case-insensitive. Use `brew/` or `homebrew/` to force the Homebrew formula index; omit a prefix to auto-pick the fastest matching source (Homebrew index, Scoop Main, winget-pkgs, or Chocolatey).
+
+Supported prefixes: `scoop/`, `winget/`, `choco/`, `chocolatey/`, `brew/`, `homebrew/`.
+
+```powershell
+# Search a specific ecosystem
+wax search scoop/ripgrep
+wax search winget/Microsoft.WindowsTerminal
+wax search choco/git
+
+# Install from a specific ecosystem (portable layout under user-local paths)
+wax install scoop/ripgrep
+wax install winget/JesseDuffield.lazygit
+wax install choco/git
+wax install chocolatey/git   # alias for choco/
+
+# Auto-pick the fastest matching source on Windows
+wax install ripgrep
+
+# Force Homebrew formula path (falls through to brew install flow)
+wax install brew/openssl
+wax install homebrew/openssl
+```
+
+Scoop and winget installs use portable zip/tar.gz layouts. Chocolatey support is limited to portable `tools/*.exe` packages (no MSI/system hooks). Packages with `/` in the id after a prefix are not supported.
 
 ## Configuration
 
@@ -211,7 +267,9 @@ cask "iterm2"
 - `tap.rs`: Custom tap management (add, remove, update, formula loading)
 - `commands/`: CLI command implementations (search, install, upgrade, tap, etc.)
 - `ui.rs`: Terminal UI components using indicatif for progress tracking
-- `error.rs`: Typed error handling with anyhow context
+- `error.rs`: Typed error handling with thiserror
+- `package_spec.rs`: Qualified package name parsing (`scoop/`, `winget/`, `choco/`, `brew/`)
+- `ecosystem_install.rs`: Routes installs to Homebrew, Scoop, winget, or Chocolatey on Windows
 - `main.rs`: CLI parsing with clap and logging initialization
 
 ### Key Design Decisions
@@ -224,7 +282,7 @@ cask "iterm2"
 
 **Custom Tap Support**: Clones third-party taps as Git repositories, parses Ruby formula files, and integrates them with core formulae for unified package management.
 
-**Async-First**: Uses tokio runtime for all I/O operations. Parallel downloads with configurable concurrency limits (default 8 simultaneous).
+**Async-First**: Uses the tokio multi-thread runtime for concurrent async I/O—HTTP, cache reads, and parallel install orchestration—with configurable download concurrency (default 8 simultaneous).
 
 **Homebrew Interoperability**: Designed to coexist peacefully with Homebrew. Installs to the same Cellar structure using architecture-appropriate standard paths (`/opt/homebrew` on Apple Silicon, `/usr/local` on Intel). Detects and respects existing Homebrew installations, allowing both package managers to operate independently or simultaneously without conflicts. Installation order does not matter - wax functions identically whether installed before or after Homebrew.
 
@@ -253,11 +311,11 @@ cargo audit
 Requires Rust 1.70+. Key dependencies:
 
 - **CLI**: clap (parsing), console (colors), inquire (prompts)
-- **Async**: tokio (runtime), reqwest (HTTP), futures (combinators)
+- **Async**: tokio (multi-thread runtime, concurrent I/O), reqwest (HTTP), futures (combinators)
 - **Serialization**: serde, serde_json, toml
 - **UI**: indicatif (progress bars)
 - **Compression**: tar, flate2 (gzip), sha2 (checksums)
-- **Error Handling**: anyhow, thiserror
+- **Error Handling**: thiserror
 - **Logging**: tracing, tracing-subscriber
 - **Build Support**: num_cpus (parallel builds), tempfile (build directories)
 
@@ -281,9 +339,11 @@ See `docs/comparison.md` for detailed methodology and analysis.
 
 - **Linux Bottles**: Linux bottles require `patchelf` for ELF binary relocation. Install it first: `wax install patchelf`
 - **Linux GUI / cask flow**: On Linux, GUI-style installs use cask Ruby metadata when an `on_linux` block is present; otherwise Wax may try snap, flatpak, or the native system package manager—not the macOS DMG install path.
+- **macOS casks / DMG flow**: Full cask install, uninstall, and upgrade (DMG mounting, app bundle copying) is macOS-specific. Windows GUI apps are installed via portable Scoop/winget/Chocolatey packages, not the cask pipeline.
+- **Windows package scope**: Scoop/winget/Chocolatey support covers portable installs only—no MSI installers, Chocolatey PowerShell hooks, or winget `winget.exe` delegation. Chocolatey packages must ship portable `tools/*.exe` binaries.
 - **Build System Detection**: Source builds use heuristic detection of build systems. Complex or non-standard build configurations may fail.
 - **Formula DSL Subset**: Parses essential Ruby formula syntax. Advanced features (conditional deps, patches, custom install blocks) may not be fully supported.
-- **macOS Primary**: Developed for macOS. Linux support is functional but less tested.
+- **Platform maturity**: macOS is the primary development target. Linux support is functional but less tested. Windows is supported via Scoop, winget-pkgs, and Chocolatey portable installs alongside the Homebrew formula index.
 - **Post-Install Coverage**: Wax can run supported post-install hooks when a compatible `brew postinstall` command is installed. Use `--no-script` to skip this behavior. Native post-install execution without Homebrew compatibility tooling is still limited.
 
 ## Acknowledgments
