@@ -1,5 +1,4 @@
 mod api;
-mod http_client;
 mod bottle;
 mod builder;
 mod cache;
@@ -10,6 +9,7 @@ mod digest;
 mod discovery;
 mod error;
 mod formula_parser;
+mod http_client;
 mod install;
 mod lockfile;
 mod signal;

@@ -1,9 +1,9 @@
 use crate::error::{Result, WaxError};
 use flate2::read::GzDecoder;
 use indicatif::ProgressBar;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;

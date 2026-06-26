@@ -14,9 +14,7 @@ fn build_client(timeout: Duration, compress: bool) -> reqwest::Client {
     } else {
         builder = builder.gzip(false).brotli(false);
     }
-    builder
-        .build()
-        .expect("Failed to create HTTP client")
+    builder.build().expect("Failed to create HTTP client")
 }
 
 /// Homebrew JSON API: 30s timeout, compressed responses.

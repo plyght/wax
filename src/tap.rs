@@ -452,9 +452,7 @@ impl TapManager {
     }
 
     pub fn is_tap_trusted(&self, tap_name: &str) -> bool {
-        self.taps
-            .get(tap_name)
-            .is_some_and(|tap| tap.trusted)
+        self.taps.get(tap_name).is_some_and(|tap| tap.trusted)
     }
 
     /// Allowed remote hosts for `git clone` tap sources.
