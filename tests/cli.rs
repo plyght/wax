@@ -21,6 +21,54 @@ fn wax_with_home(home: &Path) -> Command {
     cmd
 }
 
+#[cfg(windows)]
+fn write_windows_manifest(home: &Path, ecosystem: &str, id: &str, version: &str) {
+    let root = home.join(".local").join("wax");
+    let staging = root
+        .join(format!("{ecosystem}-apps"))
+        .join(id)
+        .join(version);
+    std::fs::create_dir_all(&staging).unwrap();
+    let manifest_dir = root.join("windows").join("manifests");
+    std::fs::create_dir_all(&manifest_dir).unwrap();
+
+    let ecosystem_enum = match ecosystem {
+        "scoop" => "Scoop",
+        "winget" => "Winget",
+        "choco" => "Chocolatey",
+        _ => panic!("unknown ecosystem {ecosystem}"),
+    };
+    let staging_json = staging.to_string_lossy().replace('\\', "/");
+    let manifest = format!(
+        r#"{{
+  "ecosystem": "{ecosystem_enum}",
+  "id": "{id}",
+  "version": "{version}",
+  "source": "https://example.invalid/{id}.zip",
+  "staging_dir": "{staging_json}",
+  "bin_links": [],
+  "files": [],
+  "install_kind": "Portable",
+  "installed_at": 0
+}}"#
+    );
+    let safe_id: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    std::fs::write(
+        manifest_dir.join(format!("{ecosystem}-{safe_id}.json")),
+        manifest,
+    )
+    .unwrap();
+}
+
 // ── basic smoke tests ────────────────────────────────────────────────────────
 
 #[test]
@@ -283,6 +331,7 @@ fn list_with_query_exits_zero() {
 }
 
 /// Hermetic Cellar layout via `WAX_TEST_CELLAR` (see `commands/list.rs`).
+#[cfg(not(windows))]
 #[test]
 fn list_plain_shows_test_cellar_formulae() {
     let tmp = tempfile::tempdir().unwrap();
@@ -315,6 +364,7 @@ fn list_plain_shows_test_cellar_formulae() {
     );
 }
 
+#[cfg(not(windows))]
 #[test]
 fn list_plain_filter_excludes_non_matching() {
     let tmp = tempfile::tempdir().unwrap();
@@ -347,6 +397,7 @@ fn list_plain_filter_excludes_non_matching() {
     );
 }
 
+#[cfg(not(windows))]
 #[test]
 fn list_plain_no_match_reports_query() {
     let tmp = tempfile::tempdir().unwrap();
@@ -373,6 +424,94 @@ fn list_plain_no_match_reports_query() {
     assert!(stdout.contains(needle), "{stdout}");
 }
 
+#[cfg(windows)]
+#[test]
+fn list_plain_shows_windows_manifests() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_windows_manifest(tmp.path(), "winget", "wax-a-listtest", "1.0.0");
+    write_windows_manifest(tmp.path(), "scoop", "wax-b-listtest", "2.0.0");
+    let cache = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+
+    let out = wax_with_home(tmp.path())
+        .env("CI", "1")
+        .env("WAX_CACHE_DIR", &cache)
+        .arg("list")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("winget/wax-a-listtest"),
+        "expected winget manifest in output: {stdout}"
+    );
+    assert!(
+        stdout.contains("scoop/wax-b-listtest"),
+        "expected scoop manifest in output: {stdout}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn list_plain_filter_excludes_non_matching_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_windows_manifest(tmp.path(), "winget", "wax-a-listtest", "1.0.0");
+    write_windows_manifest(tmp.path(), "scoop", "wax-b-listtest", "2.0.0");
+    let cache = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+
+    let out = wax_with_home(tmp.path())
+        .env("CI", "1")
+        .env("WAX_CACHE_DIR", &cache)
+        .args(["list", "wax-b"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("scoop/wax-b-listtest"),
+        "expected filtered manifest: {stdout}"
+    );
+    assert!(
+        !stdout.contains("wax-a-listtest"),
+        "did not expect excluded manifest: {stdout}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn list_plain_no_match_reports_query_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_windows_manifest(tmp.path(), "winget", "only-wax-pkg", "1.0");
+    let cache = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+
+    let needle = "zzz-nope-match";
+    let out = wax_with_home(tmp.path())
+        .env("CI", "1")
+        .env("WAX_CACHE_DIR", &cache)
+        .args(["list", needle])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("no installed packages match"), "{stdout}");
+    assert!(stdout.contains(needle), "{stdout}");
+}
+
+#[cfg(not(windows))]
 #[test]
 fn tap_list_exits_zero() {
     let tmp = tempfile::tempdir().unwrap();
@@ -387,6 +526,20 @@ fn tap_list_exits_zero() {
         "wax tap list failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn tap_list_rejected_on_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = wax_with_home(tmp.path())
+        .env("WAX_CACHE_DIR", tmp.path().join("cache"))
+        .args(["tap", "list"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not available on Windows"), "{stderr}");
 }
 
 #[test]
@@ -433,6 +586,7 @@ fn unknown_subcommand_exits_nonzero() {
     assert!(!out.status.success());
 }
 
+#[cfg(not(windows))]
 #[test]
 fn reinstall_missing_package_exits_nonzero_without_installing() {
     let tmp = tempfile::tempdir().unwrap();
@@ -448,6 +602,21 @@ fn reinstall_missing_package_exits_nonzero_without_installing() {
         stderr.contains("definitely-no-such-package is not installed"),
         "{stderr}"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn reinstall_rejected_on_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = wax_with_home(tmp.path())
+        .env("CI", "1")
+        .args(["reinstall", "definitely-no-such-package"])
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("not available on Windows"), "{stderr}");
 }
 
 // ── network integration tests (skipped unless INTEGRATION=1) ─────────────────
