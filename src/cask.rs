@@ -179,7 +179,8 @@ fn merge_caskroom_entry(
     );
 }
 
-pub fn cask_path_has_homebrew_metadata(cask_path: &Path) -> bool {
+#[cfg(test)]
+fn cask_path_has_homebrew_metadata(cask_path: &Path) -> bool {
     let metadata_dir = cask_path.join(".metadata");
     let Ok(version_entries) = std::fs::read_dir(metadata_dir) else {
         return false;
@@ -361,33 +362,6 @@ impl CaskState {
             .join("Caskroom"))
     }
 
-    pub fn caskroom_casks_missing_homebrew_metadata() -> Result<Vec<String>> {
-        let caskroom = Self::caskroom_dir();
-        if !caskroom.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut missing = Vec::new();
-        for entry in std::fs::read_dir(caskroom)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if !file_type.is_dir() || file_type.is_symlink() {
-                continue;
-            }
-
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-
-            if !cask_path_has_homebrew_metadata(&entry.path()) {
-                missing.push(name);
-            }
-        }
-        missing.sort();
-        Ok(missing)
-    }
-
     pub async fn load(&self) -> Result<HashMap<String, InstalledCask>> {
         let mut casks = HashMap::new();
 
@@ -540,51 +514,6 @@ impl CaskState {
         let json = serde_json::to_string_pretty(source)?;
         fs::write(metadata_file, json).await?;
         Ok(true)
-    }
-
-    pub async fn repair_homebrew_metadata(&self, cached_casks: &[Cask]) -> Result<usize> {
-        let missing = Self::caskroom_casks_missing_homebrew_metadata()?;
-        if missing.is_empty() {
-            return Ok(0);
-        }
-
-        let tracked = self.load().await.unwrap_or_default();
-        let cached_by_token = cached_casks
-            .iter()
-            .flat_map(|cask| {
-                [
-                    (cask.token.as_str(), cask),
-                    (cask.full_token.as_str(), cask),
-                ]
-            })
-            .collect::<HashMap<_, _>>();
-
-        let mut repaired = 0usize;
-        for name in missing {
-            let cask = match tracked.get(&name) {
-                Some(cask) => cask.clone(),
-                None => {
-                    let cask_dir = Self::caskroom_dir().join(&name);
-                    let (version, install_date) = self.scan_cask_version_dir(&cask_dir).await?;
-                    InstalledCask {
-                        name: name.clone(),
-                        version,
-                        install_date,
-                        artifact_type: None,
-                        binary_paths: None,
-                        app_name: None,
-                    }
-                }
-            };
-
-            let source =
-                cask_metadata_from_installed(&cask, cached_by_token.get(name.as_str()).copied());
-            if self.write_homebrew_metadata_value(&cask, &source).await? {
-                repaired += 1;
-            }
-        }
-
-        Ok(repaired)
     }
 
     pub async fn remove(&self, name: &str) -> Result<()> {
@@ -1264,9 +1193,7 @@ impl CaskInstaller {
             .await
     }
 
-    pub fn verify_checksum(path: &Path, expected_sha256: &str) -> Result<()> {
-        crate::digest::verify_sha256_file(path, expected_sha256)
-    }
+
 
     /// Rejects paths that contain parent-directory traversal components.
     fn reject_traversal(path: &Path) -> Result<()> {

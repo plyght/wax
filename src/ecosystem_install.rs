@@ -5,7 +5,7 @@ use crate::cache::Cache;
 use crate::chocolatey;
 use crate::error::{Result, WaxError};
 use crate::package_spec::{Ecosystem, PackageSpec};
-use crate::platform_catalog;
+
 use crate::remote_search;
 use crate::scoop;
 use crate::winget_install;
@@ -19,7 +19,7 @@ pub async fn install_one_qualified(
 ) -> Result<bool> {
     let spec = crate::package_spec::parse_package_spec(raw);
     validate_qualified_inner(&spec)?;
-    platform_catalog::reject_brew_ecosystem(spec.force)?;
+    crate::error::reject_brew_ecosystem(spec.force)?;
 
     if cask {
         return Err(WaxError::PlatformNotSupported(
@@ -195,7 +195,7 @@ async fn install_forced(eco: Ecosystem, name: &str, dry_run: bool) -> Result<()>
     }
 
     match eco {
-        Ecosystem::Brew => Err(platform_catalog::homebrew_unavailable()),
+        Ecosystem::Brew => Err(crate::error::homebrew_unavailable()),
         Ecosystem::Scoop => scoop::install_from_bucket(name, None).await,
         Ecosystem::Winget => winget_install::install_winget_package(name).await,
         Ecosystem::Chocolatey => chocolatey::install_portable_tools(name).await,

@@ -507,7 +507,7 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
         .await?;
     pb.finish_and_clear();
 
-    BottleDownloader::verify_checksum(&archive_path, &sha_expected)?;
+    crate::digest::verify_sha256_file(&archive_path, &sha_expected)?;
 
     if !inst_type.eq_ignore_ascii_case("zip") || !nested.eq_ignore_ascii_case("portable") {
         return install_native_winget_package(&package_id, &latest, &doc, inst, &archive_path)

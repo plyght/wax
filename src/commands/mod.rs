@@ -1,5 +1,5 @@
 pub mod audit;
-pub mod bundle;
+
 pub mod cleanup;
 pub mod completions;
 pub mod doctor;
@@ -11,12 +11,10 @@ pub mod list;
 pub mod lock;
 pub mod outdated;
 pub mod pin;
-#[cfg(not(target_os = "windows"))]
-pub mod refresh;
 pub mod reinstall;
 pub mod search;
 pub mod self_update;
-pub mod services;
+
 pub mod show_deps;
 pub mod source;
 pub mod sync;

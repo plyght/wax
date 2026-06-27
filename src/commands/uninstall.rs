@@ -103,7 +103,7 @@ async fn uninstall_impl(
     #[cfg(target_os = "windows")]
     {
         if cask {
-            return Err(crate::platform_catalog::homebrew_unavailable());
+            return Err(crate::error::homebrew_unavailable());
         }
         if let Some(manifest) = windows_state::find_manifest(formula_name)? {
             return uninstall_windows_package(&manifest, dry_run, start, quiet, prefix).await;
@@ -287,6 +287,7 @@ async fn uninstall_package_direct(
 }
 
 async fn resolve_cask_app_name(
+    cache: &Cache,
     cask_name: &str,
     version: &str,
     stored_app_name: Option<&str>,
@@ -307,10 +308,7 @@ async fn resolve_cask_app_name(
         return app_name;
     }
 
-    if let Ok(details) = crate::api::ApiClient::new()
-        .fetch_cask_details(cask_name)
-        .await
-    {
+    if let Ok(details) = cache.fetch_cask_details(cask_name).await {
         if let Some(artifacts) = details.artifacts {
             for artifact in artifacts {
                 if let crate::api::CaskArtifact::App { app } = artifact {
@@ -355,7 +353,7 @@ async fn uninstall_cask(
 
     // Last resort: check /Applications for a matching .app bundle
     if !installed_casks.contains_key(cask_name) {
-        let app_name = resolve_cask_app_name(cask_name, "unknown", None).await;
+        let app_name = resolve_cask_app_name(cache, cask_name, "unknown", None).await;
         let app_candidates = [
             std::path::PathBuf::from("/Applications").join(&app_name),
             dirs::home_dir()
@@ -428,8 +426,13 @@ async fn uninstall_cask(
             }
         }
         _ => {
-            let app_basename =
-                resolve_cask_app_name(cask_name, &cask.version, cask.app_name.as_deref()).await;
+            let app_basename = resolve_cask_app_name(
+                cache,
+                cask_name,
+                &cask.version,
+                cask.app_name.as_deref(),
+            )
+            .await;
 
             // On macOS: check /Applications, then ~/Applications.
             // On Linux: check ~/Applications only (no system /Applications).

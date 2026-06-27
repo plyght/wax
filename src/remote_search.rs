@@ -45,32 +45,7 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// Shared name-only scoring for Windows catalogue search (Scoop/winget/Chocolatey ids).
-pub fn catalog_match_score(name: &str, query: &str) -> Option<i32> {
-    let q = query.to_lowercase();
-    let n = name.to_lowercase();
-    if n == q {
-        return Some(1000);
-    }
-    if n.starts_with(&q) {
-        return Some(900);
-    }
-    if n.contains(&q) {
-        return Some(850);
-    }
-    let words: Vec<&str> = n.split(|c: char| !c.is_alphanumeric()).collect();
-    for word in &words {
-        if *word == q {
-            return Some(800);
-        }
-    }
-    for word in &words {
-        if word.starts_with(&q) {
-            return Some(700);
-        }
-    }
-    None
-}
+pub use crate::catalog_match::catalog_match_score;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowsSearchPlan {
@@ -158,47 +133,6 @@ async fn refresh_scoop_index_from_git(cache_dir: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-async fn refresh_scoop_index_from_github_api() -> Result<Vec<String>> {
-    debug!("Refreshing Scoop Main bucket index via GitHub API…");
-    let client = crate::http_client::default_client();
-    let resp = client
-        .get("https://api.github.com/repos/ScoopInstaller/Main/git/trees/master?recursive=1")
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        return Err(crate::error::WaxError::InstallError(format!(
-            "Scoop index GitHub API: HTTP {}",
-            resp.status()
-        )));
-    }
-    let v: serde_json::Value = resp.json().await?;
-    if v.get("truncated")
-        .and_then(|t| t.as_bool())
-        .unwrap_or(false)
-    {
-        return Err(crate::error::WaxError::InstallError(
-            "Scoop index GitHub tree was truncated; git metadata refresh required".into(),
-        ));
-    }
-    let tree = v
-        .get("tree")
-        .and_then(|t| t.as_array())
-        .ok_or_else(|| crate::error::WaxError::ParseError("no tree array".into()))?;
-
-    let mut names = Vec::new();
-    for item in tree {
-        let Some(path) = item.get("path").and_then(|p| p.as_str()) else {
-            continue;
-        };
-        if let Some(name) = scoop_name_from_tree_path(path) {
-            names.push(name);
-        }
-    }
-    names.sort();
-    names.dedup();
-    Ok(names)
-}
-
 async fn load_or_fetch_scoop_index(cache_dir: &std::path::Path) -> Result<Vec<String>> {
     let path: PathBuf = cache_dir.join(SCOOP_INDEX_CACHE);
     let stale = tokio::fs::read_to_string(&path)
@@ -213,20 +147,12 @@ async fn load_or_fetch_scoop_index(cache_dir: &std::path::Path) -> Result<Vec<St
 
     let names = match refresh_scoop_index_from_git(cache_dir).await {
         Ok(names) => names,
-        Err(git_err) => {
-            debug!("Scoop git metadata refresh failed ({git_err}); trying GitHub API");
-            match refresh_scoop_index_from_github_api().await {
-                Ok(names) => names,
-                Err(api_err) => {
-                    if let Some(idx) = stale {
-                        debug!(
-                            "Using stale Scoop index after refresh failed (git: {git_err}; api: {api_err})"
-                        );
-                        return Ok(idx.names.clone());
-                    }
-                    return Err(api_err);
-                }
+        Err(err) => {
+            if let Some(idx) = stale {
+                debug!("Using stale Scoop index after git refresh failed: {err}");
+                return Ok(idx.names.clone());
             }
+            return Err(err);
         }
     };
 
@@ -602,20 +528,4 @@ mod tests {
         assert_eq!(scoop_name_from_tree_path("bucket/nested/foo.json"), None);
     }
 
-    #[test]
-    fn catalog_match_score_matches_word_boundaries() {
-        assert_eq!(catalog_match_score("ripgrep", "rg"), None);
-        assert_eq!(catalog_match_score("git", "git"), Some(1000));
-        assert_eq!(catalog_match_score("lazygit", "git"), Some(850));
-    }
-
-    #[test]
-    fn catalog_match_score_rejects_loose_choco_html_matches() {
-        assert!(catalog_match_score("antigravity", "agent-browser").is_none());
-        assert!(catalog_match_score("netstat-agent", "agent-browser").is_none());
-        assert_eq!(
-            catalog_match_score("agent-browser", "agent-browser"),
-            Some(1000)
-        );
-    }
 }

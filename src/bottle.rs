@@ -50,6 +50,24 @@ pub struct BottleDownloader {
     client: reqwest::Client,
 }
 
+pub fn copy_extracted_bottle_to_cellar(
+    extract_dir: &Path,
+    name: &str,
+    cellar_version: &str,
+    formula_cellar: &Path,
+) -> Result<()> {
+    use crate::ui::copy_dir_all;
+    let name_dir = extract_dir.join(name);
+    let actual_content_dir = name_dir.join(cellar_version);
+    if actual_content_dir.exists() {
+        copy_dir_all(&actual_content_dir, formula_cellar)
+    } else if name_dir.exists() {
+        copy_dir_all(&name_dir, formula_cellar)
+    } else {
+        copy_dir_all(extract_dir, formula_cellar)
+    }
+}
+
 impl BottleDownloader {
     const TRANSIENT_RETRY_ATTEMPTS: usize = 3;
 
@@ -520,10 +538,6 @@ impl BottleDownloader {
             "Invalid GHCR URL format: {}",
             url
         )))
-    }
-
-    pub fn verify_checksum(path: &Path, expected_sha256: &str) -> Result<()> {
-        crate::digest::verify_sha256_file(path, expected_sha256)
     }
 
     pub fn extract(tarball_path: &Path, dest_dir: &Path) -> Result<()> {
@@ -1459,7 +1473,7 @@ mod tests {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(b"hello world").unwrap();
         let hash = format!("{:x}", Sha256::digest(b"hello world"));
-        let result = BottleDownloader::verify_checksum(f.path(), &hash);
+        let result = crate::digest::verify_sha256_file(f.path(), &hash);
         assert!(result.is_ok(), "{:?}", result);
     }
 
@@ -1468,7 +1482,7 @@ mod tests {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(b"hello world").unwrap();
         let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
-        let result = BottleDownloader::verify_checksum(f.path(), wrong);
+        let result = crate::digest::verify_sha256_file(f.path(), wrong);
         assert!(result.is_err(), "expected checksum mismatch error");
         let msg = format!("{:?}", result.unwrap_err());
         assert!(
@@ -1480,7 +1494,7 @@ mod tests {
     #[test]
     fn verify_checksum_missing_file_returns_error() {
         let path = std::path::Path::new("/tmp/wax-test-nonexistent-file-xyz-123.tar.gz");
-        let result = BottleDownloader::verify_checksum(path, "abc123");
+        let result = crate::digest::verify_sha256_file(path, "abc123");
         assert!(result.is_err());
     }
 

@@ -1,4 +1,3 @@
-use crate::api::ApiClient;
 use crate::cache::{Cache, CacheMetadata};
 use crate::error::Result;
 use crate::signal::check_cancelled;
@@ -7,8 +6,8 @@ use crate::ui::create_spinner;
 use console::style;
 use tracing::instrument;
 
-#[instrument(skip(api_client, cache))]
-pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
+#[instrument(skip(cache))]
+pub async fn update(cache: &Cache) -> Result<()> {
     let spinner = create_spinner("Updating package index...");
 
     let start = std::time::Instant::now();
@@ -31,8 +30,8 @@ pub async fn update(api_client: &ApiClient, cache: &Cache) -> Result<()> {
         .unwrap_or((None, None));
 
     let (formulae_result, casks_result) = tokio::join!(
-        api_client.fetch_formulae_conditional(formulae_etag, formulae_last_modified),
-        api_client.fetch_casks_conditional(casks_etag, casks_last_modified)
+        cache.fetch_formulae_conditional(formulae_etag, formulae_last_modified),
+        cache.fetch_casks_conditional(casks_etag, casks_last_modified)
     );
 
     let formulae_fetch = formulae_result?;

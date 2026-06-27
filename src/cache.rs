@@ -1,4 +1,4 @@
-use crate::api::{ApiClient, Cask, Formula};
+use crate::api::{Cask, CaskDetails, FetchResult, Formula, CASK_API_URL, FORMULA_API_URL};
 use crate::error::Result;
 use crate::tap::TapManager;
 use crate::ui::{create_spinner, dirs};
@@ -121,7 +121,6 @@ impl Cache {
 
         if is_stale {
             let spinner = create_spinner("Refreshing index…");
-            let api_client = ApiClient::new();
 
             let (formulae_etag, formulae_last_modified) = metadata
                 .as_ref()
@@ -139,8 +138,8 @@ impl Cache {
                 .unwrap_or((None, None));
 
             let (formulae_result, casks_result) = tokio::join!(
-                api_client.fetch_formulae_conditional(formulae_etag, formulae_last_modified),
-                api_client.fetch_casks_conditional(casks_etag, casks_last_modified)
+                self.fetch_formulae_conditional(formulae_etag, formulae_last_modified),
+                self.fetch_casks_conditional(casks_etag, casks_last_modified)
             );
 
             let formulae_fetch = formulae_result?;
@@ -240,11 +239,9 @@ impl Cache {
     async fn auto_init(&self) -> Result<()> {
         let spinner = create_spinner("Fetching package index…");
 
-        let api_client = ApiClient::new();
-
         let (formulae_result, casks_result) = tokio::join!(
-            api_client.fetch_formulae_conditional(None, None),
-            api_client.fetch_casks_conditional(None, None)
+            self.fetch_formulae_conditional(None, None),
+            self.fetch_casks_conditional(None, None)
         );
 
         let formulae_fetch = formulae_result?;
@@ -303,6 +300,124 @@ impl Cache {
         }
         clear_formulae_index_cache();
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fetch_formulae_conditional(
+        &self,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<FetchResult<Vec<Formula>>> {
+        info!("Fetching formulae from API with conditional headers");
+        let client = crate::http_client::api();
+        let mut request = client.get(FORMULA_API_URL);
+
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        if let Some(last_modified) = last_modified {
+            request = request.header("If-Modified-Since", last_modified);
+        }
+
+        let response = request.send().await?;
+
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            info!("Formulae not modified (304)");
+            return Ok(FetchResult {
+                data: None,
+                etag: None,
+                last_modified: None,
+                not_modified: true,
+            });
+        }
+
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let last_modified = response
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let body = response.bytes().await?;
+        let formulae: Vec<Formula> = serde_json::from_slice(&body)?;
+        info!("Fetched {} formulae", formulae.len());
+
+        Ok(FetchResult {
+            data: Some(formulae),
+            etag,
+            last_modified,
+            not_modified: false,
+        })
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fetch_casks_conditional(
+        &self,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<FetchResult<Vec<Cask>>> {
+        info!("Fetching casks from API with conditional headers");
+        let client = crate::http_client::api();
+        let mut request = client.get(CASK_API_URL);
+
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        if let Some(last_modified) = last_modified {
+            request = request.header("If-Modified-Since", last_modified);
+        }
+
+        let response = request.send().await?;
+
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            info!("Casks not modified (304)");
+            return Ok(FetchResult {
+                data: None,
+                etag: None,
+                last_modified: None,
+                not_modified: true,
+            });
+        }
+
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let last_modified = response
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        let body = response.bytes().await?;
+        let casks: Vec<Cask> = serde_json::from_slice(&body)?;
+        info!("Fetched {} casks", casks.len());
+
+        Ok(FetchResult {
+            data: Some(casks),
+            etag,
+            last_modified,
+            not_modified: false,
+        })
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fetch_cask_details(&self, cask_name: &str) -> Result<CaskDetails> {
+        crate::error::validate_package_name(cask_name)?;
+        info!("Fetching details for cask: {}", cask_name);
+        let client = crate::http_client::api();
+        let url = format!("https://formulae.brew.sh/api/cask/{}.json", cask_name);
+        let response = client.get(&url).send().await?;
+        let cask: CaskDetails = response.json().await?;
+        info!("Fetched details for cask: {}", cask_name);
+        Ok(cask)
     }
 
     pub async fn load_all_formulae(&self) -> Result<Vec<Formula>> {

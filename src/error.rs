@@ -57,12 +57,6 @@ pub enum WaxError {
     #[error("Self-update error: {0}")]
     SelfUpdateError(String),
 
-    #[error("Service error: {0}")]
-    ServiceError(String),
-
-    #[error("Bundle error: {0}")]
-    BundleError(String),
-
     #[error("Version not found: {0}")]
     VersionNotFound(String),
 
@@ -122,6 +116,31 @@ pub fn validate_package_name(name: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(target_os = "windows")]
+pub const BREW_UNAVAILABLE_MSG: &str =
+    "Homebrew formulae and casks are not supported on Windows; use scoop/, winget/, or choco/ prefixes";
+
+#[cfg(target_os = "windows")]
+pub fn homebrew_unavailable() -> WaxError {
+    WaxError::PlatformNotSupported(BREW_UNAVAILABLE_MSG.into())
+}
+
+#[cfg(target_os = "windows")]
+pub fn reject_homebrew_cli(command: &str) -> Result<()> {
+    Err(WaxError::PlatformNotSupported(format!(
+        "'wax {command}' is not available on Windows. {BREW_UNAVAILABLE_MSG}"
+    )))
+}
+
+#[cfg(target_os = "windows")]
+pub fn reject_brew_ecosystem(force: Option<crate::package_spec::Ecosystem>) -> Result<()> {
+    if force == Some(crate::package_spec::Ecosystem::Brew) {
+        return Err(homebrew_unavailable());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

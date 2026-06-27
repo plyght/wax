@@ -1,4 +1,4 @@
-use crate::api::ApiClient;
+
 use crate::bottle::{detect_platform, homebrew_prefix, BottleDownloader, DownloadTotals};
 use crate::cache::Cache;
 use crate::cask::{CaskState, InstalledCask};
@@ -692,7 +692,7 @@ async fn upgrade_all(
 
                     drop(permit);
 
-                    BottleDownloader::verify_checksum(&tarball, &sha256)?;
+                    crate::digest::verify_sha256_file(&tarball, &sha256)?;
 
                     let extract_dir = tmp.path().join(&name);
                     BottleDownloader::extract(&tarball, &extract_dir)?;
@@ -1098,8 +1098,7 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
         .find(|c| c.token == cask_name || c.full_token == cask_name)
         .ok_or_else(|| WaxError::CaskNotFound(cask_name.to_string()))?;
 
-    let api_client = ApiClient::new();
-    let cask_details = api_client.fetch_cask_details(&cask_summary.token).await?;
+    let cask_details = cache.fetch_cask_details(&cask_summary.token).await?;
 
     let latest_version = &cask_details.version;
     let installed_version = &installed.version;
@@ -1337,14 +1336,13 @@ pub async fn get_outdated_packages_scoped(
         }
     }
 
-    let api_client = ApiClient::new();
     if scope == Some(InstallMode::User) {
         outdated.sort_by(|a, b| a.name.cmp(&b.name));
         return Ok(outdated);
     }
     for (name, installed) in &installed_casks {
         if let Some(cask) = cask_index.get(name.as_str()) {
-            if let Ok(details) = api_client.fetch_cask_details(&cask.token).await {
+            if let Ok(details) = cache.fetch_cask_details(&cask.token).await {
                 if !is_same_or_newer(&installed.version, &details.version) {
                     outdated.push(OutdatedPackage {
                         name: name.clone(),

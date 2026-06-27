@@ -1,9 +1,10 @@
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::cache::Cache;
+use crate::commands::install::install_extracted_bottle;
 use crate::error::{Result, WaxError};
-use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
+use crate::install::{InstallMode, InstallState};
 use crate::signal::check_cancelled;
-use crate::ui::{copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
+use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use tracing::instrument;
@@ -284,93 +285,28 @@ pub async fn version_install(
         .await?;
     pb.finish_and_clear();
 
-    BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
+    crate::digest::verify_sha256_file(&tarball_path, &sha256)?;
 
     let extract_dir = temp_dir.path().join(formula_name);
     BottleDownloader::extract(&tarball_path, &extract_dir)?;
 
     let cellar = install_mode.cellar_path()?;
-    let formula_cellar = cellar.join(formula_name).join(version);
-
-    if formula_cellar.exists() {
-        tokio::fs::remove_dir_all(&formula_cellar)
-            .await
-            .or_else(|_| crate::sudo::sudo_remove(&formula_cellar).map(|_| ()))
-            .map_err(|e| {
-                crate::error::WaxError::InstallError(format!(
-                    "Failed to clean old version at {}: {}",
-                    formula_cellar.display(),
-                    e
-                ))
-            })?;
-    }
-    tokio::fs::create_dir_all(&formula_cellar)
-        .await
-        .or_else(|_| crate::sudo::sudo_mkdir(&formula_cellar))
-        .map_err(|e| {
-            crate::error::WaxError::InstallError(format!(
-                "Failed to create cellar directory {}: {}",
-                formula_cellar.display(),
-                e
-            ))
-        })?;
-
-    let actual_content_dir = extract_dir.join(formula_name).join(version);
-    if actual_content_dir.exists() {
-        copy_dir_all(&actual_content_dir, &formula_cellar)?;
-    } else {
-        let name_dir = extract_dir.join(formula_name);
-        if name_dir.exists() {
-            let mut found_version_dir = None;
-            if let Ok(mut entries) = std::fs::read_dir(&name_dir) {
-                while let Some(Ok(entry)) = entries.next() {
-                    let entry_name = entry.file_name().to_string_lossy().to_string();
-                    if entry_name.starts_with(version) && entry.path().is_dir() {
-                        found_version_dir = Some(entry.path());
-                        break;
-                    }
-                }
-            }
-            if let Some(version_dir) = found_version_dir {
-                copy_dir_all(&version_dir, &formula_cellar)?;
-            } else {
-                copy_dir_all(&extract_dir, &formula_cellar)?;
-            }
-        } else {
-            copy_dir_all(&extract_dir, &formula_cellar)?;
-        }
-    }
-
-    {
-        let prefix = install_mode.prefix()?;
-        let default_prefix = if cfg!(target_os = "macos") {
-            "/opt/homebrew"
-        } else {
-            "/home/linuxbrew/.linuxbrew"
-        };
-        BottleDownloader::relocate_bottle(
-            &formula_cellar,
-            prefix.to_str().unwrap_or(default_prefix),
-        )?;
-    }
-
-    create_symlinks(formula_name, version, &cellar, false, install_mode).await?;
-
-    let package = InstalledPackage {
-        name: formula_name.to_string(),
-        version: version.to_string(),
-        platform: platform.clone(),
-        install_date: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64,
+    install_extracted_bottle(
+        formula_name,
+        version,
+        &extract_dir,
+        sha256,
+        0,
+        &cellar,
         install_mode,
-        from_source: false,
-        bottle_rebuild: 0,
-        bottle_sha256: Some(sha256),
-        pinned: false,
-    };
-    state.add(package).await?;
+        &platform,
+        &state,
+        false,
+        true,
+        None,
+        None,
+    )
+    .await?;
 
     let elapsed = start.elapsed();
     println!(

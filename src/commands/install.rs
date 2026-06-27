@@ -674,7 +674,7 @@ pub(crate) async fn install_impl(
     #[cfg(target_os = "windows")]
     {
         if args.cask || args.head || args.build_from_source {
-            return Err(crate::platform_catalog::homebrew_unavailable());
+            return Err(crate::error::homebrew_unavailable());
         }
         return install_windows_packages(cache, package_names, args.dry_run, args.quiet).await;
     }
@@ -1161,7 +1161,7 @@ pub(crate) async fn install_impl(
                 .download(&url, &tarball_path, Some(ext_pb), pkg_connections, None)
                 .await?;
 
-            BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
+            crate::digest::verify_sha256_file(&tarball_path, &sha256)?;
 
             let extract_dir = temp_dir.path().join(&name);
             BottleDownloader::extract(&tarball_path, &extract_dir)?;
@@ -1243,7 +1243,7 @@ pub(crate) async fn install_impl(
 
             dl?;
 
-            BottleDownloader::verify_checksum(&tarball_path, &sha256)?;
+            crate::digest::verify_sha256_file(&tarball_path, &sha256)?;
 
             let extract_dir = temp_dir.path().join(&name);
             BottleDownloader::extract(&tarball_path, &extract_dir)?;
@@ -1574,14 +1574,12 @@ pub async fn install_extracted_bottle(
         })?;
 
     step!("copying to cellar...");
-    let actual_content_dir = name_dir.join(&cellar_version);
-    if actual_content_dir.exists() {
-        copy_dir_all(&actual_content_dir, &formula_cellar)?;
-    } else if name_dir.exists() {
-        copy_dir_all(&name_dir, &formula_cellar)?;
-    } else {
-        copy_dir_all(extract_dir, &formula_cellar)?;
-    }
+    crate::bottle::copy_extracted_bottle_to_cellar(
+        extract_dir,
+        name,
+        &cellar_version,
+        &formula_cellar,
+    )?;
 
     step!("relocating...");
     {
@@ -1765,14 +1763,14 @@ async fn install_casks(
     }
 
     // --- Phase 1: fetch all details + probe artifact types concurrently ---
-    let api_client = Arc::new(crate::api::ApiClient::new());
+    let cache = Arc::new(cache.clone());
     let installer = Arc::new(CaskInstaller::new());
     let semaphore = Arc::new(Semaphore::new(8));
 
     let detail_tasks: Vec<_> = to_install
         .iter()
         .map(|name| {
-            let api = Arc::clone(&api_client);
+            let cache = Arc::clone(&cache);
             let inst = Arc::clone(&installer);
             let sem = Arc::clone(&semaphore);
             let name = name.clone();
@@ -1780,7 +1778,7 @@ async fn install_casks(
                 let _permit = sem.acquire().await.map_err(|e| {
                     WaxError::InstallError(format!("cask detail semaphore closed: {e}"))
                 })?;
-                let details = api.fetch_cask_details(&name).await?;
+                let details = cache.fetch_cask_details(&name).await?;
                 let artifact_type = if let Some(t) = detect_artifact_type(&details.url) {
                     t
                 } else if let Some(t) = inst.probe_artifact_type(&details.url).await {
@@ -1948,7 +1946,7 @@ async fn install_casks(
 
             let installed_cask = {
                 let _line_done = FinishProgressLine(&pb);
-                if let Err(e) = CaskInstaller::verify_checksum(&download_path, &details.sha256) {
+                if let Err(e) = crate::digest::verify_sha256_file(&download_path, &details.sha256) {
                     note_aggregate_download_row_done(&net_done, cask_count, &hide_dl);
                     return Err(CaskPipelineFail::Checksum { name, err: e });
                 }

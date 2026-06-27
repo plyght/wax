@@ -1,4 +1,3 @@
-use crate::api::ApiClient;
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
@@ -19,12 +18,12 @@ fn tap_slug_from_qualified_name(qualified: &str) -> Option<String> {
     Some(format!("{}/{}", parts[0], parts[1]))
 }
 
-#[instrument(skip(api_client, cache))]
-pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool) -> Result<()> {
+#[instrument(skip(cache))]
+pub async fn info(cache: &Cache, name: &str, cask: bool) -> Result<()> {
     cache.ensure_fresh().await?;
 
     if cask {
-        return info_cask(api_client, cache, name).await;
+        return info_cask(cache, name).await;
     }
 
     let formulae = cache.load_all_formulae().await?;
@@ -39,7 +38,7 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
             .any(|c| c.token == name || c.full_token == name);
 
         if cask_exists {
-            return info_cask(api_client, cache, name).await;
+            return info_cask(cache, name).await;
         }
 
         return Err(WaxError::FormulaNotFound(format!(
@@ -164,8 +163,8 @@ pub async fn info(api_client: &ApiClient, cache: &Cache, name: &str, cask: bool)
     Ok(())
 }
 
-#[instrument(skip(api_client, cache))]
-async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<()> {
+#[instrument(skip(cache))]
+async fn info_cask(cache: &Cache, name: &str) -> Result<()> {
     cache.ensure_fresh().await?;
 
     let casks = cache.load_casks().await?;
@@ -175,7 +174,7 @@ async fn info_cask(api_client: &ApiClient, cache: &Cache, name: &str) -> Result<
         .find(|c| c.token == name || c.full_token == name)
         .ok_or_else(|| WaxError::CaskNotFound(name.to_string()))?;
 
-    let cask = api_client.fetch_cask_details(name).await?;
+    let cask = cache.fetch_cask_details(name).await?;
 
     let display_name = cask.name.first().unwrap_or(&cask.token);
 

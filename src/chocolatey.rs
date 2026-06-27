@@ -14,10 +14,6 @@ use std::sync::OnceLock;
 use tempfile::TempDir;
 use tracing::debug;
 
-fn client() -> &'static reqwest::Client {
-    crate::http_client::default_client()
-}
-
 static SEARCH_RE: OnceLock<Regex> = OnceLock::new();
 
 /// Search chocolatey.org web UI; returns package ids (lowercase) matching the query.
@@ -25,11 +21,17 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
     if query.trim().is_empty() {
         return Ok(vec![]);
     }
-    let url = format!(
-        "https://community.chocolatey.org/packages?q={}",
-        urlencoding::encode(query)
-    );
-    let html = client().get(&url).send().await?.text().await?;
+    let url = reqwest::Url::parse_with_params(
+        "https://community.chocolatey.org/packages",
+        &[("q", query)],
+    )
+    .map_err(|e| WaxError::InvalidInput(format!("invalid chocolatey search URL: {e}")))?;
+    let html = crate::http_client::default_client()
+        .get(url)
+        .send()
+        .await?
+        .text()
+        .await?;
     let re = SEARCH_RE.get_or_init(|| {
         Regex::new(r##"href="/packages/([^"#?]+)"##).expect("Invalid regex in chocolatey search")
     });
@@ -50,7 +52,7 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
 #[cfg(target_os = "windows")]
 pub async fn package_exists(id: &str) -> bool {
     let url = format!("https://community.chocolatey.org/api/v2/package/{}", id);
-    match client().head(&url).send().await {
+    match crate::http_client::default_client().head(&url).send().await {
         Ok(r) => r.status().is_success(),
         Err(_) => false,
     }

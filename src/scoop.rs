@@ -386,7 +386,7 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
     .await?;
     pb.finish_and_clear();
 
-    BottleDownloader::verify_checksum(&download_path, &resolved.sha256)?;
+    crate::digest::verify_sha256_file(&download_path, &resolved.sha256)?;
 
     match kind {
         "zip" | "tar.gz" => {

@@ -14,73 +14,12 @@ use crate::remote_search::{
     collect_remote_hits, dedupe_remote_by_speed, print_remote_hits, windows_search_plan,
 };
 
-#[cfg(not(target_os = "windows"))]
-fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<i32> {
-    let query_lower = query.to_lowercase();
-    let name_lower = name.to_lowercase();
-
-    if name_lower == query_lower {
-        return Some(1000);
-    }
-
-    if name_lower.starts_with(&query_lower) {
-        return Some(900);
-    }
-
-    if name_lower.contains(&query_lower) {
-        return Some(850);
-    }
-
-    let name_words: Vec<&str> = name_lower.split(|c: char| !c.is_alphanumeric()).collect();
-    for word in &name_words {
-        if *word == query_lower {
-            return Some(800);
-        }
-    }
-
-    for word in &name_words {
-        if word.starts_with(&query_lower) {
-            return Some(700);
-        }
-    }
-
-    if let Some(description) = desc {
-        let desc_lower = description.to_lowercase();
-        let desc_words: Vec<&str> = desc_lower.split(|c: char| !c.is_alphanumeric()).collect();
-
-        for word in &desc_words {
-            if *word == query_lower {
-                return Some(600);
-            }
-        }
-
-        for word in &desc_words {
-            if word.contains(&query_lower) && word.len() < query_lower.len() * 3 {
-                return Some(400);
-            }
-        }
-
-        if desc_lower.contains(&query_lower) {
-            return Some(300);
-        }
-
-        if query_lower.contains('-') {
-            let query_with_spaces = query_lower.replace('-', " ");
-            if desc_lower.contains(&query_with_spaces) {
-                return Some(250);
-            }
-        }
-    }
-
-    None
-}
-
 #[instrument(skip(cache))]
 pub async fn search(cache: &Cache, query: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         let (eco_filter, q) = crate::package_spec::parse_search_query(query);
-        crate::platform_catalog::reject_brew_ecosystem(eco_filter)?;
+        crate::error::reject_brew_ecosystem(eco_filter)?;
         let q = q.trim();
         if q.is_empty() {
             println!("empty search query");
@@ -154,15 +93,17 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         let mut formula_matches: Vec<_> = core_formulae
             .iter()
             .filter_map(|f| {
-                calculate_match_score(&f.name, f.desc.as_deref(), query).map(|score| (f, score))
+                crate::catalog_match::match_score(&f.name, f.desc.as_deref(), query)
+                    .map(|score| (f, score))
             })
             .collect();
 
         let mut tap_matches: Vec<_> = tap_formulae
             .iter()
             .filter_map(|f| {
-                let name_score = calculate_match_score(&f.name, f.desc.as_deref(), query);
-                let full_name_score = calculate_match_score(&f.full_name, f.desc.as_deref(), query);
+                let name_score = crate::catalog_match::match_score(&f.name, f.desc.as_deref(), query);
+                let full_name_score =
+                    crate::catalog_match::match_score(&f.full_name, f.desc.as_deref(), query);
                 name_score.or(full_name_score).map(|score| (f, score))
             })
             .collect();
@@ -170,11 +111,12 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         let mut cask_matches: Vec<_> = casks
             .iter()
             .filter_map(|c| {
-                let token_score = calculate_match_score(&c.token, c.desc.as_deref(), query);
+                let token_score =
+                    crate::catalog_match::match_score(&c.token, c.desc.as_deref(), query);
                 let name_score = c
                     .name
                     .iter()
-                    .filter_map(|n| calculate_match_score(n, c.desc.as_deref(), query))
+                    .filter_map(|n| crate::catalog_match::match_score(n, c.desc.as_deref(), query))
                     .max();
                 token_score.or(name_score).map(|score| (c, score))
             })

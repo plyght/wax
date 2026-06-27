@@ -6,7 +6,7 @@ use crate::error::{Result, WaxError};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::lockfile::Lockfile;
 use crate::signal::{check_cancelled, CriticalSection};
-use crate::ui::{copy_dir_all, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
+use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
@@ -385,7 +385,7 @@ async fn download_and_extract_packages(
             // Release permit before extraction so another download can start.
             drop(permit);
 
-            BottleDownloader::verify_checksum(&tarball_path, &entry.sha256)?;
+            crate::digest::verify_sha256_file(&tarball_path, &entry.sha256)?;
 
             let extract_dir = temp_dir.path().join(&entry.name);
             BottleDownloader::extract(&tarball_path, &extract_dir)?;
@@ -431,12 +431,12 @@ async fn install_extracted_packages(
         let formula_cellar = cellar.join(&name).join(&version);
         tokio::fs::create_dir_all(&formula_cellar).await?;
 
-        let actual_content_dir = extract_dir.join(&name).join(&version);
-        if actual_content_dir.exists() {
-            copy_dir_all(&actual_content_dir, &formula_cellar)?;
-        } else {
-            copy_dir_all(&extract_dir, &formula_cellar)?;
-        }
+        crate::bottle::copy_extracted_bottle_to_cellar(
+            &extract_dir,
+            &name,
+            &version,
+            &formula_cellar,
+        )?;
 
         create_symlinks(
             &name,

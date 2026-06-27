@@ -542,20 +542,6 @@ fn tap_list_rejected_on_windows() {
     assert!(stderr.contains("not available on Windows"), "{stderr}");
 }
 
-#[test]
-fn hidden_refresh_state_command_exits_zero() {
-    if std::env::var_os("INTEGRATION").is_none() {
-        return;
-    }
-
-    let out = wax().arg("__refresh_state").output().unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
 // ── invalid input should not panic ───────────────────────────────────────────
 
 #[test]
