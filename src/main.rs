@@ -12,13 +12,13 @@ mod formula_parser;
 mod http_client;
 mod install;
 mod lockfile;
+mod platform_catalog;
 mod signal;
 mod sudo;
 mod system_pm;
 mod tap;
 mod ui;
 mod version;
-mod platform_catalog;
 
 // Windows package manager support (scoop, winget, chocolatey)
 #[cfg(target_os = "windows")]

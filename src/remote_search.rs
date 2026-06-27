@@ -145,13 +145,7 @@ async fn refresh_scoop_index_from_git(cache_dir: &Path) -> Result<Vec<String>> {
     }
 
     let stdout = run_git(
-        &[
-            "ls-tree",
-            "-r",
-            "--name-only",
-            "origin/master",
-            "bucket",
-        ],
+        &["ls-tree", "-r", "--name-only", "origin/master", "bucket"],
         Some(&repo_dir),
     )
     .await?;
@@ -178,7 +172,10 @@ async fn refresh_scoop_index_from_github_api() -> Result<Vec<String>> {
         )));
     }
     let v: serde_json::Value = resp.json().await?;
-    if v.get("truncated").and_then(|t| t.as_bool()).unwrap_or(false) {
+    if v.get("truncated")
+        .and_then(|t| t.as_bool())
+        .unwrap_or(false)
+    {
         return Err(crate::error::WaxError::InstallError(
             "Scoop index GitHub tree was truncated; git metadata refresh required".into(),
         ));
