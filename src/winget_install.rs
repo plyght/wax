@@ -164,6 +164,7 @@ struct WingetInstallerDoc {
     installer_type: Option<String>,
     nested_installer_type: Option<String>,
     nested_installer_files: Option<Vec<WingetNestedFile>>,
+    commands: Option<Vec<String>>,
     installer_switches: Option<WingetInstallerSwitches>,
     apps_and_features_entries: Option<Vec<WingetAppsAndFeaturesEntry>>,
     installers: Vec<WingetInstallerEntry>,
@@ -509,11 +510,105 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
 
     crate::digest::verify_sha256_file(&archive_path, &sha_expected)?;
 
-    if !inst_type.eq_ignore_ascii_case("zip") || !nested.eq_ignore_ascii_case("portable") {
-        return install_native_winget_package(&package_id, &latest, &doc, inst, &archive_path)
+    if inst_type.eq_ignore_ascii_case("portable") {
+        return install_portable_winget_exe(&package_id, &latest, &doc, inst, &archive_path).await;
+    }
+
+    if inst_type.eq_ignore_ascii_case("zip") && nested.eq_ignore_ascii_case("portable") {
+        return install_portable_winget_zip(&package_id, &latest, &doc, inst, &archive_path, &tmp)
             .await;
     }
 
+    install_native_winget_package(&package_id, &latest, &doc, inst, &archive_path).await
+}
+
+fn portable_bin_dest_names(commands: Option<&[String]>, fallback_exe: &str) -> Vec<String> {
+    let Some(cmds) = commands.filter(|c| !c.is_empty()) else {
+        return vec![fallback_exe.to_string()];
+    };
+    cmds.iter()
+        .map(|c| {
+            if c.to_ascii_lowercase().ends_with(".exe") {
+                c.clone()
+            } else {
+                format!("{c}.exe")
+            }
+        })
+        .collect()
+}
+
+async fn install_portable_winget_exe(
+    package_id: &str,
+    latest: &str,
+    doc: &WingetInstallerDoc,
+    inst: &WingetInstallerEntry,
+    exe_path: &Path,
+) -> Result<()> {
+    let staged_name = Path::new(&inst.installer_url)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("app.exe");
+    let staging = windows_state::wax_windows_root()?
+        .join("winget-apps")
+        .join(package_id.replace('.', "_"))
+        .join(latest);
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    std::fs::create_dir_all(&staging)?;
+    let staged_exe = staging.join(staged_name);
+    std::fs::copy(exe_path, &staged_exe)?;
+
+    let bin_dir = windows_state::wax_bin_dir()?;
+    std::fs::create_dir_all(&bin_dir)?;
+
+    let dest_names = portable_bin_dest_names(doc.commands.as_deref(), staged_name);
+    let mut copy_actions = Vec::new();
+    for name in dest_names {
+        copy_actions.push((staged_exe.clone(), bin_dir.join(name)));
+    }
+    let bin_links: Vec<PathBuf> = copy_actions.iter().map(|(_, dest)| dest.clone()).collect();
+    windows_state::validate_bin_links_available(Ecosystem::Winget, package_id, &bin_links)?;
+
+    for (src, dest) in copy_actions {
+        if dest.exists() {
+            let _ = std::fs::remove_file(&dest);
+        }
+        std::fs::copy(&src, &dest)?;
+    }
+
+    let mut files = windows_state::collect_files(&staging)?;
+    files.extend(bin_links.iter().cloned());
+    let installed_id = package_id.to_string();
+    WindowsPackageManifest::new(
+        Ecosystem::Winget,
+        package_id,
+        latest.to_string(),
+        inst.installer_url.clone(),
+        staging.clone(),
+        bin_links,
+        files,
+    )
+    .save()?;
+
+    println!(
+        "Installed {} {} (winget portable) — binaries under:\n  {}",
+        installed_id,
+        latest,
+        bin_dir.display()
+    );
+
+    Ok(())
+}
+
+async fn install_portable_winget_zip(
+    package_id: &str,
+    latest: &str,
+    doc: &WingetInstallerDoc,
+    inst: &WingetInstallerEntry,
+    archive_path: &Path,
+    tmp: &TempDir,
+) -> Result<()> {
     let extract_root = tmp.path().join("extract");
     std::fs::create_dir_all(&extract_root)?;
     scoop::extract_zip_file(&archive_path, &extract_root)?;
@@ -760,5 +855,65 @@ mod tests {
             .args
             .iter()
             .any(|arg| arg.contains("Remove-AppxPackage")));
+    }
+
+    #[test]
+    fn installer_type_prefers_entry_over_doc() {
+        let doc = WingetInstallerDoc {
+            installer_type: Some("zip".into()),
+            nested_installer_type: Some("portable".into()),
+            nested_installer_files: None,
+            commands: None,
+            installer_switches: None,
+            apps_and_features_entries: None,
+            installers: vec![WingetInstallerEntry {
+                architecture: "x64".into(),
+                installer_url: "https://example.invalid/app.exe".into(),
+                installer_sha256: "abc".into(),
+                installer_type: Some("portable".into()),
+                installer_switches: None,
+                product_code: None,
+            }],
+        };
+        let inst = pick_installer(&doc).unwrap();
+        assert_eq!(installer_type_for(&doc, inst), "portable");
+    }
+
+    #[test]
+    fn antigravity_cli_manifest_parses_as_portable() {
+        let yaml = r#"
+PackageIdentifier: Google.AntigravityCLI
+PackageVersion: 1.0.0
+InstallerType: portable
+Commands:
+- agy
+Installers:
+- Architecture: x64
+  InstallerUrl: https://example.invalid/cli.exe
+  InstallerSha256: DC629DEBB33BA95091F911CFB367BDCE48E6348A682B8F7FD6BAECB5B367A798
+"#;
+        let doc: WingetInstallerDoc = serde_yaml::from_str(yaml).unwrap();
+        let inst = pick_installer(&doc).unwrap();
+        assert!(installer_type_for(&doc, inst).eq_ignore_ascii_case("portable"));
+        assert_eq!(
+            portable_bin_dest_names(doc.commands.as_deref(), "cli.exe"),
+            vec!["agy.exe"]
+        );
+    }
+
+    #[test]
+    fn native_plan_rejects_portable_type() {
+        let inst = entry("portable");
+        let doc = WingetInstallerDoc {
+            installer_type: Some("portable".into()),
+            nested_installer_type: None,
+            nested_installer_files: None,
+            commands: None,
+            installer_switches: None,
+            apps_and_features_entries: None,
+            installers: vec![],
+        };
+        let err = native_plan(&doc, &inst, Path::new("C:/tmp/cli.exe")).unwrap_err();
+        assert!(err.to_string().contains("portable"));
     }
 }

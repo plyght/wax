@@ -52,8 +52,9 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
 #[cfg(target_os = "windows")]
 pub async fn package_exists(id: &str) -> bool {
     let url = format!("https://community.chocolatey.org/api/v2/package/{}", id);
-    match crate::http_client::default_client().head(&url).send().await {
-        Ok(r) => r.status().is_success(),
+    // Chocolatey v2 feed returns 501 for HEAD; GET redirects to the .nupkg on success.
+    match crate::http_client::default_client().get(&url).send().await {
+        Ok(r) => r.status().is_success() || r.status().is_redirection(),
         Err(_) => false,
     }
 }
@@ -105,10 +106,13 @@ pub async fn install_portable_tools(id: &str) -> Result<()> {
     collect_exe_files(&tools_dir, &mut exes, 0, 4)?;
 
     if exes.is_empty() {
-        return Err(WaxError::InstallError(
-            "No suitable portable .exe under tools/ (this package likely depends on unsupported installer script semantics)"
-                .into(),
-        ));
+        let script_only = tools_dir.join("chocolateyinstall.ps1").is_file();
+        let msg = if script_only {
+            "Chocolatey package only ships chocolateyinstall.ps1 (no portable tools/*.exe). Try scoop/ or winget/ for the same app, or install with choco.exe"
+        } else {
+            "No suitable portable .exe under tools/ (wax does not run Chocolatey install scripts)"
+        };
+        return Err(WaxError::InstallError(msg.into()));
     }
 
     let bin_dir = windows_state::wax_bin_dir()?;
