@@ -88,6 +88,7 @@ pub async fn uninstall_quiet(cache: &Cache, formula_name: &str, cask: bool) -> R
     uninstall_impl(cache, formula_name, false, cask, true, true, "").await
 }
 
+#[cfg_attr(target_os = "windows", allow(unused_variables, unreachable_code))]
 async fn uninstall_impl(
     cache: &Cache,
     formula_name: &str,

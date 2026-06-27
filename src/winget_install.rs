@@ -510,7 +510,8 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
     BottleDownloader::verify_checksum(&archive_path, &sha_expected)?;
 
     if !inst_type.eq_ignore_ascii_case("zip") || !nested.eq_ignore_ascii_case("portable") {
-        return install_native_winget_package(package_id, &latest, &doc, inst, &archive_path).await;
+        return install_native_winget_package(&package_id, &latest, &doc, inst, &archive_path)
+            .await;
     }
 
     let extract_root = tmp.path().join("extract");
@@ -547,7 +548,7 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
         copy_actions.push((src, dest));
     }
     let bin_links: Vec<PathBuf> = copy_actions.iter().map(|(_, dest)| dest.clone()).collect();
-    windows_state::validate_bin_links_available(Ecosystem::Winget, package_id, &bin_links)?;
+    windows_state::validate_bin_links_available(Ecosystem::Winget, &package_id, &bin_links)?;
 
     for (src, dest) in copy_actions {
         if dest.exists() {

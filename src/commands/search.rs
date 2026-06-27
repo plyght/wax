@@ -1,6 +1,8 @@
 use crate::cache::Cache;
+#[cfg(not(target_os = "windows"))]
 use crate::cask::CaskState;
 use crate::error::Result;
+#[cfg(not(target_os = "windows"))]
 use crate::install::InstallState;
 use console::style;
 use tracing::instrument;

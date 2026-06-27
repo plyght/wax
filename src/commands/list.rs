@@ -47,6 +47,7 @@ fn validate_cellar_path(path: &std::path::Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+#[cfg_attr(target_os = "windows", allow(unreachable_code))]
 async fn collect_installed_rows(
     _cache: &Cache,
     scope: Option<InstallMode>,

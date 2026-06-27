@@ -657,11 +657,28 @@ fn hint_user_prefix_path_if_needed(install_mode: InstallMode, quiet: bool) {
     println!("  export PATH=\"{}:$PATH\"", bin_dir.display());
 }
 
+#[cfg_attr(target_os = "windows", allow(unreachable_code, unused_variables))]
 pub(crate) async fn install_impl(
     cache: &Cache,
     package_names: &[String],
     args: InstallArgs<'_>,
 ) -> Result<()> {
+    if package_names.is_empty() {
+        return Err(WaxError::InvalidInput("No packages specified".to_string()));
+    }
+
+    for name in package_names {
+        crate::error::validate_package_name(name)?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if args.cask || args.head || args.build_from_source {
+            return Err(crate::platform_catalog::homebrew_unavailable());
+        }
+        return install_windows_packages(cache, package_names, args.dry_run, args.quiet).await;
+    }
+
     let InstallArgs {
         dry_run,
         ask,
@@ -675,21 +692,6 @@ pub(crate) async fn install_impl(
         force_reinstall,
         external_pb,
     } = args;
-    if package_names.is_empty() {
-        return Err(WaxError::InvalidInput("No packages specified".to_string()));
-    }
-
-    for name in package_names {
-        crate::error::validate_package_name(name)?;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if cask || head || build_from_source {
-            return Err(crate::platform_catalog::homebrew_unavailable());
-        }
-        return install_windows_packages(cache, package_names, dry_run, quiet).await;
-    }
 
     cache.ensure_fresh().await?;
 
