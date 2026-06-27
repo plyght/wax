@@ -611,7 +611,7 @@ async fn install_portable_winget_zip(
 ) -> Result<()> {
     let extract_root = tmp.path().join("extract");
     std::fs::create_dir_all(&extract_root)?;
-    scoop::extract_zip_file(&archive_path, &extract_root)?;
+    scoop::extract_zip_file(archive_path, &extract_root)?;
 
     let bin_dir = windows_state::wax_bin_dir()?;
     std::fs::create_dir_all(&bin_dir)?;
@@ -643,7 +643,7 @@ async fn install_portable_winget_zip(
         copy_actions.push((src, dest));
     }
     let bin_links: Vec<PathBuf> = copy_actions.iter().map(|(_, dest)| dest.clone()).collect();
-    windows_state::validate_bin_links_available(Ecosystem::Winget, &package_id, &bin_links)?;
+    windows_state::validate_bin_links_available(Ecosystem::Winget, package_id, &bin_links)?;
 
     for (src, dest) in copy_actions {
         if dest.exists() {
@@ -655,7 +655,7 @@ async fn install_portable_winget_zip(
     let staging = windows_state::wax_windows_root()?
         .join("winget-apps")
         .join(package_id.replace('.', "_"))
-        .join(&latest);
+        .join(latest);
     if staging.exists() {
         let _ = std::fs::remove_dir_all(&staging);
     }
@@ -664,11 +664,11 @@ async fn install_portable_winget_zip(
 
     let mut files = windows_state::collect_files(&staging)?;
     files.extend(bin_links.iter().cloned());
-    let installed_id = package_id.clone();
+    let installed_id = package_id;
     WindowsPackageManifest::new(
         Ecosystem::Winget,
         package_id,
-        latest.clone(),
+        latest,
         inst.installer_url.clone(),
         staging.clone(),
         bin_links,
@@ -764,6 +764,7 @@ mod tests {
             installer_type: None,
             nested_installer_type: None,
             nested_installer_files: None,
+            commands: None,
             installer_switches: None,
             apps_and_features_entries: None,
             installers: vec![],
@@ -789,6 +790,7 @@ mod tests {
             installer_type: None,
             nested_installer_type: None,
             nested_installer_files: None,
+            commands: None,
             installer_switches: None,
             apps_and_features_entries: None,
             installers: vec![],
@@ -810,6 +812,7 @@ mod tests {
             installer_type: Some("exe".into()),
             nested_installer_type: None,
             nested_installer_files: None,
+            commands: None,
             installer_switches: Some(WingetInstallerSwitches {
                 silent: Some("/quiet /norestart".into()),
                 silent_with_progress: None,
@@ -838,6 +841,7 @@ mod tests {
             installer_type: None,
             nested_installer_type: None,
             nested_installer_files: None,
+            commands: None,
             installer_switches: None,
             apps_and_features_entries: Some(vec![WingetAppsAndFeaturesEntry {
                 product_code: None,
