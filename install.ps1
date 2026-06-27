@@ -7,6 +7,16 @@
 
 $ErrorActionPreference = 'Stop'
 
+# GitHub requires TLS 1.2; Windows PowerShell 5.1 defaults to older protocols.
+try {
+    $tls = [Net.ServicePointManager]::SecurityProtocol
+    if ($tls -band [Net.SecurityProtocolType]::Tls12 -eq 0) {
+        [Net.ServicePointManager]::SecurityProtocol = $tls -bor [Net.SecurityProtocolType]::Tls12
+    }
+} catch {
+    # Non-fatal on hosts where ServicePointManager is unavailable.
+}
+
 if ($PSVersionTable.PSVersion.Major -lt 5) {
     throw 'PowerShell 5.1 or later is required.'
 }
@@ -28,12 +38,17 @@ $script:WebHeaders = @{ 'User-Agent' = 'wax-install-ps1' }
 
 function Get-WebText {
     param([string]$Uri)
-    $resp = Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers $script:WebHeaders
-    $content = $resp.Content
-    if ($content -is [byte[]]) {
-        return [System.Text.Encoding]::UTF8.GetString($content)
+    # OutFile matches the release binary download path; .Content is unreliable for
+    # application/octet-stream responses under Windows PowerShell 5.1.
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('wax-dl-' + [System.IO.Path]::GetRandomFileName())
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $tmp -UseBasicParsing -Headers $script:WebHeaders
+        return Get-Content -LiteralPath $tmp -Raw -Encoding UTF8
+    } finally {
+        if (Test-Path -LiteralPath $tmp) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
     }
-    return [string]$content
 }
 
 function Read-ExpectedSha256 {
