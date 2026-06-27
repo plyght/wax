@@ -18,6 +18,7 @@ mod system_pm;
 mod tap;
 mod ui;
 mod version;
+mod platform_catalog;
 
 // Windows package manager support (scoop, winget, chocolatey)
 #[cfg(target_os = "windows")]
@@ -713,6 +714,8 @@ async fn run() -> Result<()> {
             if update_self {
                 run_self_update(nightly, force, clean, no_clean).await
             } else {
+                #[cfg(target_os = "windows")]
+                platform_catalog::reject_homebrew_cli("update")?;
                 commands::update::update(&api_client, &cache).await
             }
         }
@@ -724,6 +727,8 @@ async fn run() -> Result<()> {
         } => run_self_update(nightly, force, clean, no_clean).await,
         Commands::Search { query } => commands::search::search(&cache, &query).await,
         Commands::Info { formula, cask } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("info")?;
             commands::info::info(&api_client, &cache, &formula, cask).await
         }
         Commands::List {
@@ -743,6 +748,8 @@ async fn run() -> Result<()> {
             no_script,
         } => {
             if packages.is_empty() && !cask {
+                #[cfg(target_os = "windows")]
+                platform_catalog::reject_homebrew_cli("install")?;
                 // No packages specified — sync from lockfile like `npm install`
                 commands::sync::sync(&cache).await
             } else {
@@ -769,6 +776,8 @@ async fn run() -> Result<()> {
             global,
             no_script,
         } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("install --cask")?;
             commands::install::install(
                 &cache,
                 &packages,
@@ -793,12 +802,20 @@ async fn run() -> Result<()> {
             packages,
             cask,
             all,
-        } => commands::reinstall::reinstall(&cache, &packages, cask, all).await,
+        } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("reinstall")?;
+            commands::reinstall::reinstall(&cache, &packages, cask, all).await
+        }
         Commands::Postinstall {
             formulae,
             user,
             global,
-        } => commands::install::postinstall(&cache, &formulae, user, global).await,
+        } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("postinstall")?;
+            commands::install::postinstall(&cache, &formulae, user, global).await
+        }
         Commands::Upgrade {
             packages,
             upgrade_self,
@@ -815,6 +832,9 @@ async fn run() -> Result<()> {
                 run_self_update(nightly, false, clean, no_clean).await?;
                 return Ok(());
             }
+
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("upgrade")?;
 
             let explicit_packages_requested = !packages.is_empty();
 
@@ -860,53 +880,126 @@ async fn run() -> Result<()> {
             }
         },
         Commands::Outdated { user, global } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("outdated")?;
             commands::outdated::outdated(&cache, install_scope(user, global)?).await
         }
-        Commands::Link { packages } => commands::link::link(&packages).await,
-        Commands::Unlink { packages } => commands::link::unlink(&packages).await,
-        Commands::Cleanup { dry_run } => commands::cleanup::cleanup(dry_run).await,
-        Commands::Leaves => commands::leaves::leaves(&cache).await,
+        Commands::Link { packages } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("link")?;
+            commands::link::link(&packages).await
+        }
+        Commands::Unlink { packages } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("unlink")?;
+            commands::link::unlink(&packages).await
+        }
+        Commands::Cleanup { dry_run } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("cleanup")?;
+            commands::cleanup::cleanup(dry_run).await
+        }
+        Commands::Leaves => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("leaves")?;
+            commands::leaves::leaves(&cache).await
+        }
         Commands::Uses { formula, installed } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("uses")?;
             commands::uses::uses(&cache, &formula, installed).await
         }
         Commands::Deps {
             formula,
             tree,
             installed,
-        } => commands::show_deps::deps(&cache, &formula, tree, installed).await,
-        Commands::Pin { packages } => commands::pin::pin(&packages).await,
-        Commands::Unpin { packages } => commands::pin::unpin(&packages).await,
-        Commands::Lock => commands::lock::lock(&cache).await,
-        Commands::__RefreshState => commands::refresh::refresh(&cache).await,
-        Commands::Sync => commands::sync::sync(&cache).await,
-        Commands::Tap { action, repair } => commands::tap::tap(action, repair, Some(&cache)).await,
-        Commands::Doctor { fix, full } => commands::doctor::doctor(&cache, fix, full).await,
+        } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("deps")?;
+            commands::show_deps::deps(&cache, &formula, tree, installed).await
+        }
+        Commands::Pin { packages } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("pin")?;
+            commands::pin::pin(&packages).await
+        }
+        Commands::Unpin { packages } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("unpin")?;
+            commands::pin::unpin(&packages).await
+        }
+        Commands::Lock => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("lock")?;
+            commands::lock::lock(&cache).await
+        }
+        Commands::__RefreshState => {
+            #[cfg(target_os = "windows")]
+            {
+                Ok(())
+            }
+            #[cfg(not(target_os = "windows"))]
+            commands::refresh::refresh(&cache).await
+        }
+        Commands::Sync => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("sync")?;
+            commands::sync::sync(&cache).await
+        }
+        Commands::Tap { action, repair } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("tap")?;
+            commands::tap::tap(action, repair, Some(&cache)).await
+        }
+        Commands::Doctor { fix, full } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("doctor")?;
+            commands::doctor::doctor(&cache, fix, full).await
+        }
         Commands::Bundle {
             file,
             dry_run,
             action,
-        } => match action {
-            Some(BundleAction::Dump) => commands::bundle::bundle_dump(&cache).await,
-            None => commands::bundle::bundle(&cache, file.as_deref(), dry_run).await,
-        },
-        Commands::Services { action } => match action {
-            Some(ServicesAction::List) | None => commands::services::services_list().await,
-            Some(ServicesAction::Start { formula, nice }) => {
-                commands::services::services_start(&formula, nice).await
+        } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("bundle")?;
+            match action {
+                Some(BundleAction::Dump) => commands::bundle::bundle_dump(&cache).await,
+                None => commands::bundle::bundle(&cache, file.as_deref(), dry_run).await,
             }
-            Some(ServicesAction::Stop { formula }) => {
-                commands::services::services_stop(&formula).await
+        }
+        Commands::Services { action } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("services")?;
+            match action {
+                Some(ServicesAction::List) | None => commands::services::services_list().await,
+                Some(ServicesAction::Start { formula, nice }) => {
+                    commands::services::services_start(&formula, nice).await
+                }
+                Some(ServicesAction::Stop { formula }) => {
+                    commands::services::services_stop(&formula).await
+                }
+                Some(ServicesAction::Restart { formula, nice }) => {
+                    commands::services::services_restart(&formula, nice).await
+                }
             }
-            Some(ServicesAction::Restart { formula, nice }) => {
-                commands::services::services_restart(&formula, nice).await
-            }
-        },
-        Commands::Source { formula } => commands::source::source(&cache, &formula).await,
+        }
+        Commands::Source { formula } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("source")?;
+            commands::source::source(&cache, &formula).await
+        }
         Commands::Completions { shell, print } => commands::completions::completions(shell, print),
         Commands::Why { formula } => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("why")?;
             commands::info::info(&api_client, &cache, &formula, false).await
         }
-        Commands::Audit => commands::audit::audit(&cache).await,
+        Commands::Audit => {
+            #[cfg(target_os = "windows")]
+            platform_catalog::reject_homebrew_cli("audit")?;
+            commands::audit::audit(&cache).await
+        }
     };
 
     result?;

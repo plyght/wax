@@ -45,7 +45,8 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-fn match_score_token(name: &str, query: &str) -> Option<i32> {
+/// Shared name-only scoring for Windows catalogue search (Scoop/winget/Chocolatey ids).
+pub fn catalog_match_score(name: &str, query: &str) -> Option<i32> {
     let q = query.to_lowercase();
     let n = name.to_lowercase();
     if n == q {
@@ -57,7 +58,148 @@ fn match_score_token(name: &str, query: &str) -> Option<i32> {
     if n.contains(&q) {
         return Some(850);
     }
+    let words: Vec<&str> = n.split(|c: char| !c.is_alphanumeric()).collect();
+    for word in &words {
+        if *word == q {
+            return Some(800);
+        }
+    }
+    for word in &words {
+        if word.starts_with(&q) {
+            return Some(700);
+        }
+    }
     None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowsSearchPlan {
+    pub include_scoop: bool,
+    pub include_choco: bool,
+    pub include_winget: bool,
+}
+
+/// On Windows, search covers Scoop/winget/Chocolatey catalogues only.
+pub fn windows_search_plan(eco_filter: Option<Ecosystem>) -> WindowsSearchPlan {
+    match eco_filter {
+        Some(Ecosystem::Brew) => WindowsSearchPlan {
+            include_scoop: false,
+            include_choco: false,
+            include_winget: false,
+        },
+        Some(Ecosystem::Scoop) => WindowsSearchPlan {
+            include_scoop: true,
+            include_choco: false,
+            include_winget: false,
+        },
+        Some(Ecosystem::Winget) => WindowsSearchPlan {
+            include_scoop: false,
+            include_choco: false,
+            include_winget: true,
+        },
+        Some(Ecosystem::Chocolatey) => WindowsSearchPlan {
+            include_scoop: false,
+            include_choco: true,
+            include_winget: false,
+        },
+        None => WindowsSearchPlan {
+            include_scoop: true,
+            include_choco: true,
+            include_winget: true,
+        },
+    }
+}
+
+fn scoop_name_from_tree_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("bucket/")?;
+    let stem = rest.strip_suffix(".json")?;
+    if stem.contains('/') {
+        return None;
+    }
+    Some(stem.to_string())
+}
+
+async fn refresh_scoop_index_from_git(cache_dir: &Path) -> Result<Vec<String>> {
+    let repo_dir = cache_dir.join("scoop-main.git");
+    let repo = repo_dir.to_string_lossy().to_string();
+    if !repo_dir.join("HEAD").exists() {
+        if let Some(parent) = repo_dir.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        debug!("Cloning Scoop Main metadata into cache...");
+        run_git(
+            &[
+                "clone",
+                "--filter=blob:none",
+                "--no-checkout",
+                "--depth=1",
+                "https://github.com/ScoopInstaller/Main.git",
+                &repo,
+            ],
+            None,
+        )
+        .await?;
+    } else {
+        debug!("Refreshing cached Scoop Main metadata...");
+        run_git(&["fetch", "--depth=1", "origin", "master"], Some(&repo_dir)).await?;
+    }
+
+    let stdout = run_git(
+        &[
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "origin/master",
+            "bucket",
+        ],
+        Some(&repo_dir),
+    )
+    .await?;
+    let mut names: Vec<String> = stdout
+        .lines()
+        .filter_map(scoop_name_from_tree_path)
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+async fn refresh_scoop_index_from_github_api() -> Result<Vec<String>> {
+    debug!("Refreshing Scoop Main bucket index via GitHub API…");
+    let client = crate::http_client::default_client();
+    let resp = client
+        .get("https://api.github.com/repos/ScoopInstaller/Main/git/trees/master?recursive=1")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(crate::error::WaxError::InstallError(format!(
+            "Scoop index GitHub API: HTTP {}",
+            resp.status()
+        )));
+    }
+    let v: serde_json::Value = resp.json().await?;
+    if v.get("truncated").and_then(|t| t.as_bool()).unwrap_or(false) {
+        return Err(crate::error::WaxError::InstallError(
+            "Scoop index GitHub tree was truncated; git metadata refresh required".into(),
+        ));
+    }
+    let tree = v
+        .get("tree")
+        .and_then(|t| t.as_array())
+        .ok_or_else(|| crate::error::WaxError::ParseError("no tree array".into()))?;
+
+    let mut names = Vec::new();
+    for item in tree {
+        let Some(path) = item.get("path").and_then(|p| p.as_str()) else {
+            continue;
+        };
+        if let Some(name) = scoop_name_from_tree_path(path) {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 async fn load_or_fetch_scoop_index(cache_dir: &std::path::Path) -> Result<Vec<String>> {
@@ -72,47 +214,24 @@ async fn load_or_fetch_scoop_index(cache_dir: &std::path::Path) -> Result<Vec<St
         }
     }
 
-    debug!("Refreshing Scoop Main bucket index via GitHub API…");
-    let client = crate::http_client::default_client();
-
-    let resp = client
-        .get("https://api.github.com/repos/ScoopInstaller/Main/git/trees/master?recursive=1")
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        if let Some(idx) = stale {
-            debug!(
-                "Using stale Scoop index after GitHub API HTTP {}",
-                resp.status()
-            );
-            return Ok(idx.names.clone());
-        }
-        return Err(crate::error::WaxError::InstallError(format!(
-            "Scoop index GitHub API: HTTP {}",
-            resp.status()
-        )));
-    }
-    let v: serde_json::Value = resp.json().await?;
-    let tree = v
-        .get("tree")
-        .and_then(|t| t.as_array())
-        .ok_or_else(|| crate::error::WaxError::ParseError("no tree array".into()))?;
-
-    let mut names = Vec::new();
-    for item in tree {
-        let Some(path) = item.get("path").and_then(|p| p.as_str()) else {
-            continue;
-        };
-        if let Some(rest) = path.strip_prefix("bucket/") {
-            if let Some(stem) = rest.strip_suffix(".json") {
-                if !stem.contains('/') {
-                    names.push(stem.to_string());
+    let names = match refresh_scoop_index_from_git(cache_dir).await {
+        Ok(names) => names,
+        Err(git_err) => {
+            debug!("Scoop git metadata refresh failed ({git_err}); trying GitHub API");
+            match refresh_scoop_index_from_github_api().await {
+                Ok(names) => names,
+                Err(api_err) => {
+                    if let Some(idx) = stale {
+                        debug!(
+                            "Using stale Scoop index after refresh failed (git: {git_err}; api: {api_err})"
+                        );
+                        return Ok(idx.names.clone());
+                    }
+                    return Err(api_err);
                 }
             }
         }
-    }
-    names.sort();
-    names.dedup();
+    };
 
     let idx = ScoopIndexFile {
         fetched_unix: now_unix(),
@@ -252,6 +371,28 @@ async fn load_or_fetch_winget_index(cache_dir: &Path) -> Result<Vec<String>> {
     Ok(ids)
 }
 
+async fn search_scoop_index(
+    cache_dir: &std::path::Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<RemoteHit>> {
+    let index = load_or_fetch_scoop_index(cache_dir).await?;
+    let mut out = Vec::new();
+    for name in index {
+        if let Some(score) = catalog_match_score(&name, query) {
+            out.push(RemoteHit {
+                ecosystem: Ecosystem::Scoop,
+                id: name,
+                blurb: None,
+                score,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
+    out.truncate(limit);
+    Ok(out)
+}
+
 async fn search_winget_index(
     cache_dir: &std::path::Path,
     query: &str,
@@ -260,7 +401,7 @@ async fn search_winget_index(
     let index = load_or_fetch_winget_index(cache_dir).await?;
     let mut out = Vec::new();
     for id in index {
-        if let Some(score) = match_score_token(&id, query) {
+        if let Some(score) = catalog_match_score(&id, query) {
             out.push(RemoteHit {
                 ecosystem: Ecosystem::Winget,
                 id,
@@ -288,23 +429,13 @@ pub async fn collect_remote_hits(
     }
 
     if include_scoop {
-        let index = load_or_fetch_scoop_index(cache.cache_dir_path()).await?;
-        for name in index {
-            if let Some(s) = match_score_token(&name, q) {
-                hits.push(RemoteHit {
-                    ecosystem: Ecosystem::Scoop,
-                    id: name.clone(),
-                    blurb: None,
-                    score: s,
-                });
-            }
-        }
+        hits.extend(search_scoop_index(cache.cache_dir_path(), q, 25).await?);
     }
 
     if include_choco {
         let ids = chocolatey::search_package_ids(q, 25).await?;
         for id in ids {
-            let s = match_score_token(&id, q).unwrap_or(700);
+            let s = catalog_match_score(&id, q).unwrap_or(700);
             hits.push(RemoteHit {
                 ecosystem: Ecosystem::Chocolatey,
                 id,
@@ -315,7 +446,7 @@ pub async fn collect_remote_hits(
     }
 
     if include_winget {
-        hits.extend(search_winget_index(cache.cache_dir_path(), q, 15).await?);
+        hits.extend(search_winget_index(cache.cache_dir_path(), q, 25).await?);
     }
 
     Ok(hits)
@@ -348,12 +479,12 @@ pub fn dedupe_remote_by_speed(mut hits: Vec<RemoteHit>) -> Vec<RemoteHit> {
     v
 }
 
-pub fn print_remote_hits(hits: &[RemoteHit]) {
+pub fn print_remote_hits(hits: &[RemoteHit], section_title: &str) {
     if hits.is_empty() {
         return;
     }
     println!();
-    println!("{}", style("Other catalogues (Windows-oriented)").bold());
+    println!("{}", style(section_title).bold());
     for h in hits {
         let tag = match h.ecosystem {
             Ecosystem::Scoop => style("scoop").cyan(),
@@ -445,5 +576,37 @@ mod tests {
         let path =
             "manifests/j/JesseDuffield/lazygit/0.55.1/JesseDuffield.lazygit.locale.en-US.yaml";
         assert_eq!(package_id_from_winget_manifest_path(path), None);
+    }
+
+    #[test]
+    fn windows_default_search_covers_all_windows_catalogues() {
+        let plan = windows_search_plan(None);
+        assert!(plan.include_scoop);
+        assert!(plan.include_choco);
+        assert!(plan.include_winget);
+    }
+
+    #[test]
+    fn windows_brew_prefix_search_matches_nothing() {
+        let plan = windows_search_plan(Some(Ecosystem::Brew));
+        assert!(!plan.include_scoop);
+        assert!(!plan.include_choco);
+        assert!(!plan.include_winget);
+    }
+
+    #[test]
+    fn scoop_tree_path_parses_bucket_json() {
+        assert_eq!(
+            scoop_name_from_tree_path("bucket/ripgrep.json").as_deref(),
+            Some("ripgrep")
+        );
+        assert_eq!(scoop_name_from_tree_path("bucket/nested/foo.json"), None);
+    }
+
+    #[test]
+    fn catalog_match_score_matches_word_boundaries() {
+        assert_eq!(catalog_match_score("ripgrep", "rg"), None);
+        assert_eq!(catalog_match_score("git", "git"), Some(1000));
+        assert_eq!(catalog_match_score("lazygit", "git"), Some(850));
     }
 }

@@ -47,8 +47,17 @@ fn github_client() -> &'static reqwest::Client {
 }
 
 async fn gh_get_json(url: &str) -> Result<Vec<GhContentEntry>> {
+    gh_list_dir_url(url)
+        .await?
+        .ok_or_else(|| WaxError::InstallError(format!("GitHub API {url} -> HTTP 404 Not Found")))
+}
+
+async fn gh_list_dir_url(url: &str) -> Result<Option<Vec<GhContentEntry>>> {
     let client = github_client();
     let resp = client.get(url).send().await?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
     if !resp.status().is_success() {
         return Err(WaxError::InstallError(format!(
             "GitHub API {} -> HTTP {}",
@@ -58,7 +67,9 @@ async fn gh_get_json(url: &str) -> Result<Vec<GhContentEntry>> {
     }
     let v: serde_json::Value = resp.json().await?;
     if v.is_array() {
-        Ok(serde_json::from_value(v).map_err(WaxError::JsonError)?)
+        Ok(Some(
+            serde_json::from_value(v).map_err(WaxError::JsonError)?,
+        ))
     } else {
         Err(WaxError::InstallError(
             "Unexpected GitHub API response (expected directory listing)".into(),
@@ -66,17 +77,61 @@ async fn gh_get_json(url: &str) -> Result<Vec<GhContentEntry>> {
     }
 }
 
+async fn gh_list_dir(rel_path: &str) -> Result<Option<Vec<GhContentEntry>>> {
+    let url = format!("{WINGET_PKGS_REPO_CONTENTS}/{rel_path}?ref=master");
+    gh_list_dir_url(&url).await
+}
+
+/// Resolve a winget PackageIdentifier to the canonical casing used in winget-pkgs.
+async fn resolve_winget_package_id(package_id: &str) -> Result<String> {
+    let rel = package_id_to_content_path(package_id)?;
+    if gh_list_dir(&rel).await?.is_some() {
+        return Ok(package_id.to_string());
+    }
+
+    let parts: Vec<&str> = package_id.split('.').filter(|s| !s.is_empty()).collect();
+    let first_letter = parts[0]
+        .chars()
+        .next()
+        .ok_or_else(|| WaxError::InvalidInput("empty winget id".into()))?
+        .to_ascii_lowercase();
+    let letter_url = format!("{WINGET_PKGS_REPO_CONTENTS}/manifests/{first_letter}?ref=master");
+    let publishers = gh_get_json(&letter_url).await?;
+    let publisher = publishers
+        .iter()
+        .find(|e| e.entry_type == "dir" && e.name.eq_ignore_ascii_case(parts[0]))
+        .ok_or_else(|| {
+            WaxError::FormulaNotFound(format!(
+                "winget package '{package_id}' not found in winget-pkgs (try `wax search winget {package_id}`)"
+            ))
+        })?;
+
+    let mut canonical = vec![publisher.name.clone()];
+    let mut current_path = publisher.path.clone();
+    for part in parts.iter().skip(1) {
+        let entries = gh_get_json(&format!(
+            "{WINGET_PKGS_REPO_CONTENTS}/{current_path}?ref=master"
+        ))
+        .await?;
+        let matched = entries
+            .iter()
+            .find(|e| e.entry_type == "dir" && e.name.eq_ignore_ascii_case(part))
+            .ok_or_else(|| {
+                WaxError::FormulaNotFound(format!(
+                    "winget package '{package_id}' not found in winget-pkgs (try `wax search winget {package_id}`)"
+                ))
+            })?;
+        canonical.push(matched.name.clone());
+        current_path = matched.path.clone();
+    }
+
+    Ok(canonical.join("."))
+}
+
 /// True if `microsoft/winget-pkgs` has a manifest directory for this PackageIdentifier.
 #[cfg(target_os = "windows")]
 pub async fn winget_package_exists(package_id: &str) -> bool {
-    let Ok(path) = package_id_to_content_path(package_id) else {
-        return false;
-    };
-    let url = format!("{WINGET_PKGS_REPO_CONTENTS}/{path}?ref=master");
-    gh_get_json(&url)
-        .await
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
+    resolve_winget_package_id(package_id).await.is_ok()
 }
 
 fn winget_arch_token() -> &'static str {
@@ -273,6 +328,21 @@ fn exe_uninstall(doc: &WingetInstallerDoc) -> Result<WindowsNativeUninstall> {
     })
 }
 
+fn uninstall_for_exe_like(
+    doc: &WingetInstallerDoc,
+    inst: &WingetInstallerEntry,
+) -> Result<WindowsNativeUninstall> {
+    if let Ok(uninstall) = exe_uninstall(doc) {
+        return Ok(uninstall);
+    }
+    let product_code = product_code_for(doc, inst).ok_or_else(|| {
+        WaxError::InstallError(
+            "winget exe installer is missing silent uninstall metadata and ProductCode".into(),
+        )
+    })?;
+    Ok(msi_uninstall(&product_code))
+}
+
 fn product_code_for(doc: &WingetInstallerDoc, inst: &WingetInstallerEntry) -> Option<String> {
     inst.product_code.clone().or_else(|| {
         doc.apps_and_features_entries
@@ -330,7 +400,7 @@ fn native_plan(
             Ok((
                 installer_path.to_string_lossy().to_string(),
                 exe_install_args(switches)?,
-                exe_uninstall(doc)?,
+                uninstall_for_exe_like(doc, inst)?,
             ))
         }
         _ => Err(WaxError::InstallError(format!(
@@ -362,9 +432,9 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
         ));
     }
 
-    let rel = package_id_to_content_path(package_id)?;
-    let list_url = format!("{WINGET_PKGS_REPO_CONTENTS}/{rel}?ref=master");
-    let entries = gh_get_json(&list_url).await?;
+    let package_id = resolve_winget_package_id(package_id).await?;
+    let rel = package_id_to_content_path(&package_id)?;
+    let entries = gh_get_json(&format!("{WINGET_PKGS_REPO_CONTENTS}/{rel}?ref=master")).await?;
 
     let mut versions: Vec<String> = entries
         .iter()
@@ -627,6 +697,41 @@ mod tests {
             installers: vec![],
         };
         assert!(native_plan(&doc, &inst, Path::new("C:/tmp/app.exe")).is_err());
+    }
+
+    #[test]
+    fn native_exe_falls_back_to_product_code_uninstall() {
+        let mut inst = entry("exe");
+        inst.installer_switches = Some(WingetInstallerSwitches {
+            silent: Some("/quiet /norestart".into()),
+            silent_with_progress: None,
+            custom: None,
+            install_location: None,
+        });
+        inst.product_code = Some("{ITUNES}".into());
+        let doc = WingetInstallerDoc {
+            installer_type: Some("exe".into()),
+            nested_installer_type: None,
+            nested_installer_files: None,
+            installer_switches: Some(WingetInstallerSwitches {
+                silent: Some("/quiet /norestart".into()),
+                silent_with_progress: None,
+                custom: None,
+                install_location: None,
+            }),
+            apps_and_features_entries: Some(vec![WingetAppsAndFeaturesEntry {
+                product_code: Some("{ITUNES}".into()),
+                package_family_name: None,
+                silent_uninstall_string: None,
+            }]),
+            installers: vec![],
+        };
+        let (cmd, args, uninstall) =
+            native_plan(&doc, &inst, Path::new("C:/tmp/iTunes64Setup.exe")).unwrap();
+        assert_eq!(cmd, "C:/tmp/iTunes64Setup.exe");
+        assert_eq!(args, vec!["/quiet", "/norestart"]);
+        assert_eq!(uninstall.command, "msiexec.exe");
+        assert_eq!(uninstall.args[1], "{ITUNES}");
     }
 
     #[test]

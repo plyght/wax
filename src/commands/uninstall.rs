@@ -25,18 +25,24 @@ pub async fn uninstall(
     all: bool,
 ) -> Result<()> {
     let names: Vec<String> = if all {
-        let state = InstallState::new()?;
-        state.sync_from_cellar().await.ok();
-        let installed = state.load().await?;
-        let mut names: Vec<String> = installed.keys().cloned().collect();
         #[cfg(target_os = "windows")]
-        names.extend(
-            windows_state::list_manifests()?
+        {
+            let mut names: Vec<String> = windows_state::list_manifests()?
                 .into_iter()
-                .map(|m| format!("{}/{}", m.ecosystem.label(), m.id)),
-        );
-        names.sort();
-        names
+                .map(|m| format!("{}/{}", m.ecosystem.label(), m.id))
+                .collect();
+            names.sort();
+            names
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let state = InstallState::new()?;
+            state.sync_from_cellar().await.ok();
+            let installed = state.load().await?;
+            let mut names: Vec<String> = installed.keys().cloned().collect();
+            names.sort();
+            names
+        }
     } else {
         if formulae.is_empty() {
             return Err(WaxError::InvalidInput(
@@ -93,16 +99,19 @@ async fn uninstall_impl(
 ) -> Result<()> {
     let start = std::time::Instant::now();
 
-    if cask {
-        return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
-    }
-
-    // On Windows, check for Windows package manifests (scoop, winget, choco)
     #[cfg(target_os = "windows")]
     {
+        if cask {
+            return Err(crate::platform_catalog::homebrew_unavailable());
+        }
         if let Some(manifest) = windows_state::find_manifest(formula_name)? {
             return uninstall_windows_package(&manifest, dry_run, start, quiet, prefix).await;
         }
+        return Err(WaxError::NotInstalled(formula_name.to_string()));
+    }
+
+    if cask {
+        return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
     }
 
     let state = InstallState::new()?;

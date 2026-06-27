@@ -582,6 +582,40 @@ pub async fn install(
     .await
 }
 
+#[cfg(target_os = "windows")]
+async fn install_windows_packages(
+    cache: &Cache,
+    package_names: &[String],
+    dry_run: bool,
+    quiet: bool,
+) -> Result<()> {
+    let mut errors = Vec::new();
+    for name in package_names {
+        match crate::ecosystem_install::install_one_qualified(cache, name, dry_run, false).await {
+            Ok(true) => {}
+            Ok(false) => {
+                errors.push((
+                    name.clone(),
+                    "package was not installed (internal routing error)".to_string(),
+                ));
+            }
+            Err(err) => errors.push((name.clone(), err.to_string())),
+        }
+    }
+
+    if !errors.is_empty() && !quiet {
+        for (pkg, err) in &errors {
+            eprintln!("{}: {}", pkg, err);
+        }
+    }
+    if errors.len() == package_names.len() {
+        return Err(WaxError::InstallError(
+            "Cannot install any packages (all failed validation)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn tap_name_from_qualified_package(package_name: &str) -> Option<String> {
     let mut parts = package_name.split('/');
     let user = parts.next()?;
@@ -647,6 +681,14 @@ pub(crate) async fn install_impl(
 
     for name in package_names {
         crate::error::validate_package_name(name)?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if cask || head || build_from_source {
+            return Err(crate::platform_catalog::homebrew_unavailable());
+        }
+        return install_windows_packages(cache, package_names, dry_run, quiet).await;
     }
 
     cache.ensure_fresh().await?;
@@ -722,30 +764,6 @@ pub(crate) async fn install_impl(
     let mut errors = Vec::new();
     let mut detected_casks: Vec<String> = Vec::new();
     let mut user_direct_formula_names: HashSet<String> = HashSet::new();
-
-    // Pre-filter ecosystem-qualified packages on Windows
-    #[cfg(target_os = "windows")]
-    let package_names: Vec<String> = {
-        let mut remaining = Vec::new();
-        for name in package_names.iter() {
-            let spec = crate::package_spec::parse_package_spec(name);
-            if spec.force == Some(crate::package_spec::Ecosystem::Brew) {
-                remaining.push(spec.name);
-            } else if spec.force.is_some() {
-                // scoop/, choco/, winget/ — handled by ecosystem_install
-                if crate::ecosystem_install::install_one_qualified(cache, name, dry_run, false)
-                    .await?
-                {
-                    continue;
-                }
-                // If ecosystem_install didn't handle it, try remaining as formula name
-                remaining.push(spec.name);
-            } else {
-                remaining.push(name.clone());
-            }
-        }
-        remaining
-    };
 
     for package_name in package_names.iter() {
         if installed.contains(package_name.as_str()) {

@@ -51,6 +51,29 @@ async fn collect_installed_rows(
     _cache: &Cache,
     scope: Option<InstallMode>,
 ) -> Result<Vec<InstalledRow>> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = scope;
+        let mut rows = Vec::new();
+        for manifest in windows_state::list_manifests()? {
+            let qualified = format!("{}/{}", manifest.ecosystem.label(), manifest.id);
+            let line = format!(
+                "{} {} {}",
+                style(&qualified).magenta(),
+                style(&manifest.version).dim(),
+                style("(windows)").yellow()
+            );
+            rows.push(InstalledRow {
+                name: qualified,
+                line,
+                is_cask: false,
+                is_windows: true,
+            });
+        }
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        return Ok(rows);
+    }
+
     let test_cellar = std::env::var_os(WAX_TEST_CELLAR_ENV);
 
     let (cellar_path, skip_casks) = if let Some(ref raw) = test_cellar {

@@ -5,6 +5,7 @@ use crate::cache::Cache;
 use crate::chocolatey;
 use crate::error::{Result, WaxError};
 use crate::package_spec::{Ecosystem, PackageSpec};
+use crate::platform_catalog;
 use crate::scoop;
 use crate::winget_install;
 
@@ -17,13 +18,12 @@ pub async fn install_one_qualified(
 ) -> Result<bool> {
     let spec = crate::package_spec::parse_package_spec(raw);
     validate_qualified_inner(&spec)?;
+    platform_catalog::reject_brew_ecosystem(spec.force)?;
 
     if cask {
-        return Ok(false);
-    }
-
-    if spec.force == Some(Ecosystem::Brew) {
-        return Ok(false);
+        return Err(WaxError::PlatformNotSupported(
+            "Casks are not supported on Windows; use scoop/, winget/, or choco/".into(),
+        ));
     }
 
     if let Some(forced) = spec.force {
@@ -34,14 +34,11 @@ pub async fn install_one_qualified(
     #[cfg(target_os = "windows")]
     {
         if let Some(eco) = auto_pick_ecosystem(cache, &spec.name).await? {
-            if eco == Ecosystem::Brew {
-                return Ok(false);
-            }
             install_forced(eco, &spec.name, dry_run).await?;
             return Ok(true);
         }
         Err(WaxError::FormulaNotFound(format!(
-            "no matching package '{}' in brew index, Scoop Main, winget-pkgs, or Chocolatey",
+            "no matching package '{}' in Scoop Main, winget-pkgs, or Chocolatey",
             spec.name
         )))
     }
@@ -80,7 +77,7 @@ async fn install_forced(eco: Ecosystem, name: &str, dry_run: bool) -> Result<()>
     }
 
     match eco {
-        Ecosystem::Brew => Ok(()),
+        Ecosystem::Brew => Err(platform_catalog::homebrew_unavailable()),
         Ecosystem::Scoop => scoop::install_from_bucket(name, None).await,
         Ecosystem::Winget => winget_install::install_winget_package(name).await,
         Ecosystem::Chocolatey => chocolatey::install_portable_tools(name).await,
@@ -88,10 +85,7 @@ async fn install_forced(eco: Ecosystem, name: &str, dry_run: bool) -> Result<()>
 }
 
 #[cfg(target_os = "windows")]
-async fn auto_pick_ecosystem(cache: &Cache, name: &str) -> Result<Option<Ecosystem>> {
-    let formulae = cache.load_all_formulae().await?;
-    let brew_hit = formulae.iter().any(|f| f.name.eq_ignore_ascii_case(name));
-
+async fn auto_pick_ecosystem(_cache: &Cache, name: &str) -> Result<Option<Ecosystem>> {
     let scoop_f = scoop::scoop_manifest_exists(scoop::DEFAULT_BUCKET_BASE, name);
     let choco_f = chocolatey::package_exists(name);
     let winget_f = async {
@@ -105,9 +99,6 @@ async fn auto_pick_ecosystem(cache: &Cache, name: &str) -> Result<Option<Ecosyst
     let (scoop_ok, choco_ok, winget_ok) = tokio::join!(scoop_f, choco_f, winget_f);
 
     let mut opts: Vec<(Ecosystem, u8)> = Vec::new();
-    if brew_hit {
-        opts.push((Ecosystem::Brew, Ecosystem::Brew.speed_rank()));
-    }
     if scoop_ok {
         opts.push((Ecosystem::Scoop, Ecosystem::Scoop.speed_rank()));
     }

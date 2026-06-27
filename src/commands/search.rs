@@ -8,9 +8,9 @@ use tracing::instrument;
 #[cfg(target_os = "windows")]
 use crate::package_spec::Ecosystem;
 #[cfg(target_os = "windows")]
-use crate::remote_search::{collect_remote_hits, dedupe_remote_by_speed, print_remote_hits};
-#[cfg(target_os = "windows")]
-use std::collections::HashSet;
+use crate::remote_search::{
+    collect_remote_hits, dedupe_remote_by_speed, print_remote_hits, windows_search_plan,
+};
 
 fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<i32> {
     let query_lower = query.to_lowercase();
@@ -77,227 +77,51 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         let (eco_filter, q) = crate::package_spec::parse_search_query(query);
+        crate::platform_catalog::reject_brew_ecosystem(eco_filter)?;
         let q = q.trim();
         if q.is_empty() {
             println!("empty search query");
             return Ok(());
         }
 
-        cache.ensure_fresh().await?;
-        let formulae = cache.load_all_formulae().await?;
-        let casks = cache.load_casks().await?;
+        let plan = windows_search_plan(eco_filter);
+        let remote_hits = if plan.include_scoop || plan.include_choco || plan.include_winget {
+            let hits = collect_remote_hits(
+                cache,
+                q,
+                plan.include_scoop,
+                plan.include_choco,
+                plan.include_winget,
+            )
+            .await?;
+            dedupe_remote_by_speed(hits)
+        } else {
+            Vec::new()
+        };
 
-        let state = InstallState::new()?;
-        let installed_packages = state.load().await?;
-        let cask_state = CaskState::new()?;
-        let installed_casks = cask_state.load().await?;
-
-        let brew_catalog = eco_filter.is_none() || eco_filter == Some(Ecosystem::Brew);
-
-        let core_formulae: Vec<_> = formulae
-            .iter()
-            .filter(|f| !f.full_name.contains('/') || f.full_name.starts_with("homebrew/"))
-            .collect();
-
-        let tap_formulae: Vec<_> = formulae
-            .iter()
-            .filter(|f| f.full_name.contains('/') && !f.full_name.starts_with("homebrew/"))
-            .collect();
-
-        let mut formula_matches: Vec<_> = Vec::new();
-        let mut tap_matches: Vec<_> = Vec::new();
-        let mut cask_matches: Vec<_> = Vec::new();
-
-        if brew_catalog {
-            formula_matches = core_formulae
-                .iter()
-                .filter_map(|f| {
-                    calculate_match_score(&f.name, f.desc.as_deref(), q).map(|score| (f, score))
-                })
-                .collect();
-
-            tap_matches = tap_formulae
-                .iter()
-                .filter_map(|f| {
-                    let name_score = calculate_match_score(&f.name, f.desc.as_deref(), q);
-                    let full_name_score = calculate_match_score(&f.full_name, f.desc.as_deref(), q);
-                    name_score.or(full_name_score).map(|score| (f, score))
-                })
-                .collect();
-
-            cask_matches = casks
-                .iter()
-                .filter_map(|c| {
-                    let token_score = calculate_match_score(&c.token, c.desc.as_deref(), q);
-                    let name_score = c
-                        .name
-                        .iter()
-                        .filter_map(|n| calculate_match_score(n, c.desc.as_deref(), q))
-                        .max();
-                    token_score.or(name_score).map(|score| (c, score))
-                })
-                .collect();
-
-            formula_matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
-            tap_matches.sort_by(|a, b| {
-                b.1.cmp(&a.1)
-                    .then_with(|| a.0.full_name.cmp(&b.0.full_name))
-            });
-            cask_matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.token.cmp(&b.0.token)));
-        }
-
-        let formula_matches: Vec<_> = formula_matches.iter().take(20).map(|(f, _)| f).collect();
-        let tap_matches: Vec<_> = tap_matches.iter().take(10).map(|(f, _)| f).collect();
-        let cask_matches: Vec<_> = cask_matches.iter().take(20).map(|(c, _)| c).collect();
-
-        let total = formula_matches.len() + tap_matches.len() + cask_matches.len();
-
-        let brew_blocklist: HashSet<String> = formulae
-            .iter()
-            .map(|f| f.name.to_lowercase())
-            .chain(casks.iter().map(|c| c.token.to_lowercase()))
-            .collect();
-
-        let include_scoop = eco_filter.map(|e| e == Ecosystem::Scoop).unwrap_or(true);
-        let include_choco = eco_filter
-            .map(|e| e == Ecosystem::Chocolatey)
-            .unwrap_or(true);
-        let include_winget = eco_filter.map(|e| e == Ecosystem::Winget).unwrap_or(true);
-
-        let mut remote_hits =
-            collect_remote_hits(cache, q, include_scoop, include_choco, include_winget).await?;
-        remote_hits.retain(|h| !brew_blocklist.contains(&h.id.to_lowercase()));
-        remote_hits = dedupe_remote_by_speed(remote_hits);
-
-        if total == 0 && remote_hits.is_empty() {
-            println!("no results for '{}'", query);
+        if remote_hits.is_empty() {
+            println!("no results for '{query}'");
             return Ok(());
         }
 
-        if !brew_catalog {
+        if let Some(eco) = eco_filter {
             println!(
                 "{}",
                 style(format!(
-                    "Filtered to {} only (drop the prefix to search every catalogue)",
-                    eco_filter.unwrap().label()
+                    "Filtered to {} only (drop the prefix to search Scoop, winget, and Chocolatey)",
+                    eco.label()
                 ))
                 .dim()
             );
         }
 
-        if total > 0 {
-            println!();
-        }
-        for formula in &formula_matches {
-            let desc = formula.desc.as_deref().unwrap_or("");
-            let installed_suffix = if installed_packages.contains_key(&formula.name) {
-                " · installed"
-            } else {
-                ""
-            };
-            let status_label = if formula.disabled {
-                format!(" {}", style("[disabled]").red())
-            } else if formula.deprecated {
-                format!(" {}", style("[deprecated]").yellow())
-            } else {
-                String::new()
-            };
-            println!(
-                "{} · {}{}{}",
-                style(&formula.name).magenta(),
-                style(&formula.versions.stable).dim(),
-                style(installed_suffix).dim(),
-                status_label
-            );
-            if !desc.is_empty() {
-                println!("  {}", desc);
-            }
-        }
-
-        for formula in &tap_matches {
-            let desc = formula.desc.as_deref().unwrap_or("");
-            let installed_suffix = if installed_packages.contains_key(&formula.name) {
-                " · installed"
-            } else {
-                ""
-            };
-            let status_label = if formula.disabled {
-                format!(" {}", style("[disabled]").red())
-            } else if formula.deprecated {
-                format!(" {}", style("[deprecated]").yellow())
-            } else {
-                String::new()
-            };
-            println!(
-                "{} · {}{}{}",
-                style(&formula.full_name).magenta(),
-                style(&formula.versions.stable).dim(),
-                style(installed_suffix).dim(),
-                status_label
-            );
-            if !desc.is_empty() {
-                println!("  {}", desc);
-            }
-        }
-
-        for cask in &cask_matches {
-            let desc = cask.desc.as_deref().unwrap_or("");
-            let installed_suffix = if installed_casks.contains_key(&cask.token) {
-                " · installed"
-            } else {
-                ""
-            };
-            let status_label = if cask.disabled {
-                format!(" {}", style("[disabled]").red())
-            } else if cask.deprecated {
-                format!(" {}", style("[deprecated]").yellow())
-            } else {
-                String::new()
-            };
-            println!(
-                "{} {} · {}{}{}",
-                style(&cask.token).magenta(),
-                style("(cask)").yellow(),
-                style(&cask.version).dim(),
-                style(installed_suffix).dim(),
-                status_label
-            );
-            if !desc.is_empty() {
-                println!("  {}", desc);
-            }
-        }
-
-        let mut parts = Vec::new();
-        if !formula_matches.is_empty() {
-            parts.push(format!(
-                "{} {}",
-                formula_matches.len(),
-                if formula_matches.len() == 1 {
-                    "formula"
-                } else {
-                    "formulae"
-                }
-            ));
-        }
-        if !tap_matches.is_empty() {
-            parts.push(format!("{} from taps", tap_matches.len()));
-        }
-        if !cask_matches.is_empty() {
-            parts.push(format!(
-                "{} {}",
-                cask_matches.len(),
-                if cask_matches.len() == 1 {
-                    "cask"
-                } else {
-                    "casks"
-                }
-            ));
-        }
-        if total > 0 {
-            println!("\n{}", style(parts.join(", ")).dim());
-        }
-
-        print_remote_hits(&remote_hits);
+        let remote_section = match eco_filter {
+            Some(Ecosystem::Scoop) => "Scoop Main",
+            Some(Ecosystem::Winget) => "winget-pkgs",
+            Some(Ecosystem::Chocolatey) => "Chocolatey",
+            _ => "Windows catalogues (scoop, winget, choco)",
+        };
+        print_remote_hits(&remote_hits, remote_section);
 
         return Ok(());
     }
