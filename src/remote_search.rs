@@ -527,5 +527,4 @@ mod tests {
         );
         assert_eq!(scoop_name_from_tree_path("bucket/nested/foo.json"), None);
     }
-
 }

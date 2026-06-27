@@ -426,13 +426,9 @@ async fn uninstall_cask(
             }
         }
         _ => {
-            let app_basename = resolve_cask_app_name(
-                cache,
-                cask_name,
-                &cask.version,
-                cask.app_name.as_deref(),
-            )
-            .await;
+            let app_basename =
+                resolve_cask_app_name(cache, cask_name, &cask.version, cask.app_name.as_deref())
+                    .await;
 
             // On macOS: check /Applications, then ~/Applications.
             // On Linux: check ~/Applications only (no system /Applications).

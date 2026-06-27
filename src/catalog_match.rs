@@ -58,6 +58,9 @@ mod tests {
 
     #[test]
     fn desc_boosts_score() {
-        assert_eq!(match_score("foo", Some("agent browser tool"), "browser"), Some(300));
+        assert_eq!(
+            match_score("foo", Some("agent browser tool"), "browser"),
+            Some(300)
+        );
     }
 }

@@ -1,4 +1,3 @@
-
 use crate::bottle::{detect_platform, homebrew_prefix, BottleDownloader, DownloadTotals};
 use crate::cache::Cache;
 use crate::cask::{CaskState, InstalledCask};

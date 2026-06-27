@@ -101,7 +101,8 @@ pub async fn search(cache: &Cache, query: &str) -> Result<()> {
         let mut tap_matches: Vec<_> = tap_formulae
             .iter()
             .filter_map(|f| {
-                let name_score = crate::catalog_match::match_score(&f.name, f.desc.as_deref(), query);
+                let name_score =
+                    crate::catalog_match::match_score(&f.name, f.desc.as_deref(), query);
                 let full_name_score =
                     crate::catalog_match::match_score(&f.full_name, f.desc.as_deref(), query);
                 name_score.or(full_name_score).map(|score| (f, score))

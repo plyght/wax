@@ -1193,8 +1193,6 @@ impl CaskInstaller {
             .await
     }
 
-
-
     /// Rejects paths that contain parent-directory traversal components.
     fn reject_traversal(path: &Path) -> Result<()> {
         #[cfg(unix)]

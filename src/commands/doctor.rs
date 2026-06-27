@@ -39,12 +39,10 @@ impl Summary {
 }
 
 fn path_in_path(path: &Path) -> bool {
-    std::env::var("PATH")
-        .ok()
-        .is_some_and(|path_var| {
-            let path_str = path.to_string_lossy();
-            path_var.split(':').any(|p| p == path_str.as_ref())
-        })
+    std::env::var("PATH").ok().is_some_and(|path_var| {
+        let path_str = path.to_string_lossy();
+        path_var.split(':').any(|p| p == path_str.as_ref())
+    })
 }
 
 fn wax_bin_dirs() -> Vec<PathBuf> {
@@ -161,10 +159,16 @@ async fn check_cache(cache: &Cache, s: &mut Summary, fix: bool) {
             let age_hours = age_secs / 3600;
             if age_secs > CACHE_STALE_SECS {
                 if fix {
-                    s.warn(&format!("cache is stale ({}h old) — refreshing...", age_hours));
+                    s.warn(&format!(
+                        "cache is stale ({}h old) — refreshing...",
+                        age_hours
+                    ));
                     refresh_cache(cache, s, "cache refreshed").await;
                 } else {
-                    s.warn(&format!("cache is stale ({}h old) — run `wax update`", age_hours));
+                    s.warn(&format!(
+                        "cache is stale ({}h old) — run `wax update`",
+                        age_hours
+                    ));
                 }
             } else {
                 s.pass(&format!("cache age: {age_hours}h (fresh)"));
