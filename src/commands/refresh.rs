@@ -6,6 +6,7 @@ use crate::install::InstallState;
 use crate::lockfile::{Lockfile, LockfileCask, LockfilePackage};
 use tracing::instrument;
 
+#[cfg(not(target_os = "windows"))]
 #[instrument(skip(cache))]
 pub async fn refresh(cache: &Cache) -> Result<()> {
     cache.ensure_fresh().await?;

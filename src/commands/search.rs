@@ -14,6 +14,7 @@ use crate::remote_search::{
     collect_remote_hits, dedupe_remote_by_speed, print_remote_hits, windows_search_plan,
 };
 
+#[cfg(not(target_os = "windows"))]
 fn calculate_match_score(name: &str, desc: Option<&str>, query: &str) -> Option<i32> {
     let query_lower = query.to_lowercase();
     let name_lower = name.to_lowercase();
