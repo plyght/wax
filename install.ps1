@@ -24,6 +24,31 @@ $installDir = if ($env:WAX_INSTALL_DIR) {
     Join-Path $env:USERPROFILE '.local\bin'
 }
 
+$script:WebHeaders = @{ 'User-Agent' = 'wax-install-ps1' }
+
+function Get-WebText {
+    param([string]$Uri)
+    $resp = Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers $script:WebHeaders
+    $content = $resp.Content
+    if ($content -is [byte[]]) {
+        return [System.Text.Encoding]::UTF8.GetString($content)
+    }
+    return [string]$content
+}
+
+function Read-ExpectedSha256 {
+    param([string]$Uri)
+    $raw = (Get-WebText -Uri $Uri).Trim()
+    if ($raw.Length -ge 1 -and [int][char]$raw[0] -eq 0xFEFF) {
+        $raw = $raw.Substring(1).Trim()
+    }
+    $hash = ($raw -split '\s+' | Where-Object { $_ } | Select-Object -First 1)
+    if (-not $hash -or $hash -notmatch '^[0-9a-fA-F]{64}$') {
+        throw ('Invalid checksum file at {0} (expected 64 hex chars, got: {1})' -f $Uri, $raw)
+    }
+    return $hash.ToLowerInvariant()
+}
+
 function Install-FromRepo {
     param([string]$Root)
     if (-not $Root) {
@@ -153,7 +178,7 @@ function Install-FromRelease {
     $version = $env:WAX_VERSION
     if (-not $version) {
         $releaseUri = ('https://api.github.com/repos/{0}/releases/latest' -f $Repo)
-        $rel = Invoke-RestMethod -Uri $releaseUri -Headers @{ 'User-Agent' = 'wax-install-ps1' }
+        $rel = Invoke-RestMethod -Uri $releaseUri -Headers $script:WebHeaders
         $version = $rel.tag_name
         $assetNames = @($rel.assets | ForEach-Object { $_.name })
         if ($assetNames -notcontains $asset) {
@@ -172,7 +197,7 @@ function Install-FromRelease {
         Write-Host ('Installing wax {0} ({1}) from GitHub Releases...' -f $version, $archLabel)
         $exeUri = ('{0}/{1}' -f $base, $asset)
         try {
-            Invoke-WebRequest -Uri $exeUri -OutFile $tmp -UseBasicParsing
+            Invoke-WebRequest -Uri $exeUri -OutFile $tmp -UseBasicParsing -Headers $script:WebHeaders
         } catch {
             $dlErr = $_.Exception.Message
             throw ('Failed to download {0} from {1}. Clone the repo and run install.ps1 locally, or set WAX_VERSION. Error: {2}' -f $asset, $exeUri, $dlErr)
@@ -181,19 +206,18 @@ function Install-FromRelease {
         $shaUri = ('{0}/{1}.sha256' -f $base, $asset)
         $expected = $null
         try {
-            $raw = (Invoke-WebRequest -Uri $shaUri -UseBasicParsing).Content.Trim()
-            $expected = ($raw -split '\s+')[0]
+            $expected = Read-ExpectedSha256 -Uri $shaUri
         } catch {
             if ($env:WAX_NO_VERIFY -eq '1') {
                 Write-Warning ('WAX_NO_VERIFY=1 set - installing {0} without checksum verification' -f $version)
             } else {
-                throw ('No checksum file at {0}. Set WAX_NO_VERIFY=1 to install without verification, or use a release that publishes .sha256 sidecars.' -f $shaUri)
+                throw ('Checksum verification failed for {0}: {1}' -f $shaUri, $_.Exception.Message)
             }
         }
 
         if ($expected) {
-            $hash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
-            if ($hash.ToLowerInvariant() -ne $expected.ToLowerInvariant()) {
+            $hash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -ne $expected) {
                 throw ('SHA256 mismatch (expected {0}, got {1})' -f $expected, $hash)
             }
             Write-Host 'Checksum verified.'
