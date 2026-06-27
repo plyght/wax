@@ -11,6 +11,7 @@ pub mod list;
 pub mod lock;
 pub mod outdated;
 pub mod pin;
+#[cfg(not(target_os = "windows"))]
 pub mod refresh;
 pub mod reinstall;
 pub mod search;
