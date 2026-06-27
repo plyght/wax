@@ -6,6 +6,7 @@ use crate::chocolatey;
 use crate::error::{Result, WaxError};
 use crate::package_spec::{Ecosystem, PackageSpec};
 use crate::platform_catalog;
+use crate::remote_search;
 use crate::scoop;
 use crate::winget_install;
 
@@ -27,8 +28,7 @@ pub async fn install_one_qualified(
     }
 
     if let Some(forced) = spec.force {
-        install_forced(forced, &spec.name, dry_run).await?;
-        return Ok(true);
+        return install_forced_prefixed(cache, forced, &spec.name, dry_run).await;
     }
 
     #[cfg(target_os = "windows")]
@@ -37,10 +37,14 @@ pub async fn install_one_qualified(
             install_forced(eco, &spec.name, dry_run).await?;
             return Ok(true);
         }
-        Err(WaxError::FormulaNotFound(format!(
-            "no matching package '{}' in Scoop Main, winget-pkgs, or Chocolatey",
-            spec.name
-        )))
+        let alts = catalog_alternatives(cache, &spec.name, None).await;
+        return Err(WaxError::FormulaNotFound(with_alternatives(
+            format!(
+                "'{}' is not published on any Windows catalogue (Scoop Main, winget-pkgs, Chocolatey)",
+                spec.name
+            ),
+            &alts,
+        )));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -68,6 +72,120 @@ fn validate_qualified_inner(spec: &PackageSpec) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn catalog_repo_name(eco: Ecosystem) -> &'static str {
+    match eco {
+        Ecosystem::Scoop => "Scoop Main",
+        Ecosystem::Winget => "winget-pkgs",
+        Ecosystem::Chocolatey => "Chocolatey",
+        Ecosystem::Brew => "Homebrew",
+    }
+}
+
+fn with_alternatives(msg: String, alts: &[String]) -> String {
+    if alts.is_empty() {
+        return msg;
+    }
+    format!("{msg}\nTry: {}", alts.join(", "))
+}
+
+#[cfg(target_os = "windows")]
+async fn package_in_catalog(eco: Ecosystem, name: &str) -> bool {
+    match eco {
+        Ecosystem::Scoop => scoop::scoop_manifest_exists(scoop::DEFAULT_BUCKET_BASE, name).await,
+        Ecosystem::Chocolatey => chocolatey::package_exists(name).await,
+        Ecosystem::Winget => {
+            if name.contains('.') {
+                winget_install::winget_package_exists(name).await
+            } else {
+                false
+            }
+        }
+        Ecosystem::Brew => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn catalog_alternatives(cache: &Cache, name: &str, skip: Option<Ecosystem>) -> Vec<String> {
+    let mut out = Vec::new();
+    for eco in [Ecosystem::Scoop, Ecosystem::Winget, Ecosystem::Chocolatey] {
+        if skip == Some(eco) {
+            continue;
+        }
+        if package_in_catalog(eco, name).await {
+            out.push(format!("{}/{}", eco.label(), name));
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+
+    let include_scoop = skip != Some(Ecosystem::Scoop);
+    let include_choco = skip != Some(Ecosystem::Chocolatey);
+    let include_winget = skip != Some(Ecosystem::Winget);
+    let Ok(hits) = remote_search::collect_remote_hits(
+        cache,
+        name,
+        include_scoop,
+        include_choco,
+        include_winget,
+    )
+    .await
+    else {
+        return out;
+    };
+    for hit in remote_search::dedupe_remote_by_speed(hits)
+        .into_iter()
+        .take(5)
+    {
+        if skip == Some(hit.ecosystem) {
+            continue;
+        }
+        let line = format!("{}/{}", hit.ecosystem.label(), hit.id);
+        if !out.contains(&line) {
+            out.push(line);
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "windows")]
+async fn install_forced_prefixed(
+    cache: &Cache,
+    eco: Ecosystem,
+    name: &str,
+    dry_run: bool,
+) -> Result<bool> {
+    if dry_run {
+        install_forced(eco, name, dry_run).await?;
+        return Ok(true);
+    }
+
+    if !package_in_catalog(eco, name).await {
+        let alts = catalog_alternatives(cache, name, Some(eco)).await;
+        return Err(WaxError::FormulaNotFound(with_alternatives(
+            format!(
+                "'{name}' is not published on the {} repo",
+                catalog_repo_name(eco)
+            ),
+            &alts,
+        )));
+    }
+
+    match install_forced(eco, name, dry_run).await {
+        Ok(()) => Ok(true),
+        Err(err) => {
+            let alts = catalog_alternatives(cache, name, Some(eco)).await;
+            if alts.is_empty() {
+                return Err(err);
+            }
+            Err(WaxError::InstallError(with_alternatives(
+                err.to_string(),
+                &alts,
+            )))
+        }
+    }
 }
 
 async fn install_forced(eco: Ecosystem, name: &str, dry_run: bool) -> Result<()> {

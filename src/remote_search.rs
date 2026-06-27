@@ -432,12 +432,14 @@ pub async fn collect_remote_hits(
     if include_choco {
         let ids = chocolatey::search_package_ids(q, 25).await?;
         for id in ids {
-            let s = catalog_match_score(&id, q).unwrap_or(700);
+            let Some(score) = catalog_match_score(&id, q) else {
+                continue;
+            };
             hits.push(RemoteHit {
                 ecosystem: Ecosystem::Chocolatey,
                 id,
                 blurb: None,
-                score: s,
+                score,
             });
         }
     }
@@ -605,5 +607,15 @@ mod tests {
         assert_eq!(catalog_match_score("ripgrep", "rg"), None);
         assert_eq!(catalog_match_score("git", "git"), Some(1000));
         assert_eq!(catalog_match_score("lazygit", "git"), Some(850));
+    }
+
+    #[test]
+    fn catalog_match_score_rejects_loose_choco_html_matches() {
+        assert!(catalog_match_score("antigravity", "agent-browser").is_none());
+        assert!(catalog_match_score("netstat-agent", "agent-browser").is_none());
+        assert_eq!(
+            catalog_match_score("agent-browser", "agent-browser"),
+            Some(1000)
+        );
     }
 }
