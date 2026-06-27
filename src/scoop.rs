@@ -1,6 +1,7 @@
 //! Install portable Windows packages from Scoop-style JSON manifests using wax's
 //! HTTP downloader (multipart when beneficial) and local extraction — without
-//! invoking Scoop's PowerShell installer.
+//! invoking Scoop's PowerShell installer. Supports zip/tar.gz archives and
+//! direct `.exe` downloads (including Scoop's `#/rename.exe` URL fragments).
 //!
 //! Chocolatey `.nupkg` packages are not supported here: most run
 //! `chocolateyinstall.ps1` to compute download URLs and drive MSI/EXE setups.
@@ -26,6 +27,8 @@ pub const DEFAULT_BUCKET_BASE: &str =
 pub struct ResolvedScoopPackage {
     pub version: String,
     pub download_url: String,
+    /// Scoop `#/filename.exe` fragment — save the downloaded artifact under this name.
+    pub save_as: Option<String>,
     pub sha256: String,
     pub extract_dir: Option<String>,
     /// Paths relative to the extraction root (after optional extract_dir), using OS separators.
@@ -60,8 +63,20 @@ fn scoop_arch_key() -> &'static str {
     }
 }
 
-fn strip_url_fragment(url: &str) -> &str {
-    url.split('#').next().unwrap_or(url)
+fn parse_scoop_download_url(url_raw: &str) -> (String, Option<String>) {
+    let (base, fragment) = match url_raw.split_once('#') {
+        Some((b, f)) => (b, Some(f)),
+        None => (url_raw, None),
+    };
+    let save_as = fragment.and_then(|f| {
+        let name = f.strip_prefix('/').unwrap_or(f);
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.replace('\\', "/"))
+        }
+    });
+    (base.to_string(), save_as)
 }
 
 fn unsupported_script_fields(m: &ScoopManifest) -> Option<&'static str> {
@@ -195,7 +210,7 @@ pub fn resolve_manifest_json(raw: &str) -> Result<ResolvedScoopPackage> {
         (url, hash, None)
     };
 
-    let download_url = strip_url_fragment(&url_raw).to_string();
+    let (download_url, save_as) = parse_scoop_download_url(&url_raw);
     let sha256 = normalize_scoop_hash(&hash_raw);
     if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(WaxError::InstallError(format!(
@@ -208,6 +223,7 @@ pub fn resolve_manifest_json(raw: &str) -> Result<ResolvedScoopPackage> {
     Ok(ResolvedScoopPackage {
         version: m.version,
         download_url,
+        save_as,
         sha256,
         extract_dir,
         bin_paths,
@@ -242,17 +258,42 @@ async fn fetch_manifest_text(bucket_base: &str, package: &str) -> Result<String>
     Ok(resp.text().await?)
 }
 
-fn archive_kind_from_url(url: &str) -> Result<&'static str> {
+fn download_kind_from_url(url: &str) -> Result<&'static str> {
     let lower = url.to_ascii_lowercase();
-    if lower.ends_with(".zip") {
+    let path = lower.split('?').next().unwrap_or(&lower);
+    if path.ends_with(".zip") {
         return Ok("zip");
     }
-    if lower.contains(".tar.gz") || lower.ends_with(".tgz") {
+    if path.contains(".tar.gz") || path.ends_with(".tgz") {
         return Ok("tar.gz");
     }
+    if path.ends_with(".exe") {
+        return Ok("exe");
+    }
     Err(WaxError::InstallError(format!(
-        "Unsupported download type for wax scoop-install (need .zip or .tar.gz/.tgz URL): {url}"
+        "Unsupported download type for wax scoop-install (need .zip, .tar.gz/.tgz, or .exe URL): {url}"
     )))
+}
+
+fn exe_filename(resolved: &ResolvedScoopPackage) -> Result<String> {
+    if let Some(name) = &resolved.save_as {
+        return Ok(name.clone());
+    }
+    let path = resolved
+        .download_url
+        .split('?')
+        .next()
+        .unwrap_or(&resolved.download_url);
+    Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            WaxError::InstallError(format!(
+                "Cannot determine executable filename from {}",
+                resolved.download_url
+            ))
+        })
 }
 
 pub(crate) fn extract_zip_file(zip_path: &Path, dest_dir: &Path) -> Result<()> {
@@ -301,19 +342,26 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
     let text = fetch_manifest_text(bucket, package).await?;
     let resolved = resolve_manifest_json(&text)?;
 
-    let kind = archive_kind_from_url(&resolved.download_url)?;
+    let kind = download_kind_from_url(&resolved.download_url)?;
     debug!(
         "Scoop package {} @ {} kind={} url={}",
         package, resolved.version, kind, resolved.download_url
     );
 
+    let version_dir = resolved_staging_dir(package, &resolved.version)?;
+    if version_dir.exists() {
+        std::fs::remove_dir_all(&version_dir)?;
+    }
+    std::fs::create_dir_all(version_dir.parent().unwrap())?;
+
     let tmp = TempDir::new()?;
     let ext = match kind {
         "zip" => "zip",
         "tar.gz" => "tar.gz",
+        "exe" => "exe",
         _ => "dat",
     };
-    let archive_path = tmp.path().join(format!("download.{ext}"));
+    let download_path = tmp.path().join(format!("download.{ext}"));
 
     let dl = BottleDownloader::new();
     let size = dl.probe_size(&resolved.download_url).await;
@@ -330,7 +378,7 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
 
     dl.download(
         &resolved.download_url,
-        &archive_path,
+        &download_path,
         Some(&pb),
         conns,
         None,
@@ -338,35 +386,38 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
     .await?;
     pb.finish_and_clear();
 
-    BottleDownloader::verify_checksum(&archive_path, &resolved.sha256)?;
+    BottleDownloader::verify_checksum(&download_path, &resolved.sha256)?;
 
-    let extract_root = tmp.path().join("extract");
-    std::fs::create_dir_all(&extract_root)?;
     match kind {
-        "zip" => extract_zip_file(&archive_path, &extract_root)?,
-        "tar.gz" => extract_tar_gz(&archive_path, &extract_root)?,
+        "zip" | "tar.gz" => {
+            let extract_root = tmp.path().join("extract");
+            std::fs::create_dir_all(&extract_root)?;
+            match kind {
+                "zip" => extract_zip_file(&download_path, &extract_root)?,
+                "tar.gz" => extract_tar_gz(&download_path, &extract_root)?,
+                _ => unreachable!(),
+            }
+
+            let source_tree = match &resolved.extract_dir {
+                Some(d) => extract_root.join(d.replace('\\', "/")),
+                None => extract_root.clone(),
+            };
+            if !source_tree.exists() {
+                return Err(WaxError::InstallError(format!(
+                    "Extracted files missing expected extract_dir {:?}",
+                    resolved.extract_dir
+                )));
+            }
+
+            copy_dir_all(&source_tree, &version_dir)?;
+        }
+        "exe" => {
+            std::fs::create_dir_all(&version_dir)?;
+            let dest = version_dir.join(exe_filename(&resolved)?);
+            std::fs::copy(&download_path, &dest)?;
+        }
         _ => unreachable!(),
     }
-
-    let version_dir = resolved_staging_dir(package, &resolved.version)?;
-    if version_dir.exists() {
-        std::fs::remove_dir_all(&version_dir)?;
-    }
-    std::fs::create_dir_all(version_dir.parent().unwrap())?;
-
-    let source_tree = match &resolved.extract_dir {
-        Some(d) => extract_root.join(d.replace('\\', "/")),
-        None => extract_root.clone(),
-    };
-    if !source_tree.exists() {
-        return Err(WaxError::InstallError(format!(
-            "Extracted files missing expected extract_dir {:?}",
-            resolved.extract_dir
-        )));
-    }
-
-    // Move extract_root contents: copy `source_tree` -> `version_dir`
-    copy_dir_all(&source_tree, &version_dir)?;
 
     let bin_dir = windows_state::wax_bin_dir()?;
     std::fs::create_dir_all(&bin_dir)?;
@@ -435,6 +486,7 @@ mod tests {
     use super::*;
 
     const RG_MANIFEST: &str = include_str!("../tests/fixtures/scoop_ripgrep.json");
+    const AGENT_BROWSER_MANIFEST: &str = include_str!("../tests/fixtures/scoop_agent_browser.json");
 
     #[test]
     fn resolve_ripgrep_main_manifest() {
@@ -445,5 +497,30 @@ mod tests {
         assert!(r.extract_dir.as_ref().unwrap().contains("ripgrep"));
         assert_eq!(r.bin_paths.len(), 1);
         assert!(r.bin_paths[0].to_string_lossy().contains("rg"));
+        assert!(r.save_as.is_none());
+    }
+
+    #[test]
+    fn resolve_agent_browser_exe_manifest() {
+        let r = resolve_manifest_json(AGENT_BROWSER_MANIFEST).unwrap();
+        assert_eq!(r.version, "0.31.1");
+        assert!(r.download_url.ends_with(".exe"));
+        assert!(!r.download_url.contains('#'));
+        assert_eq!(r.save_as.as_deref(), Some("agent-browser.exe"));
+        assert_eq!(r.sha256.len(), 64);
+        assert!(r.extract_dir.is_none());
+        assert_eq!(r.bin_paths.len(), 1);
+        assert_eq!(r.bin_paths[0].to_string_lossy(), "agent-browser.exe");
+        assert_eq!(download_kind_from_url(&r.download_url).unwrap(), "exe");
+        assert_eq!(exe_filename(&r).unwrap(), "agent-browser.exe");
+    }
+
+    #[test]
+    fn parse_scoop_download_url_strips_fragment_and_save_as() {
+        let (url, save_as) = parse_scoop_download_url(
+            "https://example.invalid/pkg-win32-x64.exe#/agent-browser.exe",
+        );
+        assert_eq!(url, "https://example.invalid/pkg-win32-x64.exe");
+        assert_eq!(save_as.as_deref(), Some("agent-browser.exe"));
     }
 }
