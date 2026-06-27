@@ -26,6 +26,7 @@ pub fn catalog_match_score(name: &str, query: &str) -> Option<i32> {
     None
 }
 
+#[cfg(not(target_os = "windows"))]
 pub fn match_score(name: &str, desc: Option<&str>, query: &str) -> Option<i32> {
     let mut best = catalog_match_score(name, query);
     if let Some(desc) = desc {
@@ -57,6 +58,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn desc_boosts_score() {
         assert_eq!(
             match_score("foo", Some("agent browser tool"), "browser"),

@@ -38,13 +38,13 @@ pub async fn install_one_qualified(
             return Ok(true);
         }
         let alts = catalog_alternatives(cache, &spec.name, None).await;
-        return Err(WaxError::FormulaNotFound(with_alternatives(
+        Err(WaxError::FormulaNotFound(with_alternatives(
             format!(
                 "'{}' is not published on any Windows catalogue (Scoop Main, winget-pkgs, Chocolatey)",
                 spec.name
             ),
             &alts,
-        )));
+        )))
     }
 
     #[cfg(not(target_os = "windows"))]
