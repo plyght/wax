@@ -569,6 +569,7 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
 
     let mut files = windows_state::collect_files(&staging)?;
     files.extend(bin_links.iter().cloned());
+    let installed_id = package_id.clone();
     WindowsPackageManifest::new(
         Ecosystem::Winget,
         package_id,
@@ -582,7 +583,7 @@ pub async fn install_winget_package(package_id: &str) -> Result<()> {
 
     println!(
         "Installed {} {} (winget portable zip) — binaries under:\n  {}",
-        package_id,
+        installed_id,
         latest,
         bin_dir.display()
     );
