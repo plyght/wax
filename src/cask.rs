@@ -1015,22 +1015,101 @@ impl CaskInstaller {
         }
     }
 
+    fn fallback_unknown_path(staging_root: &Path, source_rel: &str) -> PathBuf {
+        staging_root.join(
+            Path::new(source_rel)
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new("unknown")),
+        )
+    }
+
+    fn substitute_path_variables(source_rel: &str, staging_root: &Path) -> String {
+        let prefix = crate::bottle::homebrew_prefix()
+            .to_string_lossy()
+            .to_string();
+        let staging_str = staging_root.to_str().unwrap_or("");
+        source_rel
+            .replace("$HOMEBREW_PREFIX", &prefix)
+            .replace("#{HOMEBREW_PREFIX}", &prefix)
+            .replace("$APPDIR", staging_str)
+    }
+
+    fn validate_absolute_path(
+        resolved: &Path,
+        staging_root: &Path,
+        source_rel: &str,
+    ) -> Option<PathBuf> {
+        let allowed_prefixes: Vec<PathBuf> = vec![
+            crate::bottle::homebrew_prefix(),
+            staging_root.to_path_buf(),
+            #[cfg(target_os = "macos")]
+            PathBuf::from("/Applications"),
+            #[cfg(not(target_os = "macos"))]
+            dirs::home_dir()
+                .unwrap_or_else(|_| PathBuf::from("/tmp"))
+                .join("Applications"),
+        ];
+        let normalized_resolved = normalize_existing_prefix(resolved);
+        let is_allowed = allowed_prefixes.iter().any(|allowed| {
+            let normalized_allowed = normalize_existing_prefix(allowed);
+            normalized_resolved.starts_with(&normalized_allowed)
+        });
+        if !is_allowed {
+            tracing::warn!(
+                "Rejecting absolute source path outside safe directories: {} (resolved: {:?})",
+                source_rel,
+                resolved
+            );
+            None
+        } else {
+            Some(resolved.to_path_buf())
+        }
+    }
+
+    fn validate_relative_path(
+        resolved: &Path,
+        staging_root: &Path,
+        source_rel: &str,
+    ) -> Option<PathBuf> {
+        let mut normalized = PathBuf::new();
+        for component in resolved.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    if !normalized.pop() {
+                        tracing::warn!(
+                            "Rejecting source path that escapes staging root: {} (resolved: {:?})",
+                            source_rel,
+                            resolved
+                        );
+                        return None;
+                    }
+                }
+                std::path::Component::CurDir => {}
+                other => normalized.push(other),
+            }
+        }
+
+        if !normalized.starts_with(staging_root) {
+            tracing::warn!(
+                "Rejecting source path that escapes staging root: {} (normalized: {:?})",
+                source_rel,
+                normalized
+            );
+            return None;
+        }
+
+        Some(normalized)
+    }
+
     fn resolve_source_path(&self, staging: &StagingContext, source_rel: &str) -> PathBuf {
         if source_rel.contains('\0') {
             tracing::warn!("Rejecting source path with NUL byte");
             return staging.staging_root.join("unknown");
         }
 
-        let prefix = crate::bottle::homebrew_prefix()
-            .to_string_lossy()
-            .to_string();
-        let staging_str = staging.staging_root.to_str().unwrap_or("");
-        let path = source_rel
-            .replace("$HOMEBREW_PREFIX", &prefix)
-            .replace("#{HOMEBREW_PREFIX}", &prefix)
-            .replace("$APPDIR", staging_str);
-
+        let path = Self::substitute_path_variables(source_rel, &staging.staging_root);
         let p = Path::new(&path);
+
         let resolved = if p.is_absolute() {
             p.to_path_buf()
         } else {
@@ -1045,82 +1124,16 @@ impl CaskInstaller {
                 source_rel,
                 resolved
             );
-            return staging.staging_root.join(
-                Path::new(source_rel)
-                    .file_name()
-                    .unwrap_or(std::ffi::OsStr::new("unknown")),
-            );
+            return Self::fallback_unknown_path(&staging.staging_root, source_rel);
         }
 
-        // For absolute paths, only allow known-safe directories.
         if p.is_absolute() {
-            let allowed_prefixes: Vec<PathBuf> = vec![
-                crate::bottle::homebrew_prefix(),
-                staging.staging_root.clone(),
-                #[cfg(target_os = "macos")]
-                PathBuf::from("/Applications"),
-                #[cfg(not(target_os = "macos"))]
-                dirs::home_dir()
-                    .unwrap_or_else(|_| PathBuf::from("/tmp"))
-                    .join("Applications"),
-            ];
-            let normalized_resolved = normalize_existing_prefix(&resolved);
-            let is_allowed = allowed_prefixes.iter().any(|allowed| {
-                let normalized_allowed = normalize_existing_prefix(allowed);
-                normalized_resolved.starts_with(&normalized_allowed)
-            });
-            if !is_allowed {
-                tracing::warn!(
-                    "Rejecting absolute source path outside safe directories: {} (resolved: {:?})",
-                    source_rel,
-                    resolved
-                );
-                return staging.staging_root.join(
-                    Path::new(source_rel)
-                        .file_name()
-                        .unwrap_or(std::ffi::OsStr::new("unknown")),
-                );
-            }
-            return resolved;
+            Self::validate_absolute_path(&resolved, &staging.staging_root, source_rel)
+                .unwrap_or_else(|| Self::fallback_unknown_path(&staging.staging_root, source_rel))
+        } else {
+            Self::validate_relative_path(&resolved, &staging.staging_root, source_rel)
+                .unwrap_or_else(|| Self::fallback_unknown_path(&staging.staging_root, source_rel))
         }
-
-        // For relative paths, normalize and ensure it stays inside staging_root.
-        let mut normalized = PathBuf::new();
-        for component in resolved.components() {
-            match component {
-                std::path::Component::ParentDir => {
-                    if !normalized.pop() {
-                        tracing::warn!(
-                            "Rejecting source path that escapes staging root: {} (resolved: {:?})",
-                            source_rel,
-                            resolved
-                        );
-                        return staging.staging_root.join(
-                            Path::new(source_rel)
-                                .file_name()
-                                .unwrap_or(std::ffi::OsStr::new("unknown")),
-                        );
-                    }
-                }
-                std::path::Component::CurDir => {}
-                other => normalized.push(other),
-            }
-        }
-
-        if !normalized.starts_with(&staging.staging_root) {
-            tracing::warn!(
-                "Rejecting source path that escapes staging root: {} (normalized: {:?})",
-                source_rel,
-                normalized
-            );
-            return staging.staging_root.join(
-                Path::new(source_rel)
-                    .file_name()
-                    .unwrap_or(std::ffi::OsStr::new("unknown")),
-            );
-        }
-
-        normalized
     }
 
     /// Probe a URL via HEAD request to detect artifact type from response headers.
