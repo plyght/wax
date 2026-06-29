@@ -560,43 +560,10 @@ impl TapManager {
                     return Ok(Vec::new());
                 }
 
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or_default()
-                    .to_string();
-
-                let content = fs::read_to_string(path).await?;
-
-                match FormulaParser::parse_ruby_formula(&name, &content) {
-                    Ok(parsed) => {
-                        let formula = Formula {
-                            name: parsed.name.clone(),
-                            full_name: format!("{}/{}", tap.full_name, parsed.name),
-                            desc: parsed.desc.clone(),
-                            homepage: parsed.homepage.clone().unwrap_or_default(),
-                            versions: crate::api::Versions {
-                                stable: parsed.source.version.clone(),
-                                bottle: false,
-                            },
-                            revision: 0,
-                            installed: None,
-                            dependencies: Some(parsed.runtime_dependencies.clone()),
-                            build_dependencies: Some(parsed.build_dependencies.clone()),
-                            bottle: None,
-                            deprecated: false,
-                            disabled: false,
-                            deprecation_reason: None,
-                            disable_reason: None,
-                            keg_only: None,
-                            keg_only_reason: None,
-                            post_install_defined: false,
-                            rb_path: Some(path.clone()),
-                        };
-                        Ok(vec![formula])
-                    }
+                match Self::parse_formula_file(path, &tap.full_name).await {
+                    Ok(formula) => Ok(vec![formula]),
                     Err(e) => {
-                        debug!("Failed to parse formula {}: {}", name, e);
+                        debug!("{}", e);
                         Ok(Vec::new())
                     }
                 }
@@ -613,43 +580,10 @@ impl TapManager {
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
                     if path.extension().and_then(|s| s.to_str()) == Some("rb") {
-                        let name = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or_default()
-                            .to_string();
-
-                        let content = fs::read_to_string(&path).await?;
-
-                        match FormulaParser::parse_ruby_formula(&name, &content) {
-                            Ok(parsed) => {
-                                let formula = Formula {
-                                    name: parsed.name.clone(),
-                                    full_name: format!("{}/{}", tap.full_name, parsed.name),
-                                    desc: parsed.desc.clone(),
-                                    homepage: parsed.homepage.clone().unwrap_or_default(),
-                                    versions: crate::api::Versions {
-                                        stable: parsed.source.version.clone(),
-                                        bottle: false,
-                                    },
-                                    revision: 0,
-                                    installed: None,
-                                    dependencies: Some(parsed.runtime_dependencies.clone()),
-                                    build_dependencies: Some(parsed.build_dependencies.clone()),
-                                    bottle: None,
-                                    deprecated: false,
-                                    disabled: false,
-                                    deprecation_reason: None,
-                                    disable_reason: None,
-                                    keg_only: None,
-                                    keg_only_reason: None,
-                                    post_install_defined: false,
-                                    rb_path: Some(path.clone()),
-                                };
-                                formulae.push(formula);
-                            }
+                        match Self::parse_formula_file(&path, &tap.full_name).await {
+                            Ok(formula) => formulae.push(formula),
                             Err(e) => {
-                                debug!("Failed to parse formula {}: {}", name, e);
+                                debug!("{}", e);
                             }
                         }
                     }
@@ -657,6 +591,46 @@ impl TapManager {
 
                 Ok(formulae)
             }
+        }
+    }
+
+    async fn parse_formula_file(path: &Path, tap_full_name: &str) -> Result<Formula> {
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let content = fs::read_to_string(path).await?;
+
+        match FormulaParser::parse_ruby_formula(&name, &content) {
+            Ok(parsed) => Ok(Formula {
+                name: parsed.name.clone(),
+                full_name: format!("{}/{}", tap_full_name, parsed.name),
+                desc: parsed.desc.clone(),
+                homepage: parsed.homepage.clone().unwrap_or_default(),
+                versions: crate::api::Versions {
+                    stable: parsed.source.version.clone(),
+                    bottle: false,
+                },
+                revision: 0,
+                installed: None,
+                dependencies: Some(parsed.runtime_dependencies.clone()),
+                build_dependencies: Some(parsed.build_dependencies.clone()),
+                bottle: None,
+                deprecated: false,
+                disabled: false,
+                deprecation_reason: None,
+                disable_reason: None,
+                keg_only: None,
+                keg_only_reason: None,
+                post_install_defined: false,
+                rb_path: Some(path.to_path_buf()),
+            }),
+            Err(e) => Err(crate::error::WaxError::ParseError(format!(
+                "Failed to parse formula {}: {}",
+                name, e
+            ))),
         }
     }
 }
