@@ -878,54 +878,7 @@ impl BottleDownloader {
         use std::process::Command;
 
         #[cfg(unix)]
-        let _perm_guard = {
-            use std::os::unix::fs::PermissionsExt;
-            struct PermissionGuard {
-                path: std::path::PathBuf,
-                original_mode: u32,
-                changed: bool,
-            }
-            impl PermissionGuard {
-                fn new(path: &Path) -> Option<Self> {
-                    if let Ok(metadata) = std::fs::metadata(path) {
-                        let perms = metadata.permissions();
-                        let mode = perms.mode();
-                        if mode & 0o200 == 0 {
-                            let mut new_perms = perms;
-                            new_perms.set_mode(mode | 0o200);
-                            if std::fs::set_permissions(path, new_perms).is_ok() {
-                                return Some(Self {
-                                    path: path.to_path_buf(),
-                                    original_mode: mode,
-                                    changed: true,
-                                });
-                            }
-                            return None;
-                        }
-                        Some(Self {
-                            path: path.to_path_buf(),
-                            original_mode: mode,
-                            changed: false,
-                        })
-                    } else {
-                        None
-                    }
-                }
-            }
-            impl Drop for PermissionGuard {
-                fn drop(&mut self) {
-                    if !self.changed {
-                        return;
-                    }
-                    if let Ok(metadata) = std::fs::metadata(&self.path) {
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(self.original_mode);
-                        let _ = std::fs::set_permissions(&self.path, perms);
-                    }
-                }
-            }
-            PermissionGuard::new(path)
-        };
+        let _perm_guard = PermissionGuard::new(path);
 
         let path_str = match path.to_str() {
             Some(s) => s,
@@ -937,107 +890,9 @@ impl BottleDownloader {
 
         let mut modified = false;
 
-        // Fix the binary's own install name (relevant for dylibs)
-        if let Ok(output) = Command::new("otool").args(["-D", path_str]).output() {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                if let Some(install_name) = macho_install_name(&text) {
-                    let new_name =
-                        relocate_homebrew_placeholders(install_name, prefix, cellar, library);
-                    if new_name != install_name {
-                        match Command::new("install_name_tool")
-                            .args(["-id", &new_name, path_str])
-                            .output()
-                        {
-                            Ok(out) if out.status.success() => {
-                                modified = true;
-                                debug!("Relocated Mach-O install name: {:?}", path);
-                            }
-                            Ok(out) => {
-                                debug!(
-                                    "install_name_tool -id failed for {:?}: {}",
-                                    path,
-                                    String::from_utf8_lossy(&out.stderr)
-                                );
-                            }
-                            Err(err) => {
-                                debug!("install_name_tool -id failed for {:?}: {}", path, err);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fix all referenced dylib paths (LC_LOAD_DYLIB)
-        if let Ok(output) = Command::new("otool").args(["-L", path_str]).output() {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                for lib_path in macho_loaded_libraries(&text) {
-                    if !lib_path.contains("@@HOMEBREW_CELLAR@@")
-                        && !lib_path.contains("@@HOMEBREW_PREFIX@@")
-                        && !lib_path.contains("@@HOMEBREW_LIBRARY@@")
-                    {
-                        continue;
-                    }
-
-                    let new_path =
-                        relocate_homebrew_placeholders(lib_path, prefix, cellar, library);
-
-                    let result = Command::new("install_name_tool")
-                        .args(["-change", lib_path, &new_path, path_str])
-                        .output();
-
-                    if let Ok(out) = result {
-                        if !out.status.success() {
-                            debug!(
-                                "install_name_tool -change failed for {:?}: {}",
-                                path,
-                                String::from_utf8_lossy(&out.stderr)
-                            );
-                        } else {
-                            debug!(
-                                "Relocated Mach-O dep {} -> {} in {:?}",
-                                lib_path, new_path, path
-                            );
-                            modified = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fix RPATH entries (LC_RPATH) — e.g. @@HOMEBREW_PREFIX@@/lib
-        if let Ok(output) = Command::new("otool").args(["-l", path_str]).output() {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                for rpath in macho_rpaths(&text) {
-                    if rpath.contains("@@HOMEBREW_CELLAR@@")
-                        || rpath.contains("@@HOMEBREW_PREFIX@@")
-                        || rpath.contains("@@HOMEBREW_LIBRARY@@")
-                    {
-                        let new_rpath =
-                            relocate_homebrew_placeholders(rpath, prefix, cellar, library);
-                        let result = Command::new("install_name_tool")
-                            .args(["-rpath", rpath, &new_rpath, path_str])
-                            .output();
-                        if let Ok(out) = result {
-                            if out.status.success() {
-                                debug!("Relocated rpath {} -> {} in {:?}", rpath, new_rpath, path);
-                                modified = true;
-                            } else {
-                                debug!(
-                                    "install_name_tool -rpath failed for {:?}: {}",
-                                    path,
-                                    String::from_utf8_lossy(&out.stderr)
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        modified |= relocate_macho_install_name(path_str, path, prefix, cellar, library);
+        modified |= relocate_macho_dylib_paths(path_str, path, prefix, cellar, library);
+        modified |= relocate_macho_rpaths(path_str, path, prefix, cellar, library);
         // Re-sign with an ad-hoc signature after any modification.
         // install_name_tool invalidates the code signature on Apple Silicon,
         // and macOS kills modified unsigned binaries with SIGKILL.
@@ -1619,4 +1474,166 @@ mod tests {
             "/opt/homebrew/lib:/opt/homebrew/Cellar/pkg/1/lib:/opt/homebrew/Library/Homebrew"
         );
     }
+}
+#[cfg(unix)]
+struct PermissionGuard {
+    path: std::path::PathBuf,
+    original_mode: u32,
+    changed: bool,
+}
+#[cfg(unix)]
+impl PermissionGuard {
+    fn new(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let perms = metadata.permissions();
+            let mode = perms.mode();
+            if mode & 0o200 == 0 {
+                let mut new_perms = perms;
+                new_perms.set_mode(mode | 0o200);
+                if std::fs::set_permissions(path, new_perms).is_ok() {
+                    return Some(Self {
+                        path: path.to_path_buf(),
+                        original_mode: mode,
+                        changed: true,
+                    });
+                }
+                return None;
+            }
+            Some(Self {
+                path: path.to_path_buf(),
+                original_mode: mode,
+                changed: false,
+            })
+        } else {
+            None
+        }
+    }
+}
+#[cfg(unix)]
+impl Drop for PermissionGuard {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        if !self.changed {
+            return;
+        }
+        if let Ok(metadata) = std::fs::metadata(&self.path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(self.original_mode);
+            let _ = std::fs::set_permissions(&self.path, perms);
+        }
+    }
+}
+
+fn relocate_macho_install_name(path_str: &str, path: &Path, prefix: &str, cellar: &str, library: &str) -> bool {
+    use std::process::Command;
+    let mut modified = false;
+    if let Ok(output) = Command::new("otool").args(["-D", path_str]).output() {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(install_name) = macho_install_name(&text) {
+                let new_name =
+                    relocate_homebrew_placeholders(install_name, prefix, cellar, library);
+                if new_name != install_name {
+                    match Command::new("install_name_tool")
+                        .args(["-id", &new_name, path_str])
+                        .output()
+                    {
+                        Ok(out) if out.status.success() => {
+                            modified = true;
+                            debug!("Relocated Mach-O install name: {:?}", path);
+                        }
+                        Ok(out) => {
+                            debug!(
+                                "install_name_tool -id failed for {:?}: {}",
+                                path,
+                                String::from_utf8_lossy(&out.stderr)
+                            );
+                        }
+                        Err(err) => {
+                            debug!("install_name_tool -id failed for {:?}: {}", path, err);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    modified
+}
+
+fn relocate_macho_dylib_paths(path_str: &str, path: &Path, prefix: &str, cellar: &str, library: &str) -> bool {
+    use std::process::Command;
+    let mut modified = false;
+    if let Ok(output) = Command::new("otool").args(["-L", path_str]).output() {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for lib_path in macho_loaded_libraries(&text) {
+                if !lib_path.contains("@@HOMEBREW_CELLAR@@")
+                    && !lib_path.contains("@@HOMEBREW_PREFIX@@")
+                    && !lib_path.contains("@@HOMEBREW_LIBRARY@@")
+                {
+                    continue;
+                }
+
+                let new_path =
+                    relocate_homebrew_placeholders(lib_path, prefix, cellar, library);
+
+                let result = Command::new("install_name_tool")
+                    .args(["-change", lib_path, &new_path, path_str])
+                    .output();
+
+                if let Ok(out) = result {
+                    if !out.status.success() {
+                        debug!(
+                            "install_name_tool -change failed for {:?}: {}",
+                            path,
+                            String::from_utf8_lossy(&out.stderr)
+                        );
+                    } else {
+                        debug!(
+                            "Relocated Mach-O dep {} -> {} in {:?}",
+                            lib_path, new_path, path
+                        );
+                        modified = true;
+                    }
+                }
+            }
+        }
+    }
+    modified
+}
+
+fn relocate_macho_rpaths(path_str: &str, path: &Path, prefix: &str, cellar: &str, library: &str) -> bool {
+    use std::process::Command;
+    let mut modified = false;
+    if let Ok(output) = Command::new("otool").args(["-l", path_str]).output() {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for rpath in macho_rpaths(&text) {
+                if rpath.contains("@@HOMEBREW_CELLAR@@")
+                    || rpath.contains("@@HOMEBREW_PREFIX@@")
+                    || rpath.contains("@@HOMEBREW_LIBRARY@@")
+                {
+                    let new_rpath =
+                        relocate_homebrew_placeholders(rpath, prefix, cellar, library);
+                    let result = Command::new("install_name_tool")
+                        .args(["-rpath", rpath, &new_rpath, path_str])
+                        .output();
+                    if let Ok(out) = result {
+                        if out.status.success() {
+                            debug!("Relocated rpath {} -> {} in {:?}", rpath, new_rpath, path);
+                            modified = true;
+                        } else {
+                            debug!(
+                                "install_name_tool -rpath failed for {:?}: {}",
+                                path,
+                                String::from_utf8_lossy(&out.stderr)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    modified
 }
