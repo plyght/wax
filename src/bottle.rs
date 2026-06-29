@@ -1271,9 +1271,24 @@ impl Default for BottleDownloader {
     }
 }
 
-pub fn run_command_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Option<String> {
+#[allow(dead_code)]
+pub enum SafeCommand {
+    Brew,
+    SwVers,
+}
+
+impl SafeCommand {
+    fn as_str(&self) -> &'static str {
+        match self {
+            SafeCommand::Brew => "brew",
+            SafeCommand::SwVers => "sw_vers",
+        }
+    }
+}
+
+pub fn run_command_with_timeout(cmd: SafeCommand, args: &[&str], timeout_secs: u64) -> Option<String> {
     let (tx, rx) = mpsc::channel();
-    let cmd_str = cmd.to_string();
+    let cmd_str = cmd.as_str().to_string();
     let args_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
     thread::spawn(move || {
@@ -1330,7 +1345,7 @@ fn macos_codename() -> &'static str {
 fn macos_version() -> String {
     #[cfg(target_os = "macos")]
     {
-        if let Some(version) = run_command_with_timeout("sw_vers", &["-productVersion"], 1) {
+        if let Some(version) = run_command_with_timeout(SafeCommand::SwVers, &["-productVersion"], 1) {
             if let Some(major) = version.split('.').next() {
                 return major.to_string();
             }
@@ -1370,7 +1385,7 @@ pub fn homebrew_prefix() -> PathBuf {
         _ => PathBuf::from("/usr/local"),
     };
 
-    if let Some(prefix_str) = run_command_with_timeout("brew", &["--prefix"], 2) {
+    if let Some(prefix_str) = run_command_with_timeout(SafeCommand::Brew, &["--prefix"], 2) {
         let brew_prefix = PathBuf::from(&prefix_str);
         if brew_prefix.join("Cellar").exists() {
             if brew_prefix != standard_prefix {

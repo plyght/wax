@@ -1,4 +1,4 @@
-use crate::bottle::{detect_platform, homebrew_prefix, run_command_with_timeout};
+use crate::bottle::{detect_platform, homebrew_prefix, run_command_with_timeout, SafeCommand};
 use crate::error::{Result, WaxError};
 use crate::sudo;
 use crate::ui::dirs;
@@ -226,7 +226,7 @@ impl InstallState {
         let arch = std::env::consts::ARCH;
 
         let mut candidates =
-            if let Some(prefix_str) = run_command_with_timeout("brew", &["--prefix"], 2) {
+            if let Some(prefix_str) = run_command_with_timeout(SafeCommand::Brew, &["--prefix"], 2) {
                 vec![PathBuf::from(prefix_str.trim())]
             } else {
                 match os {
