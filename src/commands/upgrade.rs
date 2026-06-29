@@ -1547,80 +1547,27 @@ mod tests {
 
         let mut installed = HashMap::new();
 
-        installed.insert(
-            "pkg-uptodate".to_string(),
-            InstalledPackage {
-                name: "pkg-uptodate".to_string(),
-                version: "1.0.0".to_string(),
-                platform: "arm64_mac".to_string(),
-                install_date: 0,
-                install_mode: InstallMode::Global,
-                from_source: false,
-                bottle_rebuild: 0,
-                bottle_sha256: Some("sha1".to_string()),
-                pinned: false,
-            },
-        );
+        let make_installed = |name: &str, sha: &str, pinned: bool| InstalledPackage {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            platform: "arm64_mac".to_string(),
+            install_date: 0,
+            install_mode: InstallMode::Global,
+            from_source: false,
+            bottle_rebuild: 0,
+            bottle_sha256: Some(sha.to_string()),
+            pinned,
+        };
 
-        installed.insert(
-            "pkg-version".to_string(),
-            InstalledPackage {
-                name: "pkg-version".to_string(),
-                version: "1.0.0".to_string(),
-                platform: "arm64_mac".to_string(),
-                install_date: 0,
-                install_mode: InstallMode::Global,
-                from_source: false,
-                bottle_rebuild: 0,
-                bottle_sha256: Some("sha1".to_string()),
-                pinned: false,
-            },
-        );
-
-        installed.insert(
-            "pkg-rebuild".to_string(),
-            InstalledPackage {
-                name: "pkg-rebuild".to_string(),
-                version: "1.0.0".to_string(),
-                platform: "arm64_mac".to_string(),
-                install_date: 0,
-                install_mode: InstallMode::Global,
-                from_source: false,
-                bottle_rebuild: 0,
-                bottle_sha256: Some("sha1".to_string()),
-                pinned: false,
-            },
-        );
-
-        installed.insert(
-            "pkg-sha".to_string(),
-            InstalledPackage {
-                name: "pkg-sha".to_string(),
-                version: "1.0.0".to_string(),
-                platform: "arm64_mac".to_string(),
-                install_date: 0,
-                install_mode: InstallMode::Global,
-                from_source: false,
-                bottle_rebuild: 0,
-                bottle_sha256: Some("sha_old".to_string()),
-                pinned: false,
-            },
-        );
-
-        installed.insert(
-            "pkg-pinned".to_string(),
-            InstalledPackage {
-                name: "pkg-pinned".to_string(),
-                version: "1.0.0".to_string(),
-                platform: "arm64_mac".to_string(),
-                install_date: 0,
-                install_mode: InstallMode::Global,
-                from_source: false,
-                bottle_rebuild: 0,
-                bottle_sha256: Some("sha1".to_string()),
-                pinned: true,
-            },
-        );
+        for (name, sha, pinned) in [
+            ("pkg-uptodate", "sha1", false),
+            ("pkg-version", "sha1", false),
+            ("pkg-rebuild", "sha1", false),
+            ("pkg-sha", "sha_old", false),
+            ("pkg-pinned", "sha1", true),
+        ] {
+            installed.insert(name.to_string(), make_installed(name, sha, pinned));
+        }
 
         let installed_json = serde_json::to_string(&installed).unwrap();
         fs::write(wax_dir.join("installed.json"), installed_json).unwrap();
