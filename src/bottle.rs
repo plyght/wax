@@ -937,7 +937,7 @@ impl BottleDownloader {
 
         let mut modified = false;
 
-        // Fix the binary's own install name (relevant for dylibs)
+        // Relocate the binary's own install name (relevant for dylibs)
         if let Ok(output) = Command::new("otool").args(["-D", path_str]).output() {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
@@ -969,7 +969,7 @@ impl BottleDownloader {
             }
         }
 
-        // Fix all referenced dylib paths (LC_LOAD_DYLIB)
+        // Relocate all referenced dylib paths (LC_LOAD_DYLIB)
         if let Ok(output) = Command::new("otool").args(["-L", path_str]).output() {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
@@ -1007,7 +1007,7 @@ impl BottleDownloader {
             }
         }
 
-        // Fix RPATH entries (LC_RPATH) — e.g. @@HOMEBREW_PREFIX@@/lib
+        // Relocate RPATH entries (LC_RPATH) — e.g. @@HOMEBREW_PREFIX@@/lib
         if let Ok(output) = Command::new("otool").args(["-l", path_str]).output() {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
