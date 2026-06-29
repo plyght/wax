@@ -38,41 +38,7 @@ fn install_completions(shell: Shell) -> Result<()> {
     let home =
         std::env::var("HOME").map_err(|_| WaxError::InstallError("$HOME not set".to_string()))?;
 
-    let (dest, content) = match shell {
-        Shell::Zsh => {
-            let dir = PathBuf::from(&home).join(".zsh/completions");
-            std::fs::create_dir_all(&dir)?;
-            let path = dir.join("_wax");
-            let mut buf = Vec::new();
-            let mut cmd = Cli::command();
-            generate(Shell::Zsh, &mut cmd, "wax", &mut buf);
-            (path, buf)
-        }
-        Shell::Bash => {
-            let dir = PathBuf::from(&home).join(".local/share/bash-completion/completions");
-            std::fs::create_dir_all(&dir)?;
-            let path = dir.join("wax");
-            let mut buf = Vec::new();
-            let mut cmd = Cli::command();
-            generate(Shell::Bash, &mut cmd, "wax", &mut buf);
-            (path, buf)
-        }
-        Shell::Fish => {
-            let dir = PathBuf::from(&home).join(".config/fish/completions");
-            std::fs::create_dir_all(&dir)?;
-            let path = dir.join("wax.fish");
-            let mut buf = Vec::new();
-            let mut cmd = Cli::command();
-            generate(Shell::Fish, &mut cmd, "wax", &mut buf);
-            (path, buf)
-        }
-        _ => {
-            return Err(WaxError::InstallError(format!(
-                "Auto-install not supported for {:?}. Use `wax completions {:?}` and redirect manually.",
-                shell, shell
-            )));
-        }
-    };
+    let (dest, content) = generate_completions(shell, &home)?;
 
     std::fs::write(&dest, &content)?;
 
@@ -85,57 +51,7 @@ fn install_completions(shell: Shell) -> Result<()> {
 
     match shell {
         Shell::Zsh => {
-            let zshrc = PathBuf::from(&home).join(".zshrc");
-            let fpath_line = "fpath=(~/.zsh/completions $fpath)";
-
-            let already_configured = std::fs::read_to_string(&zshrc)
-                .map(|content| content.contains(fpath_line))
-                .unwrap_or(false);
-
-            if already_configured {
-                println!(
-                    "completions are ready — run {} to activate",
-                    style("exec zsh").cyan()
-                );
-            } else {
-                let prompt = inquire::Confirm::new("Add fpath to ~/.zshrc?")
-                    .with_default(true)
-                    .prompt();
-
-                match prompt {
-                    Ok(true) => {
-                        let mut zshrc_content = std::fs::read_to_string(&zshrc).unwrap_or_default();
-                        // Insert before compinit if present, otherwise append near the top
-                        if let Some(pos) = zshrc_content.find("autoload -Uz compinit") {
-                            zshrc_content.insert_str(pos, &format!("{}\n", fpath_line));
-                        } else if let Some(pos) = zshrc_content.find("compinit") {
-                            zshrc_content.insert_str(pos, &format!("{}\n", fpath_line));
-                        } else {
-                            // Append with a newline
-                            if !zshrc_content.ends_with('\n') {
-                                zshrc_content.push('\n');
-                            }
-                            zshrc_content.push_str(fpath_line);
-                            zshrc_content.push('\n');
-                        }
-                        std::fs::write(&zshrc, &zshrc_content)?;
-                        println!("{} added fpath to ~/.zshrc", style("✓").green());
-                        println!("\nrun {} to activate completions", style("exec zsh").cyan());
-                    }
-                    Ok(false) => {
-                        println!(
-                            "\nadd this to your ~/.zshrc manually:\n  {}",
-                            style(fpath_line).dim()
-                        );
-                    }
-                    Err(_) => {
-                        println!(
-                            "\nadd this to your ~/.zshrc manually:\n  {}",
-                            style(fpath_line).dim()
-                        );
-                    }
-                }
-            }
+            configure_zsh(&home)?;
         }
         Shell::Bash => {
             println!("completions will load automatically in new shells.");
@@ -146,5 +62,92 @@ fn install_completions(shell: Shell) -> Result<()> {
         _ => {}
     }
 
+    Ok(())
+}
+
+fn generate_completions(shell: Shell, home: &str) -> Result<(PathBuf, Vec<u8>)> {
+    match shell {
+        Shell::Zsh => {
+            let dir = PathBuf::from(home).join(".zsh/completions");
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join("_wax");
+            let mut buf = Vec::new();
+            let mut cmd = Cli::command();
+            generate(Shell::Zsh, &mut cmd, "wax", &mut buf);
+            Ok((path, buf))
+        }
+        Shell::Bash => {
+            let dir = PathBuf::from(home).join(".local/share/bash-completion/completions");
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join("wax");
+            let mut buf = Vec::new();
+            let mut cmd = Cli::command();
+            generate(Shell::Bash, &mut cmd, "wax", &mut buf);
+            Ok((path, buf))
+        }
+        Shell::Fish => {
+            let dir = PathBuf::from(home).join(".config/fish/completions");
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join("wax.fish");
+            let mut buf = Vec::new();
+            let mut cmd = Cli::command();
+            generate(Shell::Fish, &mut cmd, "wax", &mut buf);
+            Ok((path, buf))
+        }
+        _ => Err(WaxError::InstallError(format!(
+            "Auto-install not supported for {:?}. Use `wax completions {:?}` and redirect manually.",
+            shell, shell
+        ))),
+    }
+}
+
+fn configure_zsh(home: &str) -> Result<()> {
+    use console::style;
+
+    let zshrc = PathBuf::from(home).join(".zshrc");
+    let fpath_line = "fpath=(~/.zsh/completions $fpath)";
+
+    let already_configured = std::fs::read_to_string(&zshrc)
+        .map(|content| content.contains(fpath_line))
+        .unwrap_or(false);
+
+    if already_configured {
+        println!(
+            "completions are ready — run {} to activate",
+            style("exec zsh").cyan()
+        );
+    } else {
+        let prompt = inquire::Confirm::new("Add fpath to ~/.zshrc?")
+            .with_default(true)
+            .prompt();
+
+        match prompt {
+            Ok(true) => {
+                let mut zshrc_content = std::fs::read_to_string(&zshrc).unwrap_or_default();
+                // Insert before compinit if present, otherwise append near the top
+                if let Some(pos) = zshrc_content.find("autoload -Uz compinit") {
+                    zshrc_content.insert_str(pos, &format!("{}\n", fpath_line));
+                } else if let Some(pos) = zshrc_content.find("compinit") {
+                    zshrc_content.insert_str(pos, &format!("{}\n", fpath_line));
+                } else {
+                    // Append with a newline
+                    if !zshrc_content.ends_with('\n') {
+                        zshrc_content.push('\n');
+                    }
+                    zshrc_content.push_str(fpath_line);
+                    zshrc_content.push('\n');
+                }
+                std::fs::write(&zshrc, &zshrc_content)?;
+                println!("{} added fpath to ~/.zshrc", style("✓").green());
+                println!("\nrun {} to activate completions", style("exec zsh").cyan());
+            }
+            Ok(false) | Err(_) => {
+                println!(
+                    "\nadd this to your ~/.zshrc manually:\n  {}",
+                    style(fpath_line).dim()
+                );
+            }
+        }
+    }
     Ok(())
 }
