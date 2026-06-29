@@ -1619,4 +1619,74 @@ mod tests {
             "/opt/homebrew/lib:/opt/homebrew/Cellar/pkg/1/lib:/opt/homebrew/Library/Homebrew"
         );
     }
+
+    #[test]
+    fn copy_extracted_bottle_to_cellar_uses_actual_content_dir() {
+        let extract_dir = tempfile::tempdir().unwrap();
+        let name = "myformula";
+        let cellar_version = "1.0.0";
+        let formula_cellar = tempfile::tempdir().unwrap();
+
+        // extract_dir/name/cellar_version
+        let actual_content_dir = extract_dir.path().join(name).join(cellar_version);
+        std::fs::create_dir_all(&actual_content_dir).unwrap();
+        std::fs::write(actual_content_dir.join("file.txt"), b"actual").unwrap();
+
+        copy_extracted_bottle_to_cellar(
+            extract_dir.path(),
+            name,
+            cellar_version,
+            formula_cellar.path(),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(formula_cellar.path().join("file.txt")).unwrap();
+        assert_eq!(contents, "actual");
+    }
+
+    #[test]
+    fn copy_extracted_bottle_to_cellar_uses_name_dir() {
+        let extract_dir = tempfile::tempdir().unwrap();
+        let name = "myformula";
+        let cellar_version = "1.0.0";
+        let formula_cellar = tempfile::tempdir().unwrap();
+
+        // extract_dir/name
+        let name_dir = extract_dir.path().join(name);
+        std::fs::create_dir_all(&name_dir).unwrap();
+        std::fs::write(name_dir.join("file.txt"), b"name").unwrap();
+
+        copy_extracted_bottle_to_cellar(
+            extract_dir.path(),
+            name,
+            cellar_version,
+            formula_cellar.path(),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(formula_cellar.path().join("file.txt")).unwrap();
+        assert_eq!(contents, "name");
+    }
+
+    #[test]
+    fn copy_extracted_bottle_to_cellar_uses_extract_dir() {
+        let extract_dir = tempfile::tempdir().unwrap();
+        let name = "myformula";
+        let cellar_version = "1.0.0";
+        let formula_cellar = tempfile::tempdir().unwrap();
+
+        // extract_dir directly
+        std::fs::write(extract_dir.path().join("file.txt"), b"extract").unwrap();
+
+        copy_extracted_bottle_to_cellar(
+            extract_dir.path(),
+            name,
+            cellar_version,
+            formula_cellar.path(),
+        )
+        .unwrap();
+
+        let contents = std::fs::read_to_string(formula_cellar.path().join("file.txt")).unwrap();
+        assert_eq!(contents, "extract");
+    }
 }
