@@ -605,20 +605,7 @@ async fn upgrade_all(
     let poller_task = update_formula_totals;
     let overall_pb_done = overall_formula_pb.clone();
 
-    let formula_download_bars: HashMap<String, ProgressBar> = formula_packages
-        .iter()
-        .map(|pkg| {
-            let pb = multi.add(ProgressBar::new(0));
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template(PROGRESS_BAR_PREFIX_TEMPLATE)
-                    .unwrap()
-                    .progress_chars(PROGRESS_BAR_CHARS),
-            );
-            pb.set_prefix(pkg.name.clone());
-            (pkg.name.clone(), pb)
-        })
-        .collect();
+
 
     let connection_map_for_producer = upgrade_connections_map.clone();
     let producer_tx = tx.clone();
@@ -626,7 +613,6 @@ async fn upgrade_all(
     let upgrade_formulae_for_producer = Arc::clone(&upgrade_formulae);
     let platform_for_producer = platform.clone();
     let multi_for_producer = multi.clone();
-    let formula_download_bars_for_producer = formula_download_bars.clone();
     let producer_handle = tokio::spawn(async move {
         let mut producer_js: JoinSet<std::result::Result<(), WaxError>> = JoinSet::new();
         for pkg in formula_packages_for_producer.iter().cloned() {
@@ -671,16 +657,21 @@ async fn upgrade_all(
             let name = pkg.name.clone();
             let version = formula.versions.stable.clone();
             let rebuild = formula.bottle_rebuild();
-            let pb = formula_download_bars_for_producer
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| multi_ref.add(ProgressBar::new(0)));
 
             producer_js.spawn(async move {
                 let task_name = name.clone();
                 let inner = async {
                     let permit = sem.acquire().await.unwrap();
                     crate::signal::check_cancelled()?;
+
+                    let pb = multi_ref.add(ProgressBar::new(0));
+                    pb.set_style(
+                        ProgressStyle::default_bar()
+                            .template(PROGRESS_BAR_PREFIX_TEMPLATE)
+                            .unwrap()
+                            .progress_chars(PROGRESS_BAR_CHARS),
+                    );
+                    pb.set_prefix(name.clone());
 
                     let tarball = tmp.path().join(format!("{}-{}.tar.gz", name, version));
 
@@ -696,19 +687,19 @@ async fn upgrade_all(
                     let extract_dir = tmp.path().join(&name);
                     BottleDownloader::extract(&tarball, &extract_dir)?;
 
-                    Ok::<_, WaxError>(PreDownloaded {
+                    Ok::<_, WaxError>((PreDownloaded {
                         name,
                         version,
                         extract_dir,
                         bottle_sha: sha256,
                         bottle_rebuild: rebuild,
                         _temp_dir: tmp,
-                    })
+                    }, pb))
                 }
                 .await;
 
                 match inner {
-                    Ok(pre) => {
+                    Ok((pre, pb)) => {
                         let _ = tx
                             .send(FormulaUpgradeMsg::Ready { pkg, pre, bar: pb })
                             .await;
