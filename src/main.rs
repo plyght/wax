@@ -549,19 +549,8 @@ fn print_error_and_exit(err: error::WaxError) -> ! {
     std::process::exit(1);
 }
 
-async fn run() -> Result<()> {
-    let action_timer = Instant::now();
-    let cli = Cli::parse();
-
-    signal::install_handler();
-    init_logging(cli.verbose)?;
-
-    let command = cli.command;
-    let command_prints_own_timing = command_prints_timing(&command);
-    let cache = Cache::new()?;
-    ui::set_timing_enabled(cli.time_to_action);
-
-    let result = match command {
+async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<()> {
+    match command {
         Commands::Update {
             action,
             mut update_self,
@@ -631,7 +620,7 @@ async fn run() -> Result<()> {
                     &cache,
                     &packages,
                     dry_run,
-                    ask && !cli.yes,
+                    ask && !yes,
                     cask,
                     user,
                     global,
@@ -656,7 +645,7 @@ async fn run() -> Result<()> {
                 &cache,
                 &packages,
                 dry_run,
-                ask && !cli.yes,
+                ask && !yes,
                 true,
                 user,
                 global,
@@ -671,7 +660,7 @@ async fn run() -> Result<()> {
             dry_run,
             cask,
             all,
-        } => commands::uninstall::uninstall(&cache, &formulae, dry_run, cask, cli.yes, all).await,
+        } => commands::uninstall::uninstall(&cache, &formulae, dry_run, cask, yes, all).await,
         Commands::Reinstall {
             packages,
             cask,
@@ -716,7 +705,7 @@ async fn run() -> Result<()> {
                 &cache,
                 &packages,
                 dry_run,
-                ask && !cli.yes,
+                ask && !yes,
                 install_scope(user, global)?,
             )
             .await?;
@@ -838,9 +827,22 @@ async fn run() -> Result<()> {
             crate::error::reject_homebrew_cli("audit")?;
             commands::audit::audit(&cache).await
         }
-    };
+    }
+}
 
-    result?;
+async fn run() -> Result<()> {
+    let action_timer = Instant::now();
+    let cli = Cli::parse();
+
+    signal::install_handler();
+    init_logging(cli.verbose)?;
+
+    let command = cli.command;
+    let command_prints_own_timing = command_prints_timing(&command);
+    let cache = Cache::new()?;
+    ui::set_timing_enabled(cli.time_to_action);
+
+    execute_command(command, &cache, cli.yes).await?;
 
     if cli.time_to_action && !command_prints_own_timing {
         println!("[{}ms]", action_timer.elapsed().as_millis());
