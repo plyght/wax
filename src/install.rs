@@ -225,19 +225,20 @@ impl InstallState {
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
 
-        let mut candidates =
-            if let Some(prefix_str) = run_command_with_timeout(SafeCommand::Brew, &["--prefix"], 2) {
-                vec![PathBuf::from(prefix_str.trim())]
-            } else {
-                match os {
-                    "macos" => match arch {
-                        "aarch64" => vec![PathBuf::from("/opt/homebrew")],
-                        _ => vec![PathBuf::from("/usr/local")],
-                    },
-                    "linux" => vec![PathBuf::from("/home/linuxbrew/.linuxbrew")],
+        let mut candidates = if let Some(prefix_str) =
+            run_command_with_timeout(SafeCommand::Brew, &["--prefix"], 2)
+        {
+            vec![PathBuf::from(prefix_str.trim())]
+        } else {
+            match os {
+                "macos" => match arch {
+                    "aarch64" => vec![PathBuf::from("/opt/homebrew")],
                     _ => vec![PathBuf::from("/usr/local")],
-                }
-            };
+                },
+                "linux" => vec![PathBuf::from("/home/linuxbrew/.linuxbrew")],
+                _ => vec![PathBuf::from("/usr/local")],
+            }
+        };
 
         // De-duplicate candidates
         let mut seen_paths = std::collections::HashSet::new();

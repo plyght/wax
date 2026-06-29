@@ -71,6 +71,7 @@ fn check_missing_packages<T, U>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reinstall_package(
     cache: &Cache,
     name: &String,

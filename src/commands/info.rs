@@ -225,10 +225,7 @@ async fn info_cask(cache: &Cache, name: &str) -> Result<()> {
     println!("{}", &cask.url);
 
     if let Some(artifacts) = &cask.artifacts {
-        let artifact_types: Vec<&'static str> = artifacts
-            .iter()
-            .map(|a| a.as_str())
-            .collect();
+        let artifact_types: Vec<&'static str> = artifacts.iter().map(|a| a.as_str()).collect();
 
         if !artifact_types.is_empty() {
             println!();

@@ -605,8 +605,6 @@ async fn upgrade_all(
     let poller_task = update_formula_totals;
     let overall_pb_done = overall_formula_pb.clone();
 
-
-
     let connection_map_for_producer = upgrade_connections_map.clone();
     let producer_tx = tx.clone();
     let formula_packages_for_producer = formula_packages.clone();
@@ -687,14 +685,17 @@ async fn upgrade_all(
                     let extract_dir = tmp.path().join(&name);
                     BottleDownloader::extract(&tarball, &extract_dir)?;
 
-                    Ok::<_, WaxError>((PreDownloaded {
-                        name,
-                        version,
-                        extract_dir,
-                        bottle_sha: sha256,
-                        bottle_rebuild: rebuild,
-                        _temp_dir: tmp,
-                    }, pb))
+                    Ok::<_, WaxError>((
+                        PreDownloaded {
+                            name,
+                            version,
+                            extract_dir,
+                            bottle_sha: sha256,
+                            bottle_rebuild: rebuild,
+                            _temp_dir: tmp,
+                        },
+                        pb,
+                    ))
                 }
                 .await;
 

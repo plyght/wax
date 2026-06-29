@@ -527,15 +527,15 @@ mod tests {
                 "pkg-a" => {
                     assert_eq!(h.ecosystem, Ecosystem::Brew);
                     has_pkg_a_brew = true;
-                },
+                }
                 "pkg-b" => {
                     assert_eq!(h.ecosystem, Ecosystem::Scoop);
                     has_pkg_b_scoop = true;
-                },
+                }
                 "pkg-c" => {
                     assert_eq!(h.ecosystem, Ecosystem::Chocolatey);
                     has_pkg_c_choco = true;
-                },
+                }
                 _ => panic!("Unexpected id"),
             }
         }

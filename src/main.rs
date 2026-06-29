@@ -579,7 +579,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             } else {
                 #[cfg(target_os = "windows")]
                 crate::error::reject_homebrew_cli("update")?;
-                commands::update::update(&cache).await
+                commands::update::update(cache).await
             }
         }
         Commands::SelfUpdate {
@@ -588,17 +588,17 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             clean,
             no_clean,
         } => run_self_update(nightly, force, clean, no_clean).await,
-        Commands::Search { query } => commands::search::search(&cache, &query).await,
+        Commands::Search { query } => commands::search::search(cache, &query).await,
         Commands::Info { formula, cask } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("info")?;
-            commands::info::info(&cache, &formula, cask).await
+            commands::info::info(cache, &formula, cask).await
         }
         Commands::List {
             query,
             user,
             global,
-        } => commands::list::list(&cache, query, install_scope(user, global)?).await,
+        } => commands::list::list(cache, query, install_scope(user, global)?).await,
         Commands::Install {
             packages,
             dry_run,
@@ -614,10 +614,10 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
                 #[cfg(target_os = "windows")]
                 crate::error::reject_homebrew_cli("install")?;
                 // No packages specified — sync from lockfile like `npm install`
-                commands::sync::sync(&cache).await
+                commands::sync::sync(cache).await
             } else {
                 commands::install::install(
-                    &cache,
+                    cache,
                     &packages,
                     dry_run,
                     ask && !yes,
@@ -642,7 +642,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("install --cask")?;
             commands::install::install(
-                &cache,
+                cache,
                 &packages,
                 dry_run,
                 ask && !yes,
@@ -660,7 +660,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             dry_run,
             cask,
             all,
-        } => commands::uninstall::uninstall(&cache, &formulae, dry_run, cask, yes, all).await,
+        } => commands::uninstall::uninstall(cache, &formulae, dry_run, cask, yes, all).await,
         Commands::Reinstall {
             packages,
             cask,
@@ -668,7 +668,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
         } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("reinstall")?;
-            commands::reinstall::reinstall(&cache, &packages, cask, all).await
+            commands::reinstall::reinstall(cache, &packages, cask, all).await
         }
         Commands::Postinstall {
             formulae,
@@ -677,7 +677,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
         } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("postinstall")?;
-            commands::install::postinstall(&cache, &formulae, user, global).await
+            commands::install::postinstall(cache, &formulae, user, global).await
         }
         Commands::Upgrade {
             packages,
@@ -702,7 +702,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             let explicit_packages_requested = !packages.is_empty();
 
             commands::upgrade::upgrade(
-                &cache,
+                cache,
                 &packages,
                 dry_run,
                 ask && !yes,
@@ -745,7 +745,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
         Commands::Outdated { user, global } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("outdated")?;
-            commands::outdated::outdated(&cache, install_scope(user, global)?).await
+            commands::outdated::outdated(cache, install_scope(user, global)?).await
         }
         Commands::Link { packages } => {
             #[cfg(target_os = "windows")]
@@ -765,12 +765,12 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
         Commands::Leaves => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("leaves")?;
-            commands::leaves::leaves(&cache).await
+            commands::leaves::leaves(cache).await
         }
         Commands::Uses { formula, installed } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("uses")?;
-            commands::uses::uses(&cache, &formula, installed).await
+            commands::uses::uses(cache, &formula, installed).await
         }
         Commands::Deps {
             formula,
@@ -779,7 +779,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
         } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("deps")?;
-            commands::show_deps::deps(&cache, &formula, tree, installed).await
+            commands::show_deps::deps(cache, &formula, tree, installed).await
         }
         Commands::Pin { packages } => {
             #[cfg(target_os = "windows")]
@@ -794,38 +794,38 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
         Commands::Lock => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("lock")?;
-            commands::lock::lock(&cache).await
+            commands::lock::lock(cache).await
         }
         Commands::Sync => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("sync")?;
-            commands::sync::sync(&cache).await
+            commands::sync::sync(cache).await
         }
         Commands::Tap { action, repair } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("tap")?;
-            commands::tap::tap(action, repair, Some(&cache)).await
+            commands::tap::tap(action, repair, Some(cache)).await
         }
         Commands::Doctor { fix, full } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("doctor")?;
-            commands::doctor::doctor(&cache, fix, full).await
+            commands::doctor::doctor(cache, fix, full).await
         }
         Commands::Source { formula } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("source")?;
-            commands::source::source(&cache, &formula).await
+            commands::source::source(cache, &formula).await
         }
         Commands::Completions { shell, print } => commands::completions::completions(shell, print),
         Commands::Why { formula } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("why")?;
-            commands::info::info(&cache, &formula, false).await
+            commands::info::info(cache, &formula, false).await
         }
         Commands::Audit => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("audit")?;
-            commands::audit::audit(&cache).await
+            commands::audit::audit(cache).await
         }
     }
 }

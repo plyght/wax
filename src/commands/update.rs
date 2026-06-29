@@ -98,13 +98,7 @@ pub async fn update(cache: &Cache) -> Result<()> {
         "updated"
     };
 
-    print_status(
-        core_status,
-        formula_count,
-        cask_count,
-        tap_count,
-        elapsed,
-    );
+    print_status(core_status, formula_count, cask_count, tap_count, elapsed);
 
     Ok(())
 }
