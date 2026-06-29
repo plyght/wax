@@ -363,6 +363,25 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
     };
     let download_path = tmp.path().join(format!("download.{ext}"));
 
+    download_and_verify(package, &resolved, &download_path).await?;
+    extract_and_stage(kind, &download_path, &version_dir, tmp.path(), &resolved)?;
+    let bin_dir = link_bins_and_save_manifest(package, &resolved, &version_dir)?;
+
+    println!(
+        "Installed {} {} (Scoop manifest) — add to PATH if needed:\n  {}",
+        package,
+        resolved.version,
+        bin_dir.display()
+    );
+
+    Ok(())
+}
+
+async fn download_and_verify(
+    package: &str,
+    resolved: &ResolvedScoopPackage,
+    download_path: &Path,
+) -> Result<()> {
     let dl = BottleDownloader::new();
     let size = dl.probe_size(&resolved.download_url).await;
     let conns =
@@ -378,7 +397,7 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
 
     dl.download(
         &resolved.download_url,
-        &download_path,
+        download_path,
         Some(&pb),
         conns,
         None,
@@ -386,15 +405,24 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
     .await?;
     pb.finish_and_clear();
 
-    crate::digest::verify_sha256_file(&download_path, &resolved.sha256)?;
+    crate::digest::verify_sha256_file(download_path, &resolved.sha256)?;
+    Ok(())
+}
 
+fn extract_and_stage(
+    kind: &str,
+    download_path: &Path,
+    version_dir: &Path,
+    tmp_path: &Path,
+    resolved: &ResolvedScoopPackage,
+) -> Result<()> {
     match kind {
         "zip" | "tar.gz" => {
-            let extract_root = tmp.path().join("extract");
+            let extract_root = tmp_path.join("extract");
             std::fs::create_dir_all(&extract_root)?;
             match kind {
-                "zip" => extract_zip_file(&download_path, &extract_root)?,
-                "tar.gz" => extract_tar_gz(&download_path, &extract_root)?,
+                "zip" => extract_zip_file(download_path, &extract_root)?,
+                "tar.gz" => extract_tar_gz(download_path, &extract_root)?,
                 _ => unreachable!(),
             }
 
@@ -409,22 +437,29 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
                 )));
             }
 
-            copy_dir_all(&source_tree, &version_dir)?;
+            copy_dir_all(&source_tree, version_dir)?;
         }
         "exe" => {
-            std::fs::create_dir_all(&version_dir)?;
-            let dest = version_dir.join(exe_filename(&resolved)?);
-            std::fs::copy(&download_path, &dest)?;
+            std::fs::create_dir_all(version_dir)?;
+            let dest = version_dir.join(exe_filename(resolved)?);
+            std::fs::copy(download_path, &dest)?;
         }
         _ => unreachable!(),
     }
+    Ok(())
+}
 
+fn link_bins_and_save_manifest(
+    package: &str,
+    resolved: &ResolvedScoopPackage,
+    version_dir: &Path,
+) -> Result<PathBuf> {
     let bin_dir = windows_state::wax_bin_dir()?;
     std::fs::create_dir_all(&bin_dir)?;
 
     let mut copy_actions = Vec::new();
     for rel in &resolved.bin_paths {
-        let src = join_under_root(&version_dir, rel)?;
+        let src = join_under_root(version_dir, rel)?;
         if !src.exists() {
             return Err(WaxError::InstallError(format!(
                 "Expected binary missing after extract: {}",
@@ -447,27 +482,20 @@ pub async fn install_from_bucket(package: &str, bucket_base: Option<&str>) -> Re
         std::fs::copy(&src, &dest)?;
     }
 
-    let mut files = windows_state::collect_files(&version_dir)?;
+    let mut files = windows_state::collect_files(version_dir)?;
     files.extend(bin_links.iter().cloned());
     WindowsPackageManifest::new(
         Ecosystem::Scoop,
         package,
         resolved.version.clone(),
         resolved.download_url.clone(),
-        version_dir.clone(),
+        version_dir.to_path_buf(),
         bin_links,
         files,
     )
     .save()?;
 
-    println!(
-        "Installed {} {} (Scoop manifest) — add to PATH if needed:\n  {}",
-        package,
-        resolved.version,
-        bin_dir.display()
-    );
-
-    Ok(())
+    Ok(bin_dir)
 }
 
 fn wax_user_root() -> Result<PathBuf> {
