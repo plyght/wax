@@ -4,6 +4,14 @@ use console::style;
 use std::collections::HashMap;
 use tracing::instrument;
 fn is_safe_url(url_str: &str) -> bool {
+    // Prevent command injection via shell metacharacters
+    let dangerous_chars = [
+        '`', '$', ';', '|', '<', '>', '"', '\'', '\\', '{', '}', '\n', '\r', '\t', ' ',
+    ];
+    if url_str.contains(dangerous_chars) {
+        return false;
+    }
+
     if let Ok(url) = reqwest::Url::parse(url_str) {
         matches!(url.scheme(), "http" | "https")
     } else {
@@ -101,5 +109,13 @@ mod tests {
         assert!(!is_safe_url("-a Terminal"));
         assert!(!is_safe_url("/usr/bin/local"));
         assert!(!is_safe_url("example.com")); // Missing scheme
+
+        // Command injection payloads
+        assert!(!is_safe_url("http://example.com;rm -rf /"));
+        assert!(!is_safe_url("http://example.com/$(whoami)"));
+        assert!(!is_safe_url("http://example.com/`whoami`"));
+        assert!(!is_safe_url("http://example.com' --no-sandbox"));
+        assert!(!is_safe_url("http://example.com\" --no-sandbox"));
+        assert!(!is_safe_url("http://example.com|whoami"));
     }
 }
