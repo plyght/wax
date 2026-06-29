@@ -1018,6 +1018,16 @@ async fn upgrade_single(cache: &Cache, formula_name: &str, dry_run: bool) -> Res
         }
     };
 
+    upgrade_resolved_formula(cache, formula_name, installed_name, &installed, dry_run).await
+}
+
+async fn upgrade_resolved_formula(
+    cache: &Cache,
+    formula_name: &str,
+    installed_name: &str,
+    installed: &crate::install::InstalledPackage,
+    dry_run: bool,
+) -> Result<()> {
     if installed.pinned {
         println!(
             "{}@{} is pinned — skipping (run `wax unpin {}` to allow upgrades)",
