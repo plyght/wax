@@ -577,6 +577,30 @@ mod tests {
     }
 
     #[test]
+    fn windows_scoop_prefix_search_matches_scoop_only() {
+        let plan = windows_search_plan(Some(Ecosystem::Scoop));
+        assert!(plan.include_scoop);
+        assert!(!plan.include_choco);
+        assert!(!plan.include_winget);
+    }
+
+    #[test]
+    fn windows_winget_prefix_search_matches_winget_only() {
+        let plan = windows_search_plan(Some(Ecosystem::Winget));
+        assert!(!plan.include_scoop);
+        assert!(!plan.include_choco);
+        assert!(plan.include_winget);
+    }
+
+    #[test]
+    fn windows_choco_prefix_search_matches_choco_only() {
+        let plan = windows_search_plan(Some(Ecosystem::Chocolatey));
+        assert!(!plan.include_scoop);
+        assert!(plan.include_choco);
+        assert!(!plan.include_winget);
+    }
+
+    #[test]
     fn scoop_tree_path_parses_bucket_json() {
         assert_eq!(
             scoop_name_from_tree_path("bucket/ripgrep.json").as_deref(),
