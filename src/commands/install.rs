@@ -1204,19 +1204,7 @@ pub(crate) async fn install_impl(
         let hide_f = Arc::clone(&hide_formula_overall);
         let n_bottle_formula = formula_bottle_count;
 
-        let pb = if quiet {
-            ProgressBar::hidden()
-        } else {
-            let pb = multi.add(ProgressBar::new(0));
-            let style = ProgressStyle::default_bar()
-                .template(PROGRESS_BAR_TEMPLATE)
-                .unwrap()
-                .progress_chars(PROGRESS_BAR_CHARS);
-            pb.set_style(style);
-            pb.set_message(name.clone());
-            pb
-        };
-
+        let multi = multi.clone();
         tasks.spawn(async move {
             let permit = semaphore
                 .acquire()
@@ -1225,6 +1213,19 @@ pub(crate) async fn install_impl(
             // Don't even start if already cancelled
             crate::signal::check_cancelled()?;
             crate::signal::set_current_op(format!("downloading {}", name));
+
+            let pb = if quiet {
+                ProgressBar::hidden()
+            } else {
+                let pb = multi.add(ProgressBar::new(0));
+                let style = ProgressStyle::default_bar()
+                    .template(PROGRESS_BAR_TEMPLATE)
+                    .unwrap()
+                    .progress_chars(PROGRESS_BAR_CHARS);
+                pb.set_style(style);
+                pb.set_message(name.clone());
+                pb
+            };
 
             let tarball_path = temp_dir.path().join(format!("{}-{}.tar.gz", name, version));
 

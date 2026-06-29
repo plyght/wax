@@ -354,13 +354,8 @@ async fn download_and_extract_packages(
         let semaphore = Arc::clone(&semaphore);
         let temp_dir = Arc::clone(&temp_dir);
 
-        let pb = multi.add(ProgressBar::new(0));
-        let style = ProgressStyle::default_bar()
-            .template(PROGRESS_BAR_TEMPLATE)
-            .unwrap()
-            .progress_chars(PROGRESS_BAR_CHARS);
-        pb.set_style(style);
-        pb.set_message(entry.name.clone());
+        let multi = multi.clone();
+        let name = entry.name.clone();
 
         let task = tokio::spawn(async move {
             let permit = match semaphore.acquire().await {
@@ -372,6 +367,15 @@ async fn download_and_extract_packages(
                     )));
                 }
             };
+
+            let pb = multi.add(ProgressBar::new(0));
+            let style = ProgressStyle::default_bar()
+                .template(PROGRESS_BAR_TEMPLATE)
+                .unwrap()
+                .progress_chars(PROGRESS_BAR_CHARS);
+            pb.set_style(style);
+            pb.set_message(name);
+
 
             let tarball_path = temp_dir
                 .path()
