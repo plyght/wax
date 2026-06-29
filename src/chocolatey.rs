@@ -73,48 +73,25 @@ pub async fn install_portable_tools(id: &str) -> Result<()> {
     let tmp = TempDir::new()?;
     let nupkg_path = tmp.path().join("pkg.nupkg");
 
-    let dl = BottleDownloader::new();
-    let size = dl.probe_size(&nupkg_url).await;
-    let conns =
-        BottleDownloader::num_connections(size, BottleDownloader::MAX_CONNECTIONS_PER_DOWNLOAD);
-    let pb = ProgressBar::new(0);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.cyan} {msg} [{bar:30.cyan/blue}] {bytes}/{total_bytes}")
-            .unwrap()
-            .progress_chars("=>-"),
-    );
-    pb.set_message(id.to_string());
-
-    dl.download(&nupkg_url, &nupkg_path, Some(&pb), conns, None)
-        .await?;
-    pb.finish_and_clear();
+    download_nupkg(id, &nupkg_url, &nupkg_path).await?;
 
     let extract_root = tmp.path().join("nupkg");
     std::fs::create_dir_all(&extract_root)?;
     scoop::extract_zip_file(&nupkg_path, &extract_root)?;
 
-    let tools_dir = extract_root.join("tools");
-    if !tools_dir.is_dir() {
-        return Err(WaxError::InstallError(
-            "Chocolatey package has no tools/ directory in .nupkg (wax cannot run install scripts)"
-                .into(),
-        ));
-    }
+    let (tools_dir, exes) = get_tools_and_exes(&extract_root)?;
 
-    let mut exes: Vec<PathBuf> = Vec::new();
-    collect_exe_files(&tools_dir, &mut exes, 0, 4)?;
+    stage_and_link_tools(id, nupkg_url, &tools_dir, &exes)?;
 
-    if exes.is_empty() {
-        let script_only = tools_dir.join("chocolateyinstall.ps1").is_file();
-        let msg = if script_only {
-            "Chocolatey package only ships chocolateyinstall.ps1 (no portable tools/*.exe). Try scoop/ or winget/ for the same app, or install with choco.exe"
-        } else {
-            "No suitable portable .exe under tools/ (wax does not run Chocolatey install scripts)"
-        };
-        return Err(WaxError::InstallError(msg.into()));
-    }
+    Ok(())
+}
 
+fn stage_and_link_tools(
+    id: &str,
+    nupkg_url: String,
+    tools_dir: &Path,
+    exes: &[PathBuf],
+) -> Result<()> {
     let bin_dir = windows_state::wax_bin_dir()?;
     std::fs::create_dir_all(&bin_dir)?;
 
@@ -124,10 +101,10 @@ pub async fn install_portable_tools(id: &str) -> Result<()> {
     if staging.exists() {
         let _ = std::fs::remove_dir_all(&staging);
     }
-    crate::ui::copy_dir_all(&tools_dir, &staging)?;
+    crate::ui::copy_dir_all(tools_dir, &staging)?;
 
     let mut copy_actions = Vec::new();
-    for src in &exes {
+    for src in exes {
         let file_name = src
             .file_name()
             .ok_or_else(|| WaxError::InstallError("invalid exe path".into()))?;
@@ -164,6 +141,51 @@ pub async fn install_portable_tools(id: &str) -> Result<()> {
     );
 
     Ok(())
+}
+
+async fn download_nupkg(id: &str, nupkg_url: &str, nupkg_path: &Path) -> Result<()> {
+    let dl = BottleDownloader::new();
+    let size = dl.probe_size(nupkg_url).await;
+    let conns =
+        BottleDownloader::num_connections(size, BottleDownloader::MAX_CONNECTIONS_PER_DOWNLOAD);
+    let pb = ProgressBar::new(0);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.cyan} {msg} [{bar:30.cyan/blue}] {bytes}/{total_bytes}")
+            .unwrap()
+            .progress_chars("=>-"),
+    );
+    pb.set_message(id.to_string());
+
+    dl.download(nupkg_url, nupkg_path, Some(&pb), conns, None)
+        .await?;
+    pb.finish_and_clear();
+    Ok(())
+}
+
+fn get_tools_and_exes(extract_root: &Path) -> Result<(PathBuf, Vec<PathBuf>)> {
+    let tools_dir = extract_root.join("tools");
+    if !tools_dir.is_dir() {
+        return Err(WaxError::InstallError(
+            "Chocolatey package has no tools/ directory in .nupkg (wax cannot run install scripts)"
+                .into(),
+        ));
+    }
+
+    let mut exes: Vec<PathBuf> = Vec::new();
+    collect_exe_files(&tools_dir, &mut exes, 0, 4)?;
+
+    if exes.is_empty() {
+        let script_only = tools_dir.join("chocolateyinstall.ps1").is_file();
+        let msg = if script_only {
+            "Chocolatey package only ships chocolateyinstall.ps1 (no portable tools/*.exe). Try scoop/ or winget/ for the same app, or install with choco.exe"
+        } else {
+            "No suitable portable .exe under tools/ (wax does not run Chocolatey install scripts)"
+        };
+        return Err(WaxError::InstallError(msg.into()));
+    }
+
+    Ok((tools_dir, exes))
 }
 
 fn collect_exe_files(dir: &Path, out: &mut Vec<PathBuf>, depth: u32, max_depth: u32) -> Result<()> {
