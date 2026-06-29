@@ -15,7 +15,7 @@ fn user_agent() -> String {
 fn build_client(timeout: Duration, compress: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)
-        .user_agent(user_agent());
+        .user_agent(user_agent()).https_only(true);
     if compress {
         builder = builder.gzip(true).brotli(true);
     } else {
