@@ -340,6 +340,71 @@ mod tests {
     }
 
     #[test]
+    fn find_manifest_resolves_and_filters() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let root = wax_windows_root().unwrap();
+
+        WindowsPackageManifest::new(
+            Ecosystem::Scoop,
+            "unique",
+            "1.0.0",
+            "https://example.invalid/unique.zip",
+            root.join("scoop-apps/unique/1.0.0"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .save()
+        .unwrap();
+
+        WindowsPackageManifest::new(
+            Ecosystem::Scoop,
+            "duplicate",
+            "1.0.0",
+            "https://example.invalid/duplicate.zip",
+            root.join("scoop-apps/duplicate/1.0.0"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .save()
+        .unwrap();
+
+        WindowsPackageManifest::new(
+            Ecosystem::Winget,
+            "duplicate",
+            "1.0.0",
+            "https://example.invalid/duplicate.zip",
+            root.join("winget-apps/duplicate/1.0.0"),
+            Vec::new(),
+            Vec::new(),
+        )
+        .save()
+        .unwrap();
+
+        // Ecosystem specified, should return unique match directly
+        let manifest = find_manifest("scoop/unique").unwrap().unwrap();
+        assert_eq!(manifest.id, "unique");
+        assert_eq!(manifest.ecosystem, Ecosystem::Scoop);
+
+        // No ecosystem, unique match
+        let manifest = find_manifest("unique").unwrap().unwrap();
+        assert_eq!(manifest.id, "unique");
+        assert_eq!(manifest.ecosystem, Ecosystem::Scoop);
+
+        // No ecosystem, ambiguous match
+        let err = find_manifest("duplicate").unwrap_err().to_string();
+        assert!(err.contains("multiple Windows packages match 'duplicate'"));
+        assert!(err.contains("scoop/duplicate"));
+        assert!(err.contains("winget/duplicate"));
+        assert!(err.contains("choco/duplicate"));
+
+        // No match
+        assert!(find_manifest("missing-tool").unwrap().is_none());
+    }
+
+    #[test]
     fn bin_link_collision_reports_existing_owner() {
         let _guard = ENV_LOCK.lock().unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
