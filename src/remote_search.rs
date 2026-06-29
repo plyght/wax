@@ -488,6 +488,63 @@ mod tests {
     }
 
     #[test]
+    fn dedupe_empty_list_returns_empty() {
+        let hits: Vec<RemoteHit> = vec![];
+        let d = dedupe_remote_by_speed(hits);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn dedupe_multiple_duplicates_keeps_fastest() {
+        let hits = vec![
+            hit(Ecosystem::Chocolatey, "test-pkg", 100),
+            hit(Ecosystem::Brew, "test-pkg", 100),
+            hit(Ecosystem::Scoop, "test-pkg", 100),
+        ];
+        let deduped = dedupe_remote_by_speed(hits);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].ecosystem, Ecosystem::Brew);
+    }
+
+    #[test]
+    fn dedupe_mixed_unique_and_duplicates() {
+        let hits = vec![
+            hit(Ecosystem::Winget, "pkg-a", 100),
+            hit(Ecosystem::Scoop, "pkg-b", 100),
+            hit(Ecosystem::Brew, "pkg-a", 100),
+            hit(Ecosystem::Chocolatey, "pkg-c", 100),
+            hit(Ecosystem::Scoop, "pkg-a", 100),
+        ];
+        let deduped = dedupe_remote_by_speed(hits);
+        assert_eq!(deduped.len(), 3);
+
+        let mut has_pkg_a_brew = false;
+        let mut has_pkg_b_scoop = false;
+        let mut has_pkg_c_choco = false;
+
+        for h in deduped {
+            match h.id.as_str() {
+                "pkg-a" => {
+                    assert_eq!(h.ecosystem, Ecosystem::Brew);
+                    has_pkg_a_brew = true;
+                },
+                "pkg-b" => {
+                    assert_eq!(h.ecosystem, Ecosystem::Scoop);
+                    has_pkg_b_scoop = true;
+                },
+                "pkg-c" => {
+                    assert_eq!(h.ecosystem, Ecosystem::Chocolatey);
+                    has_pkg_c_choco = true;
+                },
+                _ => panic!("Unexpected id"),
+            }
+        }
+        assert!(has_pkg_a_brew);
+        assert!(has_pkg_b_scoop);
+        assert!(has_pkg_c_choco);
+    }
+
+    #[test]
     fn winget_manifest_path_yields_package_id() {
         let path = "manifests/j/JesseDuffield/lazygit/0.55.1/JesseDuffield.lazygit.installer.yaml";
         assert_eq!(
