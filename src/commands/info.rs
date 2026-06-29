@@ -1,3 +1,4 @@
+use crate::api::Formula;
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
@@ -52,6 +53,10 @@ pub async fn info(cache: &Cache, name: &str, cask: bool) -> Result<()> {
         .find(|f| f.name == name || f.full_name == name)
         .ok_or_else(|| WaxError::FormulaNotFound(name.to_string()))?;
 
+    info_formula(formula, name, &formulae).await
+}
+
+async fn info_formula(formula: &Formula, name: &str, formulae: &[Formula]) -> Result<()> {
     let installed_suffix = if let Some(installed) = &formula.installed {
         if !installed.is_empty() {
             let installed_versions: Vec<_> = installed.iter().map(|i| i.version.as_str()).collect();
