@@ -34,61 +34,30 @@ pub async fn update(cache: &Cache) -> Result<()> {
         cache.fetch_casks_conditional(casks_etag, casks_last_modified)
     );
 
-    let formulae_fetch = formulae_result?;
-    let casks_fetch = casks_result?;
+    let mut formulae_fetch = formulae_result?;
+    let mut casks_fetch = casks_result?;
 
-    let (_formulae, formula_count) = if formulae_fetch.not_modified {
-        let cached = cache.load_formulae().await?;
-        let count = cached.len();
-        (cached, count)
-    } else if let Some(data) = formulae_fetch.data {
+    let formula_count = if formulae_fetch.not_modified {
+        cache.load_formulae().await?.len()
+    } else if let Some(data) = formulae_fetch.data.take() {
         let count = data.len();
         cache.save_formulae(&data).await?;
-        (data, count)
+        count
     } else {
-        let cached = cache.load_formulae().await?;
-        let count = cached.len();
-        (cached, count)
+        cache.load_formulae().await?.len()
     };
 
-    let (_casks, cask_count) = if casks_fetch.not_modified {
-        let cached = cache.load_casks().await?;
-        let count = cached.len();
-        (cached, count)
-    } else if let Some(data) = casks_fetch.data {
+    let cask_count = if casks_fetch.not_modified {
+        cache.load_casks().await?.len()
+    } else if let Some(data) = casks_fetch.data.take() {
         let count = data.len();
         cache.save_casks(&data).await?;
-        (data, count)
+        count
     } else {
-        let cached = cache.load_casks().await?;
-        let count = cached.len();
-        (cached, count)
+        cache.load_casks().await?.len()
     };
 
-    let mut tap_manager = TapManager::new()?;
-    tap_manager.load().await?;
-    let taps = tap_manager
-        .list_taps()
-        .iter()
-        .map(|t| t.full_name.clone())
-        .collect::<Vec<_>>();
-    let tap_count = taps.len();
-
-    if tap_count > 0 {
-        cache.invalidate_all_tap_caches().await?;
-
-        for tap_name in &taps {
-            check_cancelled()?;
-            if let Err(e) = tap_manager.update_tap(tap_name).await {
-                eprintln!(
-                    "  {} failed to update tap {}: {}",
-                    style("!").yellow(),
-                    style(tap_name).magenta(),
-                    e
-                );
-            }
-        }
-    }
+    let tap_count = update_taps(cache).await?;
 
     let new_metadata = CacheMetadata {
         last_updated: std::time::SystemTime::now()
@@ -129,6 +98,53 @@ pub async fn update(cache: &Cache) -> Result<()> {
         "updated"
     };
 
+    print_status(
+        core_status,
+        formula_count,
+        cask_count,
+        tap_count,
+        elapsed,
+    );
+
+    Ok(())
+}
+
+async fn update_taps(cache: &Cache) -> Result<usize> {
+    let mut tap_manager = TapManager::new()?;
+    tap_manager.load().await?;
+    let taps = tap_manager
+        .list_taps()
+        .iter()
+        .map(|t| t.full_name.clone())
+        .collect::<Vec<_>>();
+    let tap_count = taps.len();
+
+    if tap_count > 0 {
+        cache.invalidate_all_tap_caches().await?;
+
+        for tap_name in &taps {
+            check_cancelled()?;
+            if let Err(e) = tap_manager.update_tap(tap_name).await {
+                eprintln!(
+                    "  {} failed to update tap {}: {}",
+                    style("!").yellow(),
+                    style(tap_name).magenta(),
+                    e
+                );
+            }
+        }
+    }
+
+    Ok(tap_count)
+}
+
+fn print_status(
+    core_status: &str,
+    formula_count: usize,
+    cask_count: usize,
+    tap_count: usize,
+    elapsed: std::time::Duration,
+) {
     if tap_count > 0 {
         println!(
             "{} {} · {} formulae, {} casks, {} {}{}",
@@ -150,6 +166,4 @@ pub async fn update(cache: &Cache) -> Result<()> {
             crate::ui::elapsed_suffix(elapsed)
         );
     }
-
-    Ok(())
 }
