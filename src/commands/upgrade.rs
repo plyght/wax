@@ -12,7 +12,7 @@ use crate::signal::{
 };
 use crate::tap::TapManager;
 use crate::ui::{
-    confirm_prompt, PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE,
+    confirm_prompt, PROGRESS_BAR_CHARS, PROGRESS_BAR_PREFIX_TEMPLATE, PROGRESS_BAR_TEMPLATE,
     SPINNER_TICK_CHARS,
 };
 use crate::version::{is_same_or_newer, WAX_VERSION};
@@ -667,12 +667,11 @@ async fn upgrade_all(
                     let pb = multi_ref.add(ProgressBar::new(0));
                     pb.set_style(
                         ProgressStyle::default_bar()
-                            .template("{prefix:.bold} {wide_bar:.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}  eta {eta}")
+                            .template(PROGRESS_BAR_PREFIX_TEMPLATE)
                             .unwrap()
-                            .progress_chars("█▓▒░ "),
+                            .progress_chars(PROGRESS_BAR_CHARS),
                     );
                     pb.set_prefix(name.clone());
-
 
                     let tarball = tmp.path().join(format!("{}-{}.tar.gz", name, version));
 

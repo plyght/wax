@@ -376,7 +376,6 @@ async fn download_and_extract_packages(
             pb.set_style(style);
             pb.set_message(name);
 
-
             let tarball_path = temp_dir
                 .path()
                 .join(format!("{}-{}.tar.gz", entry.name, entry.version));
