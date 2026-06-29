@@ -361,4 +361,94 @@ mod tests {
             .to_string();
         assert!(err.contains("already owned by scoop/tool"));
     }
+
+    #[test]
+    fn test_find_manifest_exact_ecosystem() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let manifest = WindowsPackageManifest::new(
+            Ecosystem::Scoop,
+            "mytool",
+            "1.0.0",
+            "https://example.invalid/mytool.zip",
+            wax_windows_root().unwrap().join("scoop-apps/mytool/1.0.0"),
+            Vec::new(),
+            Vec::new(),
+        );
+        manifest.save().unwrap();
+
+        let found = find_manifest("scoop/mytool").unwrap().unwrap();
+        assert_eq!(found.id, "mytool");
+        assert_eq!(found.ecosystem, Ecosystem::Scoop);
+    }
+
+    #[test]
+    fn test_find_manifest_unqualified_unique() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let manifest = WindowsPackageManifest::new(
+            Ecosystem::Winget,
+            "UniqueTool",
+            "1.0.0",
+            "https://example.invalid/uniquetool.zip",
+            wax_windows_root().unwrap().join("winget-apps/UniqueTool/1.0.0"),
+            Vec::new(),
+            Vec::new(),
+        );
+        manifest.save().unwrap();
+
+        let found = find_manifest("UniqueTool").unwrap().unwrap();
+        assert_eq!(found.id, "UniqueTool");
+        assert_eq!(found.ecosystem, Ecosystem::Winget);
+    }
+
+    #[test]
+    fn test_find_manifest_unqualified_multiple() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let manifest1 = WindowsPackageManifest::new(
+            Ecosystem::Winget,
+            "DuplicateTool",
+            "1.0.0",
+            "https://example.invalid/duplicatetool.zip",
+            wax_windows_root().unwrap().join("winget-apps/DuplicateTool/1.0.0"),
+            Vec::new(),
+            Vec::new(),
+        );
+        manifest1.save().unwrap();
+
+        let manifest2 = WindowsPackageManifest::new(
+            Ecosystem::Scoop,
+            "DuplicateTool",
+            "2.0.0",
+            "https://example.invalid/duplicatetool2.zip",
+            wax_windows_root().unwrap().join("scoop-apps/DuplicateTool/2.0.0"),
+            Vec::new(),
+            Vec::new(),
+        );
+        manifest2.save().unwrap();
+
+        let err = find_manifest("DuplicateTool").unwrap_err().to_string();
+        assert!(err.contains("multiple Windows packages match 'DuplicateTool'"));
+    }
+
+    #[test]
+    fn test_find_manifest_not_found() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        // No manifests saved.
+        let found = find_manifest("nonexistent").unwrap();
+        assert!(found.is_none());
+
+        let found_qualified = find_manifest("scoop/nonexistent").unwrap();
+        assert!(found_qualified.is_none());
+    }
 }
