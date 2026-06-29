@@ -169,6 +169,34 @@ pub enum CaskArtifact {
     Other(serde_json::Value),
 }
 
+impl CaskArtifact {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::App { .. } => "app",
+            Self::Pkg { .. } => "pkg",
+            Self::Binary { .. } => "binary",
+            Self::Font { .. } => "font",
+            Self::Manpage { .. } => "manpage",
+            Self::Dictionary { .. } => "dictionary",
+            Self::Colorpicker { .. } => "colorpicker",
+            Self::Prefpane { .. } => "prefpane",
+            Self::Qlplugin { .. } => "qlplugin",
+            Self::ScreenSaver { .. } => "screen_saver",
+            Self::Service { .. } => "service",
+            Self::Suite { .. } => "suite",
+            Self::Artifact { .. } => "artifact",
+            Self::BashCompletion { .. } => "bash_completion",
+            Self::ZshCompletion { .. } => "zsh_completion",
+            Self::FishCompletion { .. } => "fish_completion",
+            Self::Uninstall { .. } => "uninstall",
+            Self::Zap { .. } => "zap",
+            Self::Preflight { .. } => "preflight",
+            Self::Postflight { .. } => "postflight",
+            Self::Other(_) => "other",
+        }
+    }
+}
+
 impl Formula {
     pub fn full_version(&self) -> String {
         if self.revision > 0 {
