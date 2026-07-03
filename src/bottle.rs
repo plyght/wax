@@ -205,11 +205,21 @@ impl BottleDownloader {
             Ok(r) if r.status().is_success() || r.status().as_u16() == 206 => r,
             _ => {
                 // HEAD rejected or failed — fall back to a tiny range GET.
-                let mut get_req = self.client.get(url).header("Range", "bytes=0-0");
-                if let Some(ref tok) = auth_token {
-                    get_req = get_req.header("Authorization", format!("Bearer {}", tok));
-                }
-                let r = Self::send_with_retry(get_req, "range probe").await?;
+                // If HEAD was 404, retry with Homebrew UA first (some cask
+                // servers gate on it).
+                let hb_ua = crate::http_client::homebrew_user_agent();
+                let range_get = |ua: Option<&str>| {
+                    let mut req = self.client.get(url).header("Range", "bytes=0-0");
+                    if let Some(ua) = ua {
+                        req = req.header("User-Agent", ua);
+                    }
+                    if let Some(ref tok) = auth_token {
+                        req = req.header("Authorization", format!("Bearer {}", tok));
+                    }
+                    req
+                };
+
+                let r = Self::send_with_retry(range_get(None), "range probe").await?;
                 // If the server ignored the Range header and returned the full
                 // body (200 instead of 206), abort early to avoid downloading
                 // the entire file during a probe.
@@ -219,7 +229,22 @@ impl BottleDownloader {
                     drop(r);
                     return Ok((final_url, size, false));
                 }
-                r
+                // Range probe also 404? Retry with Homebrew UA.
+                if r.status() == reqwest::StatusCode::NOT_FOUND {
+                    if let Ok(r2) = Self::send_with_retry(range_get(Some(&hb_ua)), "range probe-hb-ua").await {
+                        if r2.status().as_u16() == 200 {
+                            let final_url = r2.url().to_string();
+                            let size = r2.content_length().unwrap_or(0);
+                            drop(r2);
+                            return Ok((final_url, size, false));
+                        }
+                        r2
+                    } else {
+                        r
+                    }
+                } else {
+                    r
+                }
             }
         };
 
