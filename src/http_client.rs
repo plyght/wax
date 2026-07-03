@@ -12,6 +12,18 @@ fn user_agent() -> String {
     format!("waxpkg/{WAX_VERSION} (https://github.com/plyght/wax)")
 }
 
+/// User-Agent string compatible with Homebrew download servers.
+/// Some cask download endpoints (e.g. `app.warp.dev/download/brew`)
+/// require a Homebrew-style User-Agent; other UAs get HTTP 404.
+pub(crate) fn homebrew_user_agent() -> String {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+    format!("Homebrew/{WAX_VERSION} (Macintosh; {arch} Mac OS X)")
+}
+
 fn build_client(timeout: Duration, compress: bool) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)

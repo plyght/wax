@@ -411,8 +411,37 @@ impl BottleDownloader {
             request = request.header("Authorization", format!("Bearer {}", tok));
         }
 
-        let response = Self::send_with_retry(request, "download").await?;
-        if !response.status().is_success() {
+        let mut response = Self::send_with_retry(request, "download").await?;
+        // ponytail: retry with Homebrew UA on 404. Some cask servers
+        // (e.g. app.warp.dev/download/brew) require a Homebrew-style UA.
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            let hb_ua = crate::http_client::homebrew_user_agent();
+            let mut retry = self.client.get(url).header("User-Agent", &hb_ua);
+            if let Some(ref tok) = auth_token {
+                retry = retry.header("Authorization", format!("Bearer {}", tok));
+            }
+            if let Ok(r) = Self::send_with_retry(retry, "download-hb-ua").await {
+                if r.status().is_success() {
+                    response = r;
+                } else {
+                    let status = response.status();
+                    let body = response.text().await.unwrap_or_default();
+                    return Err(WaxError::InstallError(format!(
+                        "Download failed with HTTP {}: {}",
+                        status,
+                        body.chars().take(200).collect::<String>()
+                    )));
+                }
+            } else {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(WaxError::InstallError(format!(
+                    "Download failed with HTTP {}: {}",
+                    status,
+                    body.chars().take(200).collect::<String>()
+                )));
+            }
+        } else if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(WaxError::InstallError(format!(
