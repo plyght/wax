@@ -231,7 +231,9 @@ impl BottleDownloader {
                 }
                 // Range probe also 404? Retry with Homebrew UA.
                 if r.status() == reqwest::StatusCode::NOT_FOUND {
-                    if let Ok(r2) = Self::send_with_retry(range_get(Some(&hb_ua)), "range probe-hb-ua").await {
+                    if let Ok(r2) =
+                        Self::send_with_retry(range_get(Some(&hb_ua)), "range probe-hb-ua").await
+                    {
                         if r2.status().as_u16() == 200 {
                             let final_url = r2.url().to_string();
                             let size = r2.content_length().unwrap_or(0);
