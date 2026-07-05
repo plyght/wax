@@ -76,6 +76,257 @@ async fn fetch_latest_crate_version(client: &reqwest::Client) -> Result<String> 
     Ok(info.krate.max_stable_version)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InstallMethod {
+    Homebrew,
+    Wax,
+    Script,
+    Cargo,
+    Custom,
+}
+
+pub async fn detect_install_method() -> InstallMethod {
+    let exe_path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => return InstallMethod::Custom,
+    };
+
+    let path_str = exe_path.to_string_lossy();
+
+    // Check if it's installed inside a Cellar (Homebrew or Wax cellar)
+    if path_str.contains("/Cellar/wax/") || path_str.contains("/Cellar/waxpkg/") {
+        if let Ok(state) = crate::install::InstallState::new() {
+            if let Ok(installed) = state.load().await {
+                if installed.contains_key("wax") || installed.contains_key("waxpkg") {
+                    return InstallMethod::Wax;
+                }
+            }
+        }
+        return InstallMethod::Homebrew;
+    }
+
+    // Check if it's inside ~/.local/bin/
+    if let Some(home) = crate::ui::dirs::home_dir().ok() {
+        let local_bin = home.join(".local").join("bin");
+        if exe_path.starts_with(&local_bin) {
+            return InstallMethod::Script;
+        }
+    }
+
+    // Check if it's inside ~/.cargo/bin/
+    if let Some(home) = crate::ui::dirs::home_dir().ok() {
+        let cargo_bin = home.join(".cargo").join("bin");
+        if exe_path.starts_with(&cargo_bin) {
+            return InstallMethod::Cargo;
+        }
+    }
+
+    InstallMethod::Custom
+}
+
+async fn update_from_brew() -> Result<()> {
+    println!(
+        "  {} {}",
+        style("detected:").dim(),
+        style("Homebrew installation").cyan()
+    );
+    println!(
+        "  {} running {} (live output below)",
+        style("upgrade:").dim(),
+        style("brew upgrade wax").yellow()
+    );
+
+    let status = std::process::Command::new("brew")
+        .args(["upgrade", "wax"])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to run brew: {e}")))?;
+
+    if !status.success() {
+        return Err(WaxError::SelfUpdateError(
+            "brew upgrade failed".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn update_from_wax() -> Result<()> {
+    println!(
+        "  {} {}",
+        style("detected:").dim(),
+        style("Wax installation").cyan()
+    );
+    println!(
+        "  {} running {} (live output below)",
+        style("upgrade:").dim(),
+        style("wax install wax --force").yellow()
+    );
+
+    let exe_path = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("wax"));
+
+    let status = std::process::Command::new(exe_path)
+        .args(["install", "wax", "--force"])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to run wax install: {e}")))?;
+
+    if !status.success() {
+        return Err(WaxError::SelfUpdateError(
+            "wax install failed".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn update_from_releases(force: bool) -> Result<()> {
+    println!(
+        "  {} {}",
+        style("detected:").dim(),
+        style("Script / binary release installation").cyan()
+    );
+
+    let client = crate::http_client::api();
+    let spinner = create_spinner("Checking for updates…");
+
+    let resp = client
+        .get("https://api.github.com/repos/plyght/wax/releases/latest")
+        .header("User-Agent", "wax-self-update")
+        .send()
+        .await
+        .map_err(|e| WaxError::SelfUpdateError(format!("GitHub API request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        spinner.finish_and_clear();
+        return Err(WaxError::SelfUpdateError(format!(
+            "GitHub API returned {}",
+            resp.status()
+        )));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Release {
+        tag_name: String,
+        assets: Vec<Asset>,
+    }
+
+    let release: Release = resp.json().await.map_err(|e| {
+        spinner.finish_and_clear();
+        WaxError::SelfUpdateError(format!("Failed to parse GitHub API response: {e}"))
+    })?;
+
+    spinner.finish_and_clear();
+
+    let latest_version = release.tag_name.trim_start_matches('v').to_string();
+
+    println!(
+        "  {} {}",
+        style("current:").dim(),
+        style(CURRENT_VERSION).cyan()
+    );
+    println!(
+        "  {} {}",
+        style("latest: ").dim(),
+        style(&latest_version).cyan()
+    );
+
+    if !is_newer(CURRENT_VERSION, &latest_version) && !force {
+        println!("{} already up to date", style("✓").green());
+        return Ok(());
+    }
+
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let target_asset_name = match os {
+        "macos" => "wax-macos-x64",
+        "linux" => match arch {
+            "aarch64" => "wax-linux-arm64",
+            _ => "wax-linux-x64",
+        },
+        _ => return Err(WaxError::SelfUpdateError(format!(
+            "Unsupported platform for binary release update: {os}-{arch}"
+        ))),
+    };
+
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == target_asset_name)
+        .ok_or_else(|| {
+            WaxError::SelfUpdateError(format!(
+                "Could not find release asset '{}' for {}-{}",
+                target_asset_name, os, arch
+            ))
+        })?;
+
+    println!(
+        "  {} downloading {}...",
+        style("download:").dim(),
+        style(&asset.name).yellow()
+    );
+
+    let download_resp = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to download asset: {e}")))?;
+
+    if !download_resp.status().is_success() {
+        return Err(WaxError::SelfUpdateError(format!(
+            "Failed to download asset: HTTP {}",
+            download_resp.status()
+        )));
+    }
+
+    let bytes = download_resp
+        .bytes()
+        .await
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to read asset bytes: {e}")))?;
+
+    let current_exe = std::env::current_exe()
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to resolve current exe path: {e}")))?;
+    
+    let exe_dir = current_exe.parent().ok_or_else(|| {
+        WaxError::SelfUpdateError("Current exe has no parent directory".to_string())
+    })?;
+
+    let temp_exe = exe_dir.join(".wax-update-tmp");
+    
+    std::fs::write(&temp_exe, &bytes)
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to write temporary binary: {e}")))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp_exe, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| WaxError::SelfUpdateError(format!("Failed to set permissions: {e}")))?;
+    }
+
+    std::fs::rename(&temp_exe, &current_exe)
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to overwrite executable: {e}")))?;
+
+    println!(
+        "{} updated to {}",
+        style("✓").green(),
+        style(format!("v{latest_version}")).cyan()
+    );
+
+    Ok(())
+}
+
 #[instrument]
 pub async fn self_update(
     channel: Channel,
@@ -88,7 +339,15 @@ pub async fn self_update(
     );
 
     match channel {
-        Channel::Stable => update_from_crates(force).await,
+        Channel::Stable => {
+            let method = detect_install_method().await;
+            match method {
+                InstallMethod::Homebrew => update_from_brew().await,
+                InstallMethod::Wax => update_from_wax().await,
+                InstallMethod::Script => update_from_releases(force).await,
+                InstallMethod::Cargo | InstallMethod::Custom => update_from_crates(force).await,
+            }
+        }
         Channel::Nightly => update_from_source(force, nightly_cleanup).await,
     }
 }

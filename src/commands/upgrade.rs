@@ -149,11 +149,29 @@ async fn refresh_taps(cache: &Cache) -> Result<()> {
         .map(|tap| tap.full_name.clone())
         .collect::<Vec<_>>();
 
-    for tap in taps {
-        tap_manager.update_tap(&tap).await?;
-        cache.invalidate_tap_cache(&tap).await?;
+    if taps.is_empty() {
+        return Ok(());
     }
 
+    let spinner = crate::ui::create_spinner("Updating taps…");
+
+    let mut set = tokio::task::JoinSet::new();
+    for tap in taps {
+        let cache = cache.clone();
+        set.spawn(async move {
+            let mut tm = TapManager::new()?;
+            tm.load().await?;
+            tm.update_tap(&tap).await?;
+            cache.invalidate_tap_cache(&tap).await?;
+            Ok::<_, WaxError>(())
+        });
+    }
+
+    while let Some(res) = set.join_next().await {
+        res.map_err(|e| WaxError::SelfUpdateError(format!("Task joined with error: {e}")))??;
+    }
+
+    spinner.finish_and_clear();
     Ok(())
 }
 

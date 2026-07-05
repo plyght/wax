@@ -618,35 +618,77 @@ impl BottleDownloader {
                 )));
             }
             if let Some(parent) = full_path.parent() {
-                let resolved = parent.join(&*link_name);
-                let mut normalized = PathBuf::new();
-                for component in resolved.components() {
-                    match component {
-                        std::path::Component::CurDir => {}
-                        std::path::Component::ParentDir => {
-                            if !normalized.pop() {
-                                return Err(WaxError::InstallError(format!(
-                                    "Symlink target escapes destination via parent traversal: {} -> {}",
-                                    path.display(),
-                                    link_name.display()
-                                )));
-                            }
-                        }
-                        _ => normalized.push(component),
-                    }
-                }
+                let relative_to_dest = full_path.strip_prefix(canonical_dest).unwrap_or(full_path);
+                let formula_name = canonical_dest.file_name().unwrap_or_default();
 
                 let hb_prefix = homebrew_prefix();
                 let user_prefix = crate::ui::dirs::home_dir()
                     .map(|h| h.join(".local").join("wax"))
                     .ok();
 
-                let is_safe = normalized.starts_with(canonical_dest)
-                    || normalized.starts_with(&hb_prefix)
-                    || user_prefix
-                        .as_ref()
-                        .map(|up| normalized.starts_with(up))
-                        .unwrap_or(false);
+                let mut is_safe = false;
+
+                // Check 1: Resolve inside the temporary staging directory (canonical_dest)
+                {
+                    let resolved = parent.join(&*link_name);
+                    let mut normalized = PathBuf::new();
+                    for component in resolved.components() {
+                        match component {
+                            std::path::Component::CurDir => {}
+                            std::path::Component::ParentDir => {
+                                normalized.pop();
+                            }
+                            _ => normalized.push(component),
+                        }
+                    }
+                    if normalized.starts_with(canonical_dest) {
+                        is_safe = true;
+                    }
+                }
+
+                // Check 2: Simulate resolution inside global Homebrew Cellar
+                if !is_safe {
+                    let simulated_parent = hb_prefix.join("Cellar").join(formula_name).join(relative_to_dest.parent().unwrap_or(Path::new("")));
+                    let resolved = simulated_parent.join(&*link_name);
+                    let mut normalized = PathBuf::new();
+                    for component in resolved.components() {
+                        match component {
+                            std::path::Component::CurDir => {}
+                            std::path::Component::ParentDir => {
+                                normalized.pop();
+                            }
+                            _ => normalized.push(component),
+                        }
+                    }
+                    if normalized.starts_with(&hb_prefix.join("Cellar").join(formula_name))
+                        || normalized.starts_with(&hb_prefix.join("opt"))
+                    {
+                        is_safe = true;
+                    }
+                }
+
+                // Check 3: Simulate resolution inside user-local Wax Cellar
+                if !is_safe {
+                    if let Some(ref up) = user_prefix {
+                        let simulated_parent = up.join("Cellar").join(formula_name).join(relative_to_dest.parent().unwrap_or(Path::new("")));
+                        let resolved = simulated_parent.join(&*link_name);
+                        let mut normalized = PathBuf::new();
+                        for component in resolved.components() {
+                            match component {
+                                std::path::Component::CurDir => {}
+                                std::path::Component::ParentDir => {
+                                    normalized.pop();
+                                }
+                                _ => normalized.push(component),
+                            }
+                        }
+                        if normalized.starts_with(&up.join("Cellar").join(formula_name))
+                            || normalized.starts_with(&up.join("opt"))
+                        {
+                            is_safe = true;
+                        }
+                    }
+                }
 
                 if !is_safe {
                     return Err(WaxError::InstallError(format!(
