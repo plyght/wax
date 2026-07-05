@@ -36,18 +36,31 @@ async fn install_from_source_task(
     install_mode: InstallMode,
     state: &InstallState,
     platform: &str,
+    external_pb: Option<ProgressBar>,
 ) -> Result<()> {
     info!("Installing {} from source", formula.name);
 
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {prefix:.bold} {msg}")
-            .unwrap(),
-    );
-    spinner.set_prefix("[>]".to_string());
-    spinner.set_message(format!("Fetching formula for {}...", formula.name));
-    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+    let spinner = if let Some(ref pb) = external_pb {
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {prefix:.bold} {msg}")
+                .unwrap(),
+        );
+        pb.set_prefix("[>]".to_string());
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        pb.clone()
+    } else {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {prefix:.bold} {msg}")
+                .unwrap(),
+        );
+        spinner.set_prefix("[>]".to_string());
+        spinner.set_message(format!("Fetching formula for {}...", formula.name));
+        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+        spinner
+    };
 
     // Use the local tap .rb file if available; otherwise fetch from homebrew-core.
     let ruby_content = if let Some(rb_path) = &formula.rb_path {
@@ -407,18 +420,31 @@ async fn install_from_head_task(
     install_mode: InstallMode,
     state: &InstallState,
     platform: &str,
+    external_pb: Option<ProgressBar>,
 ) -> Result<()> {
     info!("Installing {} from HEAD", formula.name);
 
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.cyan} {prefix:.bold} {msg}")
-            .unwrap(),
-    );
-    spinner.set_prefix("[>]".to_string());
-    spinner.set_message(format!("Fetching formula for {}...", formula.name));
-    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+    let spinner = if let Some(ref pb) = external_pb {
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {prefix:.bold} {msg}")
+                .unwrap(),
+        );
+        pb.set_prefix("[>]".to_string());
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        pb.clone()
+    } else {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {prefix:.bold} {msg}")
+                .unwrap(),
+        );
+        spinner.set_prefix("[>]".to_string());
+        spinner.set_message(format!("Fetching formula for {}...", formula.name));
+        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+        spinner
+    };
 
     let ruby_content = if let Some(rb_path) = &formula.rb_path {
         tokio::fs::read_to_string(rb_path).await.map_err(|e| {
@@ -442,7 +468,7 @@ async fn install_from_head_task(
             console::style("note:").yellow(),
             formula.name
         );
-        return install_from_source_task(formula, cellar, install_mode, state, platform).await;
+        return install_from_source_task(formula, cellar, install_mode, state, platform, external_pb).await;
     };
 
     let temp_dir = TempDir::new()?;
@@ -1118,7 +1144,7 @@ pub(crate) async fn install_impl(
                 println!();
                 println!("installing {} from HEAD", pkg.name);
             }
-            install_from_head_task(pkg.clone(), &cellar, install_mode, &state, &platform).await?;
+            install_from_head_task(pkg.clone(), &cellar, install_mode, &state, &platform, external_pb.cloned()).await?;
             continue;
         }
 
@@ -1130,7 +1156,7 @@ pub(crate) async fn install_impl(
                 println!("building {} from source", pkg.name);
             }
 
-            install_from_source_task(pkg.clone(), &cellar, install_mode, &state, &platform).await?;
+            install_from_source_task(pkg.clone(), &cellar, install_mode, &state, &platform, external_pb.cloned()).await?;
             continue;
         }
 
