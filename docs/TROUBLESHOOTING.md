@@ -179,13 +179,15 @@ wax update
 
 **Symptom:** After `wax install` / `wax reinstall` for a cask, launching the app shows **damaged and should be moved to the Trash**.
 
-**Cause:** Gatekeeper quarantine on a copied `.app` bundle. Wax clears `com.apple.quarantine` after copying into `/Applications` (same idea as Homebrew casks). If you still see this, the app may be unsigned or blocked by policy.
+**Cause:** Usually a **broken code signature** from copying the `.app` with plain file copy (`cp` / `fs::copy`). Wax installs cask apps with `ditto --noqtn` (like Homebrew). Older Wax builds used `copy_dir_all`, which can trigger this on signed apps (e.g. Keka).
+
+`xattr -dr com.apple.quarantine` may print `Attribute not found` on individual binaries — that is normal and does not mean quarantine was the problem.
 
 **Solutions:**
 
-1. Reinstall with current Wax: `wax reinstall <cask>`
-2. Manual clear: `xattr -dr com.apple.quarantine /Applications/<App>.app`
-3. Open once via right-click → Open, or allow in System Settings → Privacy & Security
+1. Upgrade Wax and reinstall: `wax reinstall <cask>`
+2. If still broken, install the cask with Homebrew once: `brew install --cask <cask>`
+3. Right-click → Open, or allow in System Settings → Privacy & Security
 
 #### macOS: Cask Installation Fails
 

@@ -1327,7 +1327,7 @@ impl CaskInstaller {
 
             _rollback.add(app_dest.clone());
 
-            crate::ui::copy_dir_all(&source, &app_dest)?;
+            crate::ui::copy_app_bundle(&source, &app_dest)?;
             strip_macos_quarantine(&app_dest);
 
             Ok(())

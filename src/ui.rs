@@ -34,6 +34,46 @@ pub const PROGRESS_BAR_PREFIX_TEMPLATE: &str =
     "{prefix:.bold} {wide_bar:.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec}  eta {eta}";
 pub const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
+/// Copy a `.app` bundle on macOS. Plain `fs::copy` / `cp` breaks code signatures
+/// (Gatekeeper shows "damaged"); `ditto --noqtn` matches Homebrew cask behavior.
+pub fn copy_app_bundle(src: &Path, dst: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if ditto_app_bundle(src, dst, false)? {
+            return Ok(());
+        }
+        if ditto_app_bundle(src, dst, true)? {
+            return Ok(());
+        }
+        debug!(
+            "ditto failed for {} -> {}; falling back to copy_dir_all",
+            src.display(),
+            dst.display()
+        );
+    }
+    copy_dir_all(src, dst)
+}
+
+#[cfg(target_os = "macos")]
+fn ditto_app_bundle(src: &Path, dst: &Path, use_sudo: bool) -> Result<bool> {
+    let mut cmd = if use_sudo {
+        sudo::acquire_sudo()?;
+        let mut c = std::process::Command::new("sudo");
+        c.args(["ditto", "--noextattr", "--noqtn"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("ditto");
+        c.args(["--noextattr", "--noqtn"]);
+        c
+    };
+    let status = cmd
+        .arg(src)
+        .arg(dst)
+        .status()
+        .map_err(WaxError::IoError)?;
+    Ok(status.success())
+}
+
 pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     match copy_dir_all_inner(src, dst) {
         Ok(()) => Ok(()),
