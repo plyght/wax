@@ -962,6 +962,23 @@ pub struct CaskInstaller {
     downloader: BottleDownloader,
 }
 
+#[cfg(target_os = "macos")]
+fn strip_macos_quarantine(path: &Path) {
+    let path_arg = path.to_string_lossy();
+    match std::process::Command::new("xattr")
+        .args(["-dr", "com.apple.quarantine", path_arg.as_ref()])
+        .status()
+    {
+        Ok(status) if status.success() => debug!("cleared quarantine on {:?}", path),
+        Ok(status) => debug!(
+            "xattr clear quarantine exited {:?} for {:?}",
+            status.code(),
+            path
+        ),
+        Err(e) => debug!("xattr not run for {:?}: {}", path, e),
+    }
+}
+
 impl CaskInstaller {
     pub fn new() -> Self {
         Self {
@@ -1311,6 +1328,7 @@ impl CaskInstaller {
             _rollback.add(app_dest.clone());
 
             crate::ui::copy_dir_all(&source, &app_dest)?;
+            strip_macos_quarantine(&app_dest);
 
             Ok(())
         }

@@ -175,6 +175,18 @@ wax update
 
 ### Platform-Specific Issues
 
+#### macOS: App is damaged and can’t be opened
+
+**Symptom:** After `wax install` / `wax reinstall` for a cask, launching the app shows **damaged and should be moved to the Trash**.
+
+**Cause:** Gatekeeper quarantine on a copied `.app` bundle. Wax clears `com.apple.quarantine` after copying into `/Applications` (same idea as Homebrew casks). If you still see this, the app may be unsigned or blocked by policy.
+
+**Solutions:**
+
+1. Reinstall with current Wax: `wax reinstall <cask>`
+2. Manual clear: `xattr -dr com.apple.quarantine /Applications/<App>.app`
+3. Open once via right-click → Open, or allow in System Settings → Privacy & Security
+
 #### macOS: Cask Installation Fails
 
 **Symptom:**
