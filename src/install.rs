@@ -150,6 +150,13 @@ fn default_install_mode() -> InstallMode {
     InstallMode::Global
 }
 
+static STATE_MUTEX: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+pub fn state_lock() -> &'static tokio::sync::Mutex<()> {
+    STATE_MUTEX.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[derive(Debug, Clone)]
 pub struct InstallState {
     state_path: PathBuf,
 }
@@ -183,6 +190,7 @@ impl InstallState {
     }
 
     pub async fn add(&self, package: InstalledPackage) -> Result<()> {
+        let _guard = state_lock().lock().await;
         let mut packages = self.load().await?;
         packages.insert(package.name.clone(), package);
         self.save(&packages).await?;
@@ -190,6 +198,7 @@ impl InstallState {
     }
 
     pub async fn remove(&self, name: &str) -> Result<()> {
+        let _guard = state_lock().lock().await;
         let mut packages = self.load().await?;
         packages.remove(name);
         self.save(&packages).await?;
@@ -197,6 +206,7 @@ impl InstallState {
     }
 
     pub async fn set_pinned(&self, name: &str, pinned: bool) -> Result<()> {
+        let _guard = state_lock().lock().await;
         let mut packages = self.load().await?;
         if let Some(pkg) = packages.get_mut(name) {
             pkg.pinned = pinned;

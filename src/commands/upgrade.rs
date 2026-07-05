@@ -567,6 +567,8 @@ async fn upgrade_all(
         None
     };
 
+    let overall_pb_guard = overall_formula_pb.as_ref().map(|pb| crate::ui::ProgressGuard::new(pb.clone()));
+
     let update_formula_totals = if let Some(ref pb) = overall_formula_pb {
         let totals = formula_totals.clone();
         let hide = Arc::clone(&hide_formula_dl);
@@ -604,6 +606,7 @@ async fn upgrade_all(
     let hide_dl = Arc::clone(&hide_formula_dl);
     let poller_task = update_formula_totals;
     let overall_pb_done = overall_formula_pb.clone();
+    let mut overall_pb_guard_capture = overall_pb_guard;
 
     let connection_map_for_producer = upgrade_connections_map.clone();
     let producer_tx = tx.clone();
@@ -658,18 +661,20 @@ async fn upgrade_all(
 
             producer_js.spawn(async move {
                 let task_name = name.clone();
+                let pb = multi_ref.add(ProgressBar::new(0));
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(PROGRESS_BAR_PREFIX_TEMPLATE)
+                        .unwrap()
+                        .progress_chars(PROGRESS_BAR_CHARS),
+                );
+                pb.set_prefix(name.clone());
+
+                let mut pb_guard = crate::ui::ProgressGuard::new(pb.clone());
+
                 let inner = async {
                     let permit = sem.acquire().await.unwrap();
                     crate::signal::check_cancelled()?;
-
-                    let pb = multi_ref.add(ProgressBar::new(0));
-                    pb.set_style(
-                        ProgressStyle::default_bar()
-                            .template(PROGRESS_BAR_PREFIX_TEMPLATE)
-                            .unwrap()
-                            .progress_chars(PROGRESS_BAR_CHARS),
-                    );
-                    pb.set_prefix(name.clone());
 
                     let tarball = tmp.path().join(format!("{}-{}.tar.gz", name, version));
 
@@ -685,22 +690,20 @@ async fn upgrade_all(
                     let extract_dir = tmp.path().join(&name);
                     BottleDownloader::extract(&tarball, &extract_dir)?;
 
-                    Ok::<_, WaxError>((
-                        PreDownloaded {
-                            name,
-                            version,
-                            extract_dir,
-                            bottle_sha: sha256,
-                            bottle_rebuild: rebuild,
-                            _temp_dir: tmp,
-                        },
-                        pb,
-                    ))
+                    Ok::<_, WaxError>(PreDownloaded {
+                        name,
+                        version,
+                        extract_dir,
+                        bottle_sha: sha256,
+                        bottle_rebuild: rebuild,
+                        _temp_dir: tmp,
+                    })
                 }
                 .await;
 
                 match inner {
-                    Ok((pre, pb)) => {
+                    Ok(pre) => {
+                        pb_guard.disarm();
                         let _ = tx
                             .send(FormulaUpgradeMsg::Ready { pkg, pre, bar: pb })
                             .await;
@@ -733,6 +736,9 @@ async fn upgrade_all(
             let _ = poller.await;
         }
         if let Some(pb) = overall_pb_done {
+            if let Some(ref mut guard) = overall_pb_guard_capture {
+                guard.disarm();
+            }
             pb.finish_and_clear();
         }
 
@@ -744,12 +750,20 @@ async fn upgrade_all(
         let cache = cache.clone();
         let multi = multi.clone();
         let platform = platform.clone();
+        let install_state = install_state.clone();
         async move {
             let mut succ = 0usize;
             let mut fail = 0usize;
             let mut fails: Vec<String> = Vec::new();
+            let mut install_tasks = JoinSet::new();
+
             while let Some(msg) = rx.recv().await {
                 check_cancelled()?;
+                let cache = cache.clone();
+                let multi = multi.clone();
+                let platform = platform.clone();
+                let install_state = install_state.clone();
+
                 match msg {
                     FormulaUpgradeMsg::DownloadFailed { name, err } => {
                         let _ = multi.println(format!(
@@ -762,77 +776,73 @@ async fn upgrade_all(
                         fails.push(name);
                     }
                     FormulaUpgradeMsg::Fallback(pkg) => {
-                        match apply_one_formula_package_upgrade(
-                            &cache,
-                            &multi,
-                            &pkg,
-                            None,
-                            None,
-                            install_mode_global,
-                            &platform,
-                            &install_state,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                let _ = multi.println(format!(
-                                    "{} {} {} → {}",
-                                    style("✓").green(),
-                                    style(&pkg.name).magenta(),
-                                    style(&pkg.installed_version).dim(),
-                                    style(&pkg.latest_version).green()
-                                ));
-                                succ += 1;
-                            }
-                            Err(e) => {
-                                fail += 1;
-                                let _ = multi.println(format!(
-                                    "{} {} failed: {}",
-                                    style("✗").red(),
-                                    style(&pkg.name).magenta(),
-                                    e
-                                ));
-                                fails.push(pkg.name.clone());
-                            }
-                        }
+                        install_tasks.spawn(async move {
+                            let res = apply_one_formula_package_upgrade(
+                                &cache,
+                                &multi,
+                                &pkg,
+                                None,
+                                None,
+                                install_mode_global,
+                                &platform,
+                                &install_state,
+                            )
+                            .await;
+                            (pkg, res)
+                        });
                     }
                     FormulaUpgradeMsg::Ready { pkg, pre, bar } => {
-                        match apply_one_formula_package_upgrade(
-                            &cache,
-                            &multi,
-                            &pkg,
-                            Some(pre),
-                            Some(bar),
-                            install_mode_global,
-                            &platform,
-                            &install_state,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                let _ = multi.println(format!(
-                                    "{} {} {} → {}",
-                                    style("✓").green(),
-                                    style(&pkg.name).magenta(),
-                                    style(&pkg.installed_version).dim(),
-                                    style(&pkg.latest_version).green()
-                                ));
-                                succ += 1;
-                            }
-                            Err(e) => {
-                                fail += 1;
-                                let _ = multi.println(format!(
-                                    "{} {} failed: {}",
-                                    style("✗").red(),
-                                    style(&pkg.name).magenta(),
-                                    e
-                                ));
-                                fails.push(pkg.name.clone());
-                            }
-                        }
+                        install_tasks.spawn(async move {
+                            let res = apply_one_formula_package_upgrade(
+                                &cache,
+                                &multi,
+                                &pkg,
+                                Some(pre),
+                                Some(bar),
+                                install_mode_global,
+                                &platform,
+                                &install_state,
+                            )
+                            .await;
+                            (pkg, res)
+                        });
                     }
                 }
             }
+
+            while let Some(join_res) = install_tasks.join_next().await {
+                match join_res {
+                    Ok((pkg, Ok(()))) => {
+                        let _ = multi.println(format!(
+                            "{} {} {} → {}",
+                            style("✓").green(),
+                            style(&pkg.name).magenta(),
+                            style(&pkg.installed_version).dim(),
+                            style(&pkg.latest_version).green()
+                        ));
+                        succ += 1;
+                    }
+                    Ok((pkg, Err(e))) => {
+                        fail += 1;
+                        let _ = multi.println(format!(
+                            "{} {} failed: {}",
+                            style("✗").red(),
+                            style(&pkg.name).magenta(),
+                            e
+                        ));
+                        fails.push(pkg.name);
+                    }
+                    Err(e) => {
+                        fail += 1;
+                        let _ = multi.println(format!(
+                            "{} install task panicked: {}",
+                            style("✗").red(),
+                            e
+                        ));
+                    }
+                }
+            }
+
             producer_handle.await.map_err(|e| {
                 WaxError::InstallError(format!("formula upgrade producer task: {}", e))
             })??;
@@ -933,15 +943,13 @@ async fn upgrade_all(
         }
     };
 
-    let (mut success_count, mut fail_count, mut failed_names) = {
+    let (formula_res, cask_res) = {
         let _critical = CriticalSection::new();
-        formula_stats.await?
+        tokio::join!(formula_stats, cask_fut)
     };
 
-    let (c_succ, c_fail, c_failed) = {
-        let _critical = CriticalSection::new();
-        cask_fut.await?
-    };
+    let (mut success_count, mut fail_count, mut failed_names) = formula_res?;
+    let (c_succ, c_fail, c_failed) = cask_res?;
     success_count += c_succ;
     fail_count += c_fail;
     failed_names.extend(c_failed);

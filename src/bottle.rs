@@ -610,8 +610,6 @@ impl BottleDownloader {
                     path.display()
                 ))
             })?;
-            // Validate symlink target: reject absolute paths and
-            // parent-dir traversals that could escape the dest.
             let target = Path::new(&*link_name);
             if target.is_absolute() {
                 return Err(WaxError::InstallError(format!(
@@ -619,8 +617,6 @@ impl BottleDownloader {
                     link_name.display()
                 )));
             }
-            // Resolve the symlink target relative to the entry's
-            // parent and ensure it stays within canonical_dest.
             if let Some(parent) = full_path.parent() {
                 let resolved = parent.join(&*link_name);
                 let mut normalized = PathBuf::new();
@@ -639,19 +635,32 @@ impl BottleDownloader {
                         _ => normalized.push(component),
                     }
                 }
-                if !normalized.starts_with(canonical_dest) {
+
+                let hb_prefix = homebrew_prefix();
+                let user_prefix = crate::ui::dirs::home_dir()
+                    .map(|h| h.join(".local").join("wax"))
+                    .ok();
+
+                let is_safe = normalized.starts_with(canonical_dest)
+                    || normalized.starts_with(&hb_prefix)
+                    || user_prefix
+                        .as_ref()
+                        .map(|up| normalized.starts_with(up))
+                        .unwrap_or(false);
+
+                if !is_safe {
                     return Err(WaxError::InstallError(format!(
                         "Symlink escapes destination: {} -> {}",
                         path.display(),
                         link_name.display()
                     )));
-                } else {
-                    std::fs::create_dir_all(parent)?;
-                    if full_path.symlink_metadata().is_ok() {
-                        std::fs::remove_file(full_path)?;
-                    }
-                    std::os::unix::fs::symlink(&*link_name, full_path)?;
                 }
+
+                std::fs::create_dir_all(parent)?;
+                if full_path.symlink_metadata().is_ok() {
+                    std::fs::remove_file(full_path)?;
+                }
+                std::os::unix::fs::symlink(&*link_name, full_path)?;
             } else {
                 if full_path.symlink_metadata().is_ok() {
                     std::fs::remove_file(full_path)?;

@@ -196,6 +196,29 @@ pub mod dirs {
     }
 }
 
+pub struct ProgressGuard {
+    pb: ProgressBar,
+    active: bool,
+}
+
+impl ProgressGuard {
+    pub fn new(pb: ProgressBar) -> Self {
+        Self { pb, active: true }
+    }
+
+    pub fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for ProgressGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.pb.finish_and_clear();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

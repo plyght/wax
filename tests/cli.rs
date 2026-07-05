@@ -255,15 +255,11 @@ fn upgrade_batches_cask_force_reinstalls() {
 }
 
 #[test]
-fn upgrade_runs_formulae_before_casks_not_in_parallel() {
+fn upgrade_runs_formulae_and_casks_in_parallel() {
     let source = std::fs::read_to_string("src/commands/upgrade.rs").unwrap();
     assert!(
-        !source.contains("try_join!(formula_stats, cask_fut)"),
-        "upgrade should not run formula and cask progress on one MultiProgress at once"
-    );
-    assert!(
-        source.contains("formula_stats.await?") && source.contains("cask_fut.await?"),
-        "upgrade should finish formula phase before cask phase"
+        source.contains("tokio::join!(formula_stats, cask_fut)"),
+        "upgrade should run formula and cask progress in parallel using tokio::join!"
     );
 }
 

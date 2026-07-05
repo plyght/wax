@@ -262,6 +262,7 @@ async fn uninstall_package_direct(
 
     let lockfile_path = Lockfile::default_path();
     if lockfile_path.exists() {
+        let _guard = crate::install::state_lock().lock().await;
         if let Ok(mut lockfile) = Lockfile::load(&lockfile_path).await {
             lockfile.remove_package(formula_name).await;
             let _ = lockfile.save(&lockfile_path).await;
@@ -475,6 +476,7 @@ async fn uninstall_cask(
 
     let lockfile_path = Lockfile::default_path();
     if lockfile_path.exists() {
+        let _guard = crate::install::state_lock().lock().await;
         if let Ok(mut lockfile) = Lockfile::load(&lockfile_path).await {
             lockfile.remove_cask(cask_name).await;
             let _ = lockfile.save(&lockfile_path).await;
