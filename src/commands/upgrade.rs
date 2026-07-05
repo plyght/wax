@@ -585,7 +585,9 @@ async fn upgrade_all(
         None
     };
 
-    let overall_pb_guard = overall_formula_pb.as_ref().map(|pb| crate::ui::ProgressGuard::new(pb.clone()));
+    let overall_pb_guard = overall_formula_pb
+        .as_ref()
+        .map(|pb| crate::ui::ProgressGuard::new(pb.clone()));
 
     let update_formula_totals = if let Some(ref pb) = overall_formula_pb {
         let totals = formula_totals.clone();

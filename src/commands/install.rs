@@ -468,7 +468,15 @@ async fn install_from_head_task(
             console::style("note:").yellow(),
             formula.name
         );
-        return install_from_source_task(formula, cellar, install_mode, state, platform, external_pb).await;
+        return install_from_source_task(
+            formula,
+            cellar,
+            install_mode,
+            state,
+            platform,
+            external_pb,
+        )
+        .await;
     };
 
     let temp_dir = TempDir::new()?;
@@ -1144,7 +1152,15 @@ pub(crate) async fn install_impl(
                 println!();
                 println!("installing {} from HEAD", pkg.name);
             }
-            install_from_head_task(pkg.clone(), &cellar, install_mode, &state, &platform, external_pb.cloned()).await?;
+            install_from_head_task(
+                pkg.clone(),
+                &cellar,
+                install_mode,
+                &state,
+                &platform,
+                external_pb.cloned(),
+            )
+            .await?;
             continue;
         }
 
@@ -1156,7 +1172,15 @@ pub(crate) async fn install_impl(
                 println!("building {} from source", pkg.name);
             }
 
-            install_from_source_task(pkg.clone(), &cellar, install_mode, &state, &platform, external_pb.cloned()).await?;
+            install_from_source_task(
+                pkg.clone(),
+                &cellar,
+                install_mode,
+                &state,
+                &platform,
+                external_pb.cloned(),
+            )
+            .await?;
             continue;
         }
 

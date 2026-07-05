@@ -648,7 +648,10 @@ impl BottleDownloader {
 
                 // Check 2: Simulate resolution inside global Homebrew Cellar
                 if !is_safe {
-                    let simulated_parent = hb_prefix.join("Cellar").join(formula_name).join(relative_to_dest.parent().unwrap_or(Path::new("")));
+                    let simulated_parent = hb_prefix
+                        .join("Cellar")
+                        .join(formula_name)
+                        .join(relative_to_dest.parent().unwrap_or(Path::new("")));
                     let resolved = simulated_parent.join(&*link_name);
                     let mut normalized = PathBuf::new();
                     for component in resolved.components() {
@@ -660,8 +663,8 @@ impl BottleDownloader {
                             _ => normalized.push(component),
                         }
                     }
-                    if normalized.starts_with(&hb_prefix.join("Cellar").join(formula_name))
-                        || normalized.starts_with(&hb_prefix.join("opt"))
+                    if normalized.starts_with(hb_prefix.join("Cellar").join(formula_name))
+                        || normalized.starts_with(hb_prefix.join("opt"))
                     {
                         is_safe = true;
                     }
@@ -670,7 +673,10 @@ impl BottleDownloader {
                 // Check 3: Simulate resolution inside user-local Wax Cellar
                 if !is_safe {
                     if let Some(ref up) = user_prefix {
-                        let simulated_parent = up.join("Cellar").join(formula_name).join(relative_to_dest.parent().unwrap_or(Path::new("")));
+                        let simulated_parent = up
+                            .join("Cellar")
+                            .join(formula_name)
+                            .join(relative_to_dest.parent().unwrap_or(Path::new("")));
                         let resolved = simulated_parent.join(&*link_name);
                         let mut normalized = PathBuf::new();
                         for component in resolved.components() {
@@ -682,8 +688,8 @@ impl BottleDownloader {
                                 _ => normalized.push(component),
                             }
                         }
-                        if normalized.starts_with(&up.join("Cellar").join(formula_name))
-                            || normalized.starts_with(&up.join("opt"))
+                        if normalized.starts_with(up.join("Cellar").join(formula_name))
+                            || normalized.starts_with(up.join("opt"))
                         {
                             is_safe = true;
                         }

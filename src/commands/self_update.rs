@@ -106,7 +106,7 @@ pub async fn detect_install_method() -> InstallMethod {
     }
 
     // Check if it's inside ~/.local/bin/
-    if let Some(home) = crate::ui::dirs::home_dir().ok() {
+    if let Ok(home) = crate::ui::dirs::home_dir() {
         let local_bin = home.join(".local").join("bin");
         if exe_path.starts_with(&local_bin) {
             return InstallMethod::Script;
@@ -114,7 +114,7 @@ pub async fn detect_install_method() -> InstallMethod {
     }
 
     // Check if it's inside ~/.cargo/bin/
-    if let Some(home) = crate::ui::dirs::home_dir().ok() {
+    if let Ok(home) = crate::ui::dirs::home_dir() {
         let cargo_bin = home.join(".cargo").join("bin");
         if exe_path.starts_with(&cargo_bin) {
             return InstallMethod::Cargo;
@@ -145,9 +145,7 @@ async fn update_from_brew() -> Result<()> {
         .map_err(|e| WaxError::SelfUpdateError(format!("Failed to run brew: {e}")))?;
 
     if !status.success() {
-        return Err(WaxError::SelfUpdateError(
-            "brew upgrade failed".to_string(),
-        ));
+        return Err(WaxError::SelfUpdateError("brew upgrade failed".to_string()));
     }
 
     Ok(())
@@ -165,8 +163,7 @@ async fn update_from_wax() -> Result<()> {
         style("wax install wax --force").yellow()
     );
 
-    let exe_path = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("wax"));
+    let exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wax"));
 
     let status = std::process::Command::new(exe_path)
         .args(["install", "wax", "--force"])
@@ -177,9 +174,7 @@ async fn update_from_wax() -> Result<()> {
         .map_err(|e| WaxError::SelfUpdateError(format!("Failed to run wax install: {e}")))?;
 
     if !status.success() {
-        return Err(WaxError::SelfUpdateError(
-            "wax install failed".to_string(),
-        ));
+        return Err(WaxError::SelfUpdateError("wax install failed".to_string()));
     }
 
     Ok(())
@@ -256,9 +251,11 @@ async fn update_from_releases(force: bool) -> Result<()> {
             "aarch64" => "wax-linux-arm64",
             _ => "wax-linux-x64",
         },
-        _ => return Err(WaxError::SelfUpdateError(format!(
-            "Unsupported platform for binary release update: {os}-{arch}"
-        ))),
+        _ => {
+            return Err(WaxError::SelfUpdateError(format!(
+                "Unsupported platform for binary release update: {os}-{arch}"
+            )))
+        }
     };
 
     let asset = release
@@ -296,15 +293,16 @@ async fn update_from_releases(force: bool) -> Result<()> {
         .await
         .map_err(|e| WaxError::SelfUpdateError(format!("Failed to read asset bytes: {e}")))?;
 
-    let current_exe = std::env::current_exe()
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to resolve current exe path: {e}")))?;
-    
+    let current_exe = std::env::current_exe().map_err(|e| {
+        WaxError::SelfUpdateError(format!("Failed to resolve current exe path: {e}"))
+    })?;
+
     let exe_dir = current_exe.parent().ok_or_else(|| {
         WaxError::SelfUpdateError("Current exe has no parent directory".to_string())
     })?;
 
     let temp_exe = exe_dir.join(".wax-update-tmp");
-    
+
     std::fs::write(&temp_exe, &bytes)
         .map_err(|e| WaxError::SelfUpdateError(format!("Failed to write temporary binary: {e}")))?;
 
