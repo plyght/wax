@@ -162,7 +162,7 @@ impl FormulaParser {
 
     fn extract_version_from_url(url: &str) -> String {
         let re = RE_VERSION.get_or_init(|| {
-            Regex::new(r"(?:[-_/]|^)(?P<version>\d+\.\d+(?:\.\d+)*(?:[_-][a-z\d]+)*)").unwrap()
+            Regex::new(r"(?:[-_/]|^)v?(?P<version>\d+\.\d+(?:\.\d+)*(?:[_-][a-z\d]+)*)").unwrap()
         });
 
         if let Some(filename) = url.split('/').next_back() {
@@ -629,6 +629,10 @@ mod tests {
         let url = "https://github.com/example/tree/archive/refs/tags/2.2.1.tar.gz";
         let version = FormulaParser::extract_version_from_url(url);
         assert_eq!(version, "2.2.1");
+
+        let url_v = "https://github.com/example/tree/archive/refs/tags/v0.20.5.tar.gz";
+        let version_v = FormulaParser::extract_version_from_url(url_v);
+        assert_eq!(version_v, "0.20.5");
     }
 
     #[test]
