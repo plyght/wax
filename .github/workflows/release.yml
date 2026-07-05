@@ -23,6 +23,7 @@ jobs:
     outputs:
       should_release: ${{ steps.check.outputs.should_release }}
       version: ${{ steps.check.outputs.version }}
+      prev_tag: ${{ steps.check.outputs.prev_tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,11 +37,17 @@ jobs:
             VERSION="${{ github.ref_name }}"
             VERSION="${VERSION#v}"
             echo "Tag push for v$VERSION"
+            PREV_TAG=$(git tag --list 'v*' --sort=-version:refname | grep -v "^v${VERSION}$" | head -1 || echo "")
+            echo "Previous tag: $PREV_TAG"
+            echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
             echo "should_release=true" >> $GITHUB_OUTPUT
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ github.event.inputs.version }}"
             echo "Workflow dispatch for v$VERSION"
+            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            echo "Previous tag: $PREV_TAG"
+            echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
             echo "should_release=true" >> $GITHUB_OUTPUT
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
@@ -50,6 +57,10 @@ jobs:
             git show HEAD^:Cargo.toml > /tmp/old_cargo.toml 2>/dev/null || echo 'version = "0.0.0"' > /tmp/old_cargo.toml
             PREV_VERSION=$(grep '^version' /tmp/old_cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
             echo "Previous version: $PREV_VERSION"
+
+            PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            echo "Previous tag: $PREV_TAG"
+            echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
 
             if git ls-remote --tags origin | grep -q "refs/tags/v$CURRENT_VERSION"; then
               echo "Tag v$CURRENT_VERSION already exists, skipping release"
@@ -75,60 +86,42 @@ jobs:
 
       - name: Create and push tag
         run: |
-          TAG="v${{ needs.check-version.outputs.version }}"
-          if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
-            echo "Tag $TAG already exists, skipping"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag -a "$TAG" -m "Release $TAG"
-            git push origin "$TAG"
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ needs.check-version.outputs.version }}" -m "Release v${{ needs.check-version.outputs.version }}"
+          git push origin "v${{ needs.check-version.outputs.version }}"
 
   create-release:
     name: Create GitHub release
     runs-on: ubuntu-latest
     needs: [check-version, create-tag]
-    if: always() && needs.check-version.outputs.should_release == 'true'
+    if: needs.check-version.outputs.should_release == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get previous tag
-        id: prev
+      - name: Compute release body
+        id: release_body
         run: |
-          PREV_TAG=$(git tag --list 'v*' --sort=-version:refname | grep -v "v${{ needs.check-version.outputs.version }}$" | head -1 || echo "")
-          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          prev_tag="${{ needs.check-version.outputs.prev_tag }}"
+          version="${{ needs.check-version.outputs.version }}"
+          if [ -n "$prev_tag" ]; then
+            body=$(printf '%s\n\n%s' "## What's Changed" "See the [full changelog](https://github.com/${{ github.repository }}/compare/$prev_tag...v$version) for details.")
+          else
+            body=$(printf '%s\n\n%s' "## Release v$version" "Initial release.")
+          fi
+          echo "body<<BODY" >> $GITHUB_OUTPUT
+          printf '%s' "$body" >> $GITHUB_OUTPUT
+          echo "BODY" >> $GITHUB_OUTPUT
 
       - name: Create release
-        id: release
-        run: |
-          PREV_TAG="${{ steps.prev.outputs.prev_tag }}"
-          VERSION="${{ needs.check-version.outputs.version }}"
-          body="## What's Changed"
-          if [ -n "$PREV_TAG" ]; then
-            body="$body
-
-See the [full changelog](https://github.com/${{ github.repository }}/compare/$PREV_TAG...v$VERSION) for details."
-          else
-            body="$body
-
-Initial release."
-          fi
-          echo "body<<EOF" >> $GITHUB_OUTPUT
-          echo "$body" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           name: v${{ needs.check-version.outputs.version }}
-          body: ${{ steps.release.outputs.body }}
+          body: ${{ steps.release_body.outputs.body }}
           draft: false
           prerelease: false
         env:

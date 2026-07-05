@@ -204,6 +204,22 @@ hdiutil verify /path/to/downloaded.dmg
 brew install --cask <cask>
 ```
 
+#### macOS: `brew reinstall` fails after `wax reinstall` (Keka and similar)
+
+**Symptom:**
+```
+Failure while executing; `/usr/bin/sudo -E -- /bin/cp -c -pR` exited with 1.
+cp: /Applications/Keka.app/Contents/MacOS/keka7zz: Attribute not found
+```
+
+**Cause:** Homebrew’s cask uninstall backs up the app with `cp -c -pR` (clone/copy). Some apps ship binaries with extended attributes or resource forks that macOS `cp` cannot copy on certain OS/APFS setups. This happens in **Homebrew**, not in Wax’s uninstall (Wax removes the `.app` directly and does not run `brew` for casks).
+
+**Solutions:**
+
+1. Prefer one package manager for that cask: `wax reinstall keka` (Wax-native) or `brew reinstall --cask keka`, not both in sequence on the same app.
+2. If Brew is stuck mid-uninstall, remove the app manually, then `brew uninstall --cask keka` (or `--force`) and reinstall.
+3. Search [Homebrew/homebrew-cask issues](https://github.com/Homebrew/homebrew-cask/issues) for the cask name if the failure persists.
+
 #### Linux: Missing System Libraries
 
 **Symptom:**
