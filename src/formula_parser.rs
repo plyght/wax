@@ -73,15 +73,16 @@ impl FormulaParser {
         debug!("Parsing Ruby formula: {}", name);
 
         let head_url = Self::extract_head_url(ruby_content);
+        let platform_source = Self::extract_platform_source(ruby_content);
         let url = Self::extract_field(ruby_content, "url").or_else(|e| {
-            if head_url.is_some() {
+            if head_url.is_some() || platform_source.is_some() {
                 Ok(String::new())
             } else {
                 Err(e)
             }
         })?;
         let sha256 = Self::extract_field(ruby_content, "sha256").or_else(|e| {
-            if head_url.is_some() {
+            if head_url.is_some() || platform_source.is_some() {
                 Ok(String::new())
             } else {
                 Err(e)
@@ -96,17 +97,37 @@ impl FormulaParser {
             .ok()
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| {
-                if url.is_empty() {
+                if !url.is_empty() {
+                    Self::extract_version_from_url(&url)
+                } else if let Some((ref platform_url, _)) = platform_source {
+                    Self::extract_version_from_url(platform_url)
+                } else if head_url.is_some() {
                     "HEAD".to_string()
                 } else {
-                    Self::extract_version_from_url(&url)
+                    "unknown".to_string()
                 }
             });
+
+        let (url, sha256) = if url.is_empty() {
+            if let Some((platform_url, platform_sha)) = platform_source {
+                (platform_url, platform_sha)
+            } else {
+                (url, sha256)
+            }
+        } else {
+            (url, sha256)
+        };
 
         let runtime_dependencies = Self::extract_dependencies(ruby_content, false);
         let build_dependencies = Self::extract_dependencies(ruby_content, true);
 
-        let install_block = Self::extract_install_block(ruby_content)?;
+        let install_block = Self::extract_install_block(ruby_content)
+            .or_else(|_| Self::extract_define_method_install_block(ruby_content))
+            .or_else(|_| {
+                Self::extract_platform_install_block(ruby_content).ok_or_else(|| {
+                    WaxError::ParseError("Install block not found in formula".to_string())
+                })
+            })?;
         let build_system = Self::detect_build_system(&install_block);
         let configure_args = Self::extract_configure_args(&install_block);
         let install_commands = Self::extract_install_commands(&install_block);
@@ -229,6 +250,97 @@ impl FormulaParser {
         Err(WaxError::ParseError(
             "Install block not found in formula".to_string(),
         ))
+    }
+
+    fn extract_define_method_install_block(content: &str) -> Result<String> {
+        let markers = ["define_method(:install) do", "define_method(:install) {"];
+        for marker in markers {
+            if let Some(start_idx) = content.find(marker) {
+                let block = Self::extract_ruby_block_body(&content[start_idx..], marker)?;
+                if !block.is_empty() {
+                    return Ok(block);
+                }
+            }
+        }
+        Err(WaxError::ParseError(
+            "Install block not found in formula".to_string(),
+        ))
+    }
+
+    fn extract_platform_install_block(content: &str) -> Option<String> {
+        let is_arm = std::env::consts::ARCH == "aarch64";
+        let os_block_key = if std::env::consts::OS == "macos" {
+            "on_macos do"
+        } else {
+            "on_linux do"
+        };
+        let arch_preferred = if is_arm { "on_arm do" } else { "on_intel do" };
+        let cpu_preferred = if is_arm {
+            "if Hardware::CPU.arm?"
+        } else {
+            "if Hardware::CPU.intel?"
+        };
+
+        let os_block = Self::extract_named_block(content, os_block_key)?;
+        let search_blocks = [
+            Self::extract_named_block(&os_block, arch_preferred),
+            Self::extract_hardware_cpu_block(&os_block, cpu_preferred),
+            Some(os_block),
+        ];
+        for block in search_blocks.into_iter().flatten() {
+            if let Ok(install) = Self::extract_define_method_install_block(&block) {
+                return Some(install);
+            }
+            if let Ok(install) = Self::extract_install_block(&block) {
+                return Some(install);
+            }
+        }
+        None
+    }
+
+    fn extract_hardware_cpu_block(content: &str, start_keyword: &str) -> Option<String> {
+        Self::extract_named_block(content, start_keyword)
+    }
+
+    fn extract_ruby_block_body(content: &str, open_marker: &str) -> Result<String> {
+        let mut depth = 0usize;
+        let mut block = String::new();
+        let mut started = false;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if !started {
+                if trimmed.contains(open_marker) || trimmed.starts_with(open_marker) {
+                    started = true;
+                    depth = 1;
+                }
+                continue;
+            }
+
+            if trimmed == "end"
+                || trimmed.starts_with("end ")
+                || trimmed.starts_with("end\t")
+                || trimmed.starts_with("end#")
+            {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            } else if Self::opens_ruby_block(trimmed) {
+                depth += 1;
+            }
+
+            block.push_str(line);
+            block.push('\n');
+        }
+
+        if started && !block.is_empty() {
+            Ok(block)
+        } else {
+            Err(WaxError::ParseError(
+                "Install block not found in formula".to_string(),
+            ))
+        }
     }
 
     fn opens_ruby_block(trimmed: &str) -> bool {
@@ -410,10 +522,26 @@ impl FormulaParser {
             Some((art.url, art.sha256?))
         };
 
-        // 1. OS block → preferred arch → whole OS block → fallback arch
+        let cpu_preferred = if is_arm {
+            "if Hardware::CPU.arm?"
+        } else {
+            "if Hardware::CPU.intel?"
+        };
+        let cpu_fallback = if is_arm {
+            "if Hardware::CPU.intel?"
+        } else {
+            "if Hardware::CPU.arm?"
+        };
+
+        // 1. OS block → preferred arch → Hardware::CPU → whole OS block → fallback arch
         if let Some(os_block) = Self::extract_named_block(content, os_block_key) {
             if let Some(arch_block) = Self::extract_named_block(&os_block, arch_preferred) {
                 if let Some(pair) = try_extract(&arch_block) {
+                    return Some(pair);
+                }
+            }
+            if let Some(cpu_block) = Self::extract_hardware_cpu_block(&os_block, cpu_preferred) {
+                if let Some(pair) = try_extract(&cpu_block) {
                     return Some(pair);
                 }
             }
@@ -423,6 +551,11 @@ impl FormulaParser {
             }
             if let Some(arch_block) = Self::extract_named_block(&os_block, arch_fallback) {
                 if let Some(pair) = try_extract(&arch_block) {
+                    return Some(pair);
+                }
+            }
+            if let Some(cpu_block) = Self::extract_hardware_cpu_block(&os_block, cpu_fallback) {
+                if let Some(pair) = try_extract(&cpu_block) {
                     return Some(pair);
                 }
             }
@@ -921,6 +1054,35 @@ end
 "#;
         if std::env::consts::OS == "linux" {
             assert!(FormulaParser::extract_platform_source(formula).is_none());
+        }
+    }
+
+    #[test]
+    fn parse_goreleaser_define_method_install_formula() {
+        let formula = r#"
+class Ketch < Formula
+  desc "Fast web search and scrape CLI for agents"
+  homepage "https://github.com/1broseidon/ketch"
+  version "0.11.0"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/1broseidon/ketch/releases/download/v0.11.0/ketch_0.11.0_darwin_arm64.tar.gz"
+      sha256 "8cc6039ac4911e3cee326a0fc9d3db43fb8529f7dc8e3e942674f8e7a09f56ed"
+      define_method(:install) do
+        bin.install "ketch"
+      end
+    end
+  end
+end
+"#;
+        let parsed = FormulaParser::parse_ruby_formula("ketch", formula).unwrap();
+        assert_eq!(parsed.bin_installs, vec!["ketch"]);
+        assert_eq!(parsed.source.version, "0.11.0");
+        if std::env::consts::OS == "macos" && std::env::consts::ARCH == "aarch64" {
+            assert!(parsed.source.url.contains("darwin_arm64"));
+            assert!(!parsed.source.sha256.is_empty());
         }
     }
 
