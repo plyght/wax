@@ -66,11 +66,7 @@ fn ditto_app_bundle(src: &Path, dst: &Path, use_sudo: bool) -> Result<bool> {
         c.args(["--noextattr", "--noqtn"]);
         c
     };
-    let status = cmd
-        .arg(src)
-        .arg(dst)
-        .status()
-        .map_err(WaxError::IoError)?;
+    let status = cmd.arg(src).arg(dst).status().map_err(WaxError::IoError)?;
     Ok(status.success())
 }
 
