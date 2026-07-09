@@ -36,6 +36,7 @@ pub const SPINNER_TICK_CHARS: &str = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
 /// Copy a `.app` bundle on macOS. Plain `fs::copy` / `cp` breaks code signatures
 /// (Gatekeeper shows "damaged"); `ditto --noqtn` matches Homebrew cask behavior.
+#[cfg(target_os = "macos")]
 pub fn copy_app_bundle(src: &Path, dst: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
