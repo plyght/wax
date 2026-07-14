@@ -522,10 +522,7 @@ impl Cache {
             let tap_cache_path = self.tap_casks_cache_path(&tap.full_name);
 
             let tap_casks = if tap_cache_path.exists() {
-                debug!(
-                    "Loading tap casks from cache: {}",
-                    tap_cache_path.display()
-                );
+                debug!("Loading tap casks from cache: {}", tap_cache_path.display());
                 let json = fs::read_to_string(&tap_cache_path).await?;
                 let mut casks: Vec<Cask> = serde_json::from_str(&json)?;
                 let cask_dir = tap.cask_dir();

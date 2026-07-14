@@ -674,9 +674,7 @@ impl FormulaParser {
     }
 
     fn extract_cask_string_field(content: &str, field: &str) -> Option<String> {
-        let pattern = format!(
-            r#"(?m)^\s*{field}\s+(?:"([^"]+)"|'([^']+)')"#
-        );
+        let pattern = format!(r#"(?m)^\s*{field}\s+(?:"([^"]+)"|'([^']+)')"#);
         let re = Regex::new(&pattern).ok()?;
         re.captures(content).and_then(|c| {
             c.get(1)
@@ -722,10 +720,9 @@ impl FormulaParser {
                 });
             }
         }
-        let re_binary = Regex::new(
-            r#"(?m)^\s*binary\s+"([^"]+)"(?:\s*,\s*\{\s*target:\s*"([^"]+)"\s*\})?"#,
-        )
-        .ok();
+        let re_binary =
+            Regex::new(r#"(?m)^\s*binary\s+"([^"]+)"(?:\s*,\s*\{\s*target:\s*"([^"]+)"\s*\})?"#)
+                .ok();
         if let Some(re) = re_binary {
             for cap in re.captures_iter(content) {
                 let source = cap[1].to_string();
@@ -748,8 +745,8 @@ impl FormulaParser {
     pub fn parse_ruby_cask(token: &str, tap_full_name: &str, ruby_content: &str) -> Result<Cask> {
         let version = Self::extract_cask_version(ruby_content);
         let desc = Self::extract_cask_string_field(ruby_content, "desc");
-        let homepage = Self::extract_cask_string_field(ruby_content, "homepage")
-            .unwrap_or_default();
+        let homepage =
+            Self::extract_cask_string_field(ruby_content, "homepage").unwrap_or_default();
         let display_name = Self::extract_cask_string_field(ruby_content, "name")
             .map(|n| vec![n])
             .unwrap_or_else(|| vec![token.to_string()]);
@@ -775,8 +772,8 @@ impl FormulaParser {
             .ok_or_else(|| WaxError::ParseError(format!("url not found in cask {}", token)))?;
         let version = Self::extract_cask_version(ruby_content);
         let desc = Self::extract_cask_string_field(ruby_content, "desc");
-        let homepage = Self::extract_cask_string_field(ruby_content, "homepage")
-            .unwrap_or_default();
+        let homepage =
+            Self::extract_cask_string_field(ruby_content, "homepage").unwrap_or_default();
         let display_name = Self::extract_cask_string_field(ruby_content, "name")
             .map(|n| vec![n])
             .unwrap_or_else(|| vec![token.to_string()]);
@@ -1031,10 +1028,12 @@ end
         let details = FormulaParser::parse_ruby_cask_details("aerospace", rb).unwrap();
         assert!(details.url.contains("github.com"));
         assert_eq!(details.sha256, "abc");
-        assert!(details.artifacts.as_ref().unwrap().iter().any(|a| matches!(
-            a,
-            crate::api::CaskArtifact::App { .. }
-        )));
+        assert!(details
+            .artifacts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|a| matches!(a, crate::api::CaskArtifact::App { .. })));
     }
 
     #[test]
