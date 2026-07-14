@@ -1,3 +1,4 @@
+use crate::api::{Cask, CaskArtifact, CaskDetails};
 use crate::error::{Result, WaxError};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -672,6 +673,131 @@ impl FormulaParser {
         Some(CaskLinuxArtifact { url, sha256 })
     }
 
+    fn extract_cask_string_field(content: &str, field: &str) -> Option<String> {
+        let pattern = format!(
+            r#"(?m)^\s*{field}\s+(?:"([^"]+)"|'([^']+)')"#
+        );
+        let re = Regex::new(&pattern).ok()?;
+        re.captures(content).and_then(|c| {
+            c.get(1)
+                .or_else(|| c.get(2))
+                .map(|m| m.as_str().to_string())
+        })
+    }
+
+    fn extract_cask_version(content: &str) -> String {
+        if let Some(v) = Self::extract_cask_string_field(content, "version") {
+            return v;
+        }
+        if let Ok(url) = Self::extract_field(content, "url") {
+            return Self::extract_version_from_url(&url);
+        }
+        "unknown".to_string()
+    }
+
+    fn extract_cask_sha256(content: &str) -> String {
+        let re = RE_CASK_SHA
+            .get_or_init(|| Regex::new(r#"(?m)^\s*sha256\s+(?:"([^"]+)"|:no_check)"#).unwrap());
+        re.captures(content)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_else(|| String::new())
+    }
+
+    fn extract_cask_artifacts(content: &str) -> Vec<CaskArtifact> {
+        let mut artifacts = Vec::new();
+        let re_app = Regex::new(r#"(?m)^\s*app\s+"([^"]+)""#).ok();
+        if let Some(re) = re_app {
+            for cap in re.captures_iter(content) {
+                artifacts.push(CaskArtifact::App {
+                    app: vec![serde_json::Value::String(cap[1].to_string())],
+                });
+            }
+        }
+        let re_pkg = Regex::new(r#"(?m)^\s*pkg\s+"([^"]+)""#).ok();
+        if let Some(re) = re_pkg {
+            for cap in re.captures_iter(content) {
+                artifacts.push(CaskArtifact::Pkg {
+                    pkg: vec![serde_json::Value::String(cap[1].to_string())],
+                });
+            }
+        }
+        let re_binary = Regex::new(
+            r#"(?m)^\s*binary\s+"([^"]+)"(?:\s*,\s*\{\s*target:\s*"([^"]+)"\s*\})?"#,
+        )
+        .ok();
+        if let Some(re) = re_binary {
+            for cap in re.captures_iter(content) {
+                let source = cap[1].to_string();
+                let mut binary = vec![serde_json::Value::String(source)];
+                if let Some(target) = cap.get(2) {
+                    let mut obj = serde_json::Map::new();
+                    obj.insert(
+                        "target".to_string(),
+                        serde_json::Value::String(target.as_str().to_string()),
+                    );
+                    binary.push(serde_json::Value::Object(obj));
+                }
+                artifacts.push(CaskArtifact::Binary { binary });
+            }
+        }
+        artifacts
+    }
+
+    /// Parse a Homebrew cask `.rb` into summary metadata for catalog lookup.
+    pub fn parse_ruby_cask(token: &str, tap_full_name: &str, ruby_content: &str) -> Result<Cask> {
+        let version = Self::extract_cask_version(ruby_content);
+        let desc = Self::extract_cask_string_field(ruby_content, "desc");
+        let homepage = Self::extract_cask_string_field(ruby_content, "homepage")
+            .unwrap_or_default();
+        let display_name = Self::extract_cask_string_field(ruby_content, "name")
+            .map(|n| vec![n])
+            .unwrap_or_else(|| vec![token.to_string()]);
+        Ok(Cask {
+            token: token.to_string(),
+            full_token: format!("{}/{}", tap_full_name, token),
+            name: display_name,
+            desc,
+            homepage,
+            version,
+            deprecated: false,
+            disabled: false,
+            rb_path: None,
+        })
+    }
+
+    /// Parse a Homebrew cask `.rb` into installable details (tap-local, no API).
+    pub fn parse_ruby_cask_details(token: &str, ruby_content: &str) -> Result<CaskDetails> {
+        let re_url = RE_CASK_URL.get_or_init(|| Regex::new(r#"(?m)^\s*url\s+"([^"]+)""#).unwrap());
+        let url = re_url
+            .captures(ruby_content)
+            .map(|c| c[1].to_string())
+            .ok_or_else(|| WaxError::ParseError(format!("url not found in cask {}", token)))?;
+        let version = Self::extract_cask_version(ruby_content);
+        let desc = Self::extract_cask_string_field(ruby_content, "desc");
+        let homepage = Self::extract_cask_string_field(ruby_content, "homepage")
+            .unwrap_or_default();
+        let display_name = Self::extract_cask_string_field(ruby_content, "name")
+            .map(|n| vec![n])
+            .unwrap_or_else(|| vec![token.to_string()]);
+        let sha256 = Self::extract_cask_sha256(ruby_content);
+        let artifacts = Self::extract_cask_artifacts(ruby_content);
+        Ok(CaskDetails {
+            token: token.to_string(),
+            name: display_name,
+            desc,
+            homepage,
+            version,
+            url,
+            sha256,
+            artifacts: if artifacts.is_empty() {
+                None
+            } else {
+                Some(artifacts)
+            },
+        })
+    }
+
     pub async fn fetch_formula_rb(formula_name: &str) -> Result<String> {
         let first_letter = formula_name
             .chars()
@@ -883,6 +1009,32 @@ system "cmake", "-S", ".", "-B", "build", "-DBUILD_FLASHFETCH=OFF", "-DENABLE_SY
             "--install must not be a configure arg"
         );
         assert!(args.contains(&"-DFOO=ON".to_string()));
+    }
+
+    #[test]
+    fn test_parse_ruby_cask_tap_aerospace_shape() {
+        let rb = r#"
+cask "aerospace" do
+  version '0.21.2-Beta'
+  sha256 "abc"
+  url "https://github.com/nikitabobko/AeroSpace/releases/download/v#{version}/AeroSpace-v#{version}.zip"
+  name "AeroSpace"
+  desc "tiling wm"
+  homepage "https://github.com/nikitabobko/AeroSpace"
+  app "AeroSpace-v#{version}/AeroSpace.app"
+  binary "AeroSpace-v#{version}/bin/aerospace"
+end
+"#;
+        let summary = FormulaParser::parse_ruby_cask("aerospace", "nikitabobko/tap", rb).unwrap();
+        assert_eq!(summary.full_token, "nikitabobko/tap/aerospace");
+        assert_eq!(summary.version, "0.21.2-Beta");
+        let details = FormulaParser::parse_ruby_cask_details("aerospace", rb).unwrap();
+        assert!(details.url.contains("github.com"));
+        assert_eq!(details.sha256, "abc");
+        assert!(details.artifacts.as_ref().unwrap().iter().any(|a| matches!(
+            a,
+            crate::api::CaskArtifact::App { .. }
+        )));
     }
 
     #[test]

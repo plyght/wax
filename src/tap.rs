@@ -1,4 +1,4 @@
-use crate::api::Formula;
+use crate::api::{Cask, Formula};
 use crate::error::{Result, WaxError};
 use crate::formula_parser::FormulaParser;
 use crate::ui::dirs;
@@ -155,6 +155,20 @@ impl Tap {
                 let formula_subdir = self.path.join("Formula");
                 if formula_subdir.exists() {
                     formula_subdir
+                } else {
+                    self.path.clone()
+                }
+            }
+        }
+    }
+
+    pub fn cask_dir(&self) -> PathBuf {
+        match &self.kind {
+            TapKind::LocalFile { .. } => self.path.parent().unwrap_or(&self.path).to_path_buf(),
+            _ => {
+                let cask_subdir = self.path.join("Casks");
+                if cask_subdir.exists() {
+                    cask_subdir
                 } else {
                     self.path.clone()
                 }
@@ -632,6 +646,44 @@ impl TapManager {
                 name, e
             ))),
         }
+    }
+
+    #[instrument(skip(self))]
+    pub async fn load_casks_from_tap(&self, tap: &Tap) -> Result<Vec<Cask>> {
+        debug!("Loading casks from tap: {}", tap.full_name);
+
+        let cask_dir = tap.cask_dir();
+        if !cask_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut casks = Vec::new();
+        let mut entries = fs::read_dir(&cask_dir).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("rb") {
+                continue;
+            }
+            let token = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if token.is_empty() {
+                continue;
+            }
+            let content = fs::read_to_string(&path).await?;
+            match FormulaParser::parse_ruby_cask(&token, &tap.full_name, &content) {
+                Ok(mut cask) => {
+                    cask.rb_path = Some(path);
+                    casks.push(cask);
+                }
+                Err(e) => debug!("{}", e),
+            }
+        }
+
+        Ok(casks)
     }
 }
 

@@ -33,7 +33,7 @@ pub async fn info(cache: &Cache, name: &str, cask: bool) -> Result<()> {
         .any(|f| f.name == name || f.full_name == name);
 
     if !formula_exists {
-        let casks = cache.load_casks().await?;
+        let casks = cache.load_all_casks().await?;
         let cask_exists = casks
             .iter()
             .any(|c| c.token == name || c.full_token == name);
@@ -172,7 +172,7 @@ async fn info_formula(formula: &Formula, name: &str, formulae: &[Formula]) -> Re
 async fn info_cask(cache: &Cache, name: &str) -> Result<()> {
     cache.ensure_fresh().await?;
 
-    let casks = cache.load_casks().await?;
+    let casks = cache.load_all_casks().await?;
 
     let cask_summary = casks
         .iter()

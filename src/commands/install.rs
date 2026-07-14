@@ -827,7 +827,7 @@ pub(crate) async fn install_impl(
         let formula = match formula {
             Some(f) => f,
             None => {
-                let casks = cache.load_casks().await?;
+                let casks = cache.load_all_casks().await?;
                 let cask_exists = casks
                     .iter()
                     .any(|c| &c.token == package_name || &c.full_token == package_name);
@@ -862,8 +862,8 @@ pub(crate) async fn install_impl(
                         let tap_exists = tap_manager.has_tap(&tap_name).await;
                         if tap_exists {
                             format!(
-                                "Formula '{}' not found in tap '{}'. The formula might not exist in this tap. Try: wax install {}",
-                                formula_name, tap_name, formula_name
+                                "Package '{}' not found in tap '{}'. Try: wax install {} (after `wax tap trust {}` if untrusted)",
+                                formula_name, tap_name, formula_name, tap_name
                             )
                         } else {
                             format!(
@@ -1749,7 +1749,7 @@ async fn install_casks(
     let multi: Arc<MultiProgress> =
         Arc::new(crate::signal::clone_active_multi().unwrap_or_default());
 
-    let casks = cache.load_casks().await?;
+    let casks = cache.load_all_casks().await?;
     let _state = CaskState::new()?;
     let mut installed_casks = _state.load().await?;
 

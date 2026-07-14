@@ -89,6 +89,9 @@ pub struct Cask {
     pub deprecated: bool,
     #[serde(default)]
     pub disabled: bool,
+    /// Path to the local .rb file (set for tap casks; not serialized).
+    #[serde(skip, default)]
+    pub rb_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -83,7 +83,7 @@ async fn search_unix(cache: &Cache, query: &str) -> Result<()> {
     cache.ensure_fresh().await?;
 
     let formulae = cache.load_all_formulae().await?;
-    let casks = cache.load_casks().await?;
+    let casks = cache.load_all_casks().await?;
 
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;

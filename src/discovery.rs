@@ -719,6 +719,7 @@ mod tests {
             version: "1.0".to_string(),
             deprecated: false,
             disabled: false,
+            rb_path: None,
         };
         let casks = vec![cask];
         let index = build_cask_candidate_index(&casks);
@@ -745,6 +746,7 @@ mod tests {
             version: version.to_string(),
             deprecated: false,
             disabled: false,
+            rb_path: None,
         }
     }
 

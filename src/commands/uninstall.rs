@@ -344,7 +344,7 @@ async fn uninstall_cask(
 
     // If cask not found, try discovering manually installed apps
     if !installed_casks.contains_key(cask_name) {
-        let casks = cache.load_casks().await?;
+        let casks = cache.load_all_casks().await?;
         if let Ok(discovered) = discover_manually_installed_casks(&casks).await {
             for (name, cask) in discovered {
                 installed_casks.entry(name).or_insert(cask);

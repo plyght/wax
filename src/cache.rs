@@ -17,8 +17,21 @@ struct FormulaeIndexCache {
 
 static FORMULAE_INDEX_CACHE: Mutex<Option<FormulaeIndexCache>> = Mutex::new(None);
 
+struct CasksIndexCache {
+    signature: u64,
+    casks: Arc<Vec<Cask>>,
+}
+
+static CASKS_INDEX_CACHE: Mutex<Option<CasksIndexCache>> = Mutex::new(None);
+
 fn clear_formulae_index_cache() {
     if let Ok(mut guard) = FORMULAE_INDEX_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+fn clear_casks_index_cache() {
+    if let Ok(mut guard) = CASKS_INDEX_CACHE.lock() {
         *guard = None;
     }
 }
@@ -33,6 +46,25 @@ async fn formulae_index_signature(cache: &Cache, tap_names: &[String]) -> Result
     for tap_name in tap_names {
         tap_name.hash(&mut hasher);
         let path = cache.tap_cache_path(tap_name);
+        if let Ok(meta) = fs::metadata(&path).await {
+            if let Ok(mtime) = meta.modified() {
+                mtime.hash(&mut hasher);
+            }
+        }
+    }
+    Ok(hasher.finish())
+}
+
+async fn casks_index_signature(cache: &Cache, tap_names: &[String]) -> Result<u64> {
+    let mut hasher = DefaultHasher::new();
+    if let Ok(meta) = fs::metadata(cache.casks_path()).await {
+        if let Ok(mtime) = meta.modified() {
+            mtime.hash(&mut hasher);
+        }
+    }
+    for tap_name in tap_names {
+        tap_name.hash(&mut hasher);
+        let path = cache.tap_casks_cache_path(tap_name);
         if let Ok(meta) = fs::metadata(&path).await {
             if let Ok(mtime) = meta.modified() {
                 mtime.hash(&mut hasher);
@@ -93,6 +125,11 @@ impl Cache {
     fn tap_cache_path(&self, tap_name: &str) -> PathBuf {
         self.taps_cache_dir()
             .join(format!("{}.json", tap_name.replace('/', "-")))
+    }
+
+    fn tap_casks_cache_path(&self, tap_name: &str) -> PathBuf {
+        self.taps_cache_dir()
+            .join(format!("{}-casks.json", tap_name.replace('/', "-")))
     }
 
     const STALE_THRESHOLD_SECS: i64 = 3600;
@@ -288,7 +325,13 @@ impl Cache {
             fs::remove_file(&path).await?;
             debug!("Invalidated tap cache for {}", tap_name);
         }
+        let casks_path = self.tap_casks_cache_path(tap_name);
+        if casks_path.exists() {
+            fs::remove_file(&casks_path).await?;
+            debug!("Invalidated tap casks cache for {}", tap_name);
+        }
         clear_formulae_index_cache();
+        clear_casks_index_cache();
         Ok(())
     }
 
@@ -299,6 +342,7 @@ impl Cache {
             debug!("Invalidated all tap caches");
         }
         clear_formulae_index_cache();
+        clear_casks_index_cache();
         Ok(())
     }
 
@@ -408,16 +452,112 @@ impl Cache {
         })
     }
 
+    fn cask_api_token(cask_name: &str) -> &str {
+        let parts: Vec<&str> = cask_name.split('/').collect();
+        if parts.len() >= 3 {
+            parts[parts.len() - 1]
+        } else {
+            cask_name
+        }
+    }
+
+    async fn fetch_cask_details_from_rb_path(rb_path: &Path) -> Result<CaskDetails> {
+        let token = rb_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| {
+                crate::error::WaxError::ParseError("Invalid cask file path".to_string())
+            })?;
+        let content = fs::read_to_string(rb_path).await?;
+        crate::formula_parser::FormulaParser::parse_ruby_cask_details(token, &content)
+    }
+
     #[instrument(skip(self))]
     pub async fn fetch_cask_details(&self, cask_name: &str) -> Result<CaskDetails> {
         crate::error::validate_package_name(cask_name)?;
-        info!("Fetching details for cask: {}", cask_name);
+
+        let casks = self.load_all_casks().await?;
+        if let Some(summary) = casks
+            .iter()
+            .find(|c| c.token == cask_name || c.full_token == cask_name)
+        {
+            if let Some(ref rb_path) = summary.rb_path {
+                info!("Loading cask details from tap: {}", rb_path.display());
+                return Self::fetch_cask_details_from_rb_path(rb_path).await;
+            }
+        }
+
+        let api_token = Self::cask_api_token(cask_name);
+        info!("Fetching details for cask: {}", api_token);
         let client = crate::http_client::api();
-        let url = format!("https://formulae.brew.sh/api/cask/{}.json", cask_name);
+        let url = format!("https://formulae.brew.sh/api/cask/{}.json", api_token);
         let response = client.get(&url).send().await?;
         let cask: CaskDetails = response.json().await?;
-        info!("Fetched details for cask: {}", cask_name);
+        info!("Fetched details for cask: {}", api_token);
         Ok(cask)
+    }
+
+    pub async fn load_all_casks(&self) -> Result<Vec<Cask>> {
+        let mut tap_manager = TapManager::new()?;
+        tap_manager.load().await?;
+
+        let tap_names: Vec<String> = tap_manager
+            .trusted_taps()
+            .into_iter()
+            .map(|tap| tap.full_name.clone())
+            .collect();
+        let signature = casks_index_signature(self, &tap_names).await?;
+        if let Ok(guard) = CASKS_INDEX_CACHE.lock() {
+            if let Some(cached) = guard.as_ref() {
+                if cached.signature == signature {
+                    debug!("Using in-process casks index cache");
+                    return Ok((*cached.casks).clone());
+                }
+            }
+        }
+
+        let mut all = self.load_casks().await?;
+
+        for tap in tap_manager.trusted_taps() {
+            let tap_cache_path = self.tap_casks_cache_path(&tap.full_name);
+
+            let tap_casks = if tap_cache_path.exists() {
+                debug!(
+                    "Loading tap casks from cache: {}",
+                    tap_cache_path.display()
+                );
+                let json = fs::read_to_string(&tap_cache_path).await?;
+                let mut casks: Vec<Cask> = serde_json::from_str(&json)?;
+                let cask_dir = tap.cask_dir();
+                for c in &mut casks {
+                    let rb_file = cask_dir.join(format!("{}.rb", c.token));
+                    if rb_file.exists() {
+                        c.rb_path = Some(rb_file);
+                    }
+                }
+                casks
+            } else {
+                debug!("Loading tap casks from filesystem: {}", tap.full_name);
+                let casks = tap_manager.load_casks_from_tap(tap).await?;
+
+                fs::create_dir_all(self.taps_cache_dir()).await?;
+                let json = serde_json::to_string_pretty(&casks)?;
+                fs::write(&tap_cache_path, json).await?;
+
+                casks
+            };
+
+            all.extend(tap_casks);
+        }
+
+        if let Ok(mut guard) = CASKS_INDEX_CACHE.lock() {
+            *guard = Some(CasksIndexCache {
+                signature,
+                casks: Arc::new(all.clone()),
+            });
+        }
+
+        Ok(all)
     }
 
     pub async fn load_all_formulae(&self) -> Result<Vec<Formula>> {

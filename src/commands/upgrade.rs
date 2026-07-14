@@ -237,7 +237,7 @@ async fn sync_cask_state(cache: &Cache) -> Result<HashMap<String, InstalledCask>
 
     let mut installed_casks = cask_state.load().await?;
     if cfg!(target_os = "macos") {
-        let casks = cache.load_casks().await?;
+        let casks = cache.load_all_casks().await?;
         let discovered_casks = discover_manually_installed_casks(&casks).await?;
         merge_discovered_casks(
             &mut installed_casks,
@@ -1121,13 +1121,18 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
         .get(cask_name)
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
-    let casks = cache.load_casks().await?;
+    let casks = cache.load_all_casks().await?;
     let cask_summary = casks
         .iter()
         .find(|c| c.token == cask_name || c.full_token == cask_name)
         .ok_or_else(|| WaxError::CaskNotFound(cask_name.to_string()))?;
 
-    let cask_details = cache.fetch_cask_details(&cask_summary.token).await?;
+    let lookup = if cask_summary.full_token.contains('/') {
+        cask_summary.full_token.as_str()
+    } else {
+        cask_summary.token.as_str()
+    };
+    let cask_details = cache.fetch_cask_details(lookup).await?;
 
     let latest_version = &cask_details.version;
     let installed_version = &installed.version;
@@ -1310,7 +1315,7 @@ pub async fn get_outdated_packages_scoped(
     let installed_casks = sync_cask_state(cache).await?;
 
     let formulae = cache.load_all_formulae().await?;
-    let casks = cache.load_casks().await?;
+    let casks = cache.load_all_casks().await?;
     let formula_index: HashMap<_, _> = formulae.iter().map(|f| (f.name.as_str(), f)).collect();
     let cask_index: HashMap<_, _> = casks
         .iter()
