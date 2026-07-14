@@ -2732,6 +2732,10 @@ async fn install_from_downloaded(
                 } => {
                     step!("skipping preflight script (not supported yet)");
                     debug!("Preflight script: {}", script);
+                    eprintln!(
+                        "warning: cask {} has preflight scripts that were not executed. Run `brew postinstall {}` if needed.",
+                        cask.token, cask.token
+                    );
                 }
                 CaskArtifact::Preflight { preflight: None } => {}
                 CaskArtifact::Postflight {
@@ -2739,6 +2743,10 @@ async fn install_from_downloaded(
                 } => {
                     step!("skipping postflight script (not supported yet)");
                     debug!("Postflight script: {}", script);
+                    eprintln!(
+                        "warning: cask {} has postflight scripts that were not executed. Run `brew postinstall {}` if needed.",
+                        cask.token, cask.token
+                    );
                 }
                 CaskArtifact::Postflight { postflight: None } => {}
                 _ => {}
