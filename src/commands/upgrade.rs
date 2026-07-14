@@ -1370,10 +1370,6 @@ pub async fn get_outdated_packages_scoped(
         }
     }
 
-    if scope == Some(InstallMode::User) {
-        outdated.sort_by(|a, b| a.name.cmp(&b.name));
-        return Ok(outdated);
-    }
     for (name, installed) in &installed_casks {
         if let Some(cask) = cask_index.get(name.as_str()) {
             if let Ok(details) = cache.fetch_cask_details(&cask.token).await {

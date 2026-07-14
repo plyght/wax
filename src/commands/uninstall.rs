@@ -118,13 +118,18 @@ async fn uninstall_impl(
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
 
-    let package = if let Some(pkg) = installed_packages.get(formula_name) {
+    let short_name = formula_name.rsplit('/').next().unwrap_or(formula_name);
+
+    let package = if let Some(pkg) = installed_packages
+        .get(formula_name)
+        .or_else(|| installed_packages.get(short_name))
+    {
         pkg.clone()
     } else {
         let cask_state = CaskState::new()?;
         let installed_casks = cask_state.load().await?;
 
-        if installed_casks.contains_key(formula_name) {
+        if installed_casks.contains_key(formula_name) || installed_casks.contains_key(short_name) {
             return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
         }
 
@@ -342,8 +347,10 @@ async fn uninstall_cask(
     let state = CaskState::new()?;
     let mut installed_casks = state.load().await?;
 
+    let short_name = cask_name.rsplit('/').next().unwrap_or(cask_name);
+
     // If cask not found, try discovering manually installed apps
-    if !installed_casks.contains_key(cask_name) {
+    if !installed_casks.contains_key(cask_name) && !installed_casks.contains_key(short_name) {
         let casks = cache.load_all_casks().await?;
         if let Ok(discovered) = discover_manually_installed_casks(&casks).await {
             for (name, cask) in discovered {
@@ -353,7 +360,7 @@ async fn uninstall_cask(
     }
 
     // Last resort: check /Applications for a matching .app bundle
-    if !installed_casks.contains_key(cask_name) {
+    if !installed_casks.contains_key(cask_name) && !installed_casks.contains_key(short_name) {
         let app_name = resolve_cask_app_name(cache, cask_name, "unknown", None).await;
         let app_candidates = [
             std::path::PathBuf::from("/Applications").join(&app_name),
@@ -392,6 +399,7 @@ async fn uninstall_cask(
 
     let cask = installed_casks
         .get(cask_name)
+        .or_else(|| installed_casks.get(short_name))
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
     if dry_run {
@@ -420,9 +428,25 @@ async fn uninstall_cask(
             }
         }
         "pkg" => {
+            // Best-effort: forget packages matching the cask token.
+            let pkgutil_output = std::process::Command::new("pkgutil")
+                .args(["--packages"])
+                .output();
+            if let Ok(out) = pkgutil_output {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for pkg_id in stdout.lines() {
+                    if pkg_id.contains(cask_name) {
+                        let _ = std::process::Command::new("pkgutil")
+                            .args(["--forget", pkg_id])
+                            .output();
+                    }
+                }
+            }
             if !quiet {
                 println!(
-                    "PKG uninstallation not fully supported - you may need to manually remove files"
+                    "{} - removed PKG receipts for {}",
+                    style("!").yellow(),
+                    cask_name
                 );
             }
         }

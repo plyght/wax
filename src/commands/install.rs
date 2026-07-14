@@ -264,7 +264,25 @@ async fn install_from_source_task(
         spinner.set_message("Building from source...");
         builder.extract_source(&source_tarball, &build_dir).await?;
         let source_dir = builder.find_source_directory(&build_dir)?;
-        builder.build_make_no_install(&source_dir).await?;
+        match parsed_formula.build_system {
+            crate::formula_parser::BuildSystem::Make => {
+                builder.build_make_no_install(&source_dir).await?;
+            }
+            crate::formula_parser::BuildSystem::Unknown => { /* no build needed */ }
+            _ => {
+                // Autotools/CMake/Meson/Cargo have real install targets.
+                // Run full build+install, then also copy bin.install targets.
+                builder
+                    .build_from_source(
+                        &parsed_formula,
+                        &source_tarball,
+                        &build_dir,
+                        &install_prefix,
+                        Some(&spinner),
+                    )
+                    .await?;
+            }
+        }
         let bin_dir = install_prefix.join("bin");
         tokio::fs::create_dir_all(&bin_dir).await?;
         for target in &parsed_formula.bin_install_targets {
@@ -1550,7 +1568,11 @@ where
     let mut checked = Vec::new();
 
     for package in packages {
-        let Some(installed_package) = installed_packages.get(package) else {
+        let short = package.rsplit('/').next().unwrap_or(package);
+        let Some(installed_package) = installed_packages
+            .get(package)
+            .or_else(|| installed_packages.get(short))
+        else {
             continue;
         };
 

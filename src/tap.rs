@@ -164,8 +164,10 @@ impl Tap {
 
     pub fn cask_dir(&self) -> PathBuf {
         match &self.kind {
-            TapKind::LocalFile { .. } => self.path.parent().unwrap_or(&self.path).to_path_buf(),
-            _ => self.path.join("Casks"),
+            TapKind::LocalFile { path } => path.parent().unwrap_or(path).to_path_buf(),
+            TapKind::LocalDir { .. } | TapKind::GitHub { .. } | TapKind::Git { .. } => {
+                self.path.join("Casks")
+            }
         }
     }
 
@@ -653,6 +655,10 @@ impl TapManager {
     #[instrument(skip(self))]
     pub async fn load_casks_from_tap(&self, tap: &Tap) -> Result<Vec<Cask>> {
         debug!("Loading casks from tap: {}", tap.full_name);
+
+        if matches!(tap.kind, TapKind::LocalFile { .. }) {
+            return Ok(Vec::new());
+        }
 
         let cask_dir = tap.cask_dir();
         if !cask_dir.exists() {
