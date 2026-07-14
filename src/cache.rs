@@ -523,16 +523,39 @@ impl Cache {
 
             let tap_casks = if tap_cache_path.exists() {
                 debug!("Loading tap casks from cache: {}", tap_cache_path.display());
-                let json = fs::read_to_string(&tap_cache_path).await?;
-                let mut casks: Vec<Cask> = serde_json::from_str(&json)?;
+                // Check if any .rb file is newer than the cache.
+                let cache_mtime = std::fs::metadata(&tap_cache_path)?.modified()?;
+                let mut stale = false;
                 let cask_dir = tap.cask_dir();
-                for c in &mut casks {
-                    let rb_file = cask_dir.join(format!("{}.rb", c.token));
-                    if rb_file.exists() {
-                        c.rb_path = Some(rb_file);
+                if cask_dir.exists() {
+                    for entry in std::fs::read_dir(&cask_dir)?.flatten() {
+                        if entry.path().extension().and_then(|s| s.to_str()) == Some("rb") {
+                            if let Ok(m) = entry.metadata() {
+                                if m.modified().unwrap_or(cache_mtime) > cache_mtime {
+                                    stale = true;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
-                casks
+                if stale {
+                    debug!("Tap casks cache is stale, re-parsing: {}", tap.full_name);
+                    let casks = tap_manager.load_casks_from_tap(tap).await?;
+                    let json = serde_json::to_string_pretty(&casks)?;
+                    fs::write(&tap_cache_path, json).await?;
+                    casks
+                } else {
+                    let json = fs::read_to_string(&tap_cache_path).await?;
+                    let mut casks: Vec<Cask> = serde_json::from_str(&json)?;
+                    for c in &mut casks {
+                        let rb_file = cask_dir.join(format!("{}.rb", c.token));
+                        if rb_file.exists() {
+                            c.rb_path = Some(rb_file);
+                        }
+                    }
+                    casks
+                }
             } else {
                 debug!("Loading tap casks from filesystem: {}", tap.full_name);
                 let casks = tap_manager.load_casks_from_tap(tap).await?;
@@ -586,17 +609,40 @@ impl Cache {
                     "Loading tap formulae from cache: {}",
                     tap_cache_path.display()
                 );
-                let json = fs::read_to_string(&tap_cache_path).await?;
-                let mut formulae: Vec<Formula> = serde_json::from_str(&json)?;
-                // rb_path is skipped during serialisation — restore it from the filesystem.
+                // Check if any .rb file is newer than the cache.
+                let cache_mtime = std::fs::metadata(&tap_cache_path)?.modified()?;
+                let mut stale = false;
                 let formula_dir = tap.formula_dir();
-                for f in &mut formulae {
-                    let rb_file = formula_dir.join(format!("{}.rb", f.name));
-                    if rb_file.exists() {
-                        f.rb_path = Some(rb_file);
+                if formula_dir.exists() {
+                    for entry in std::fs::read_dir(&formula_dir)?.flatten() {
+                        if entry.path().extension().and_then(|s| s.to_str()) == Some("rb") {
+                            if let Ok(m) = entry.metadata() {
+                                if m.modified().unwrap_or(cache_mtime) > cache_mtime {
+                                    stale = true;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
-                formulae
+                if stale {
+                    debug!("Tap formula cache is stale, re-parsing: {}", tap.full_name);
+                    let formulae = tap_manager.load_formulae_from_tap(tap).await?;
+                    let json = serde_json::to_string_pretty(&formulae)?;
+                    fs::write(&tap_cache_path, json).await?;
+                    formulae
+                } else {
+                    let json = fs::read_to_string(&tap_cache_path).await?;
+                    let mut formulae: Vec<Formula> = serde_json::from_str(&json)?;
+                    // rb_path is skipped during serialisation — restore it from the filesystem.
+                    for f in &mut formulae {
+                        let rb_file = formula_dir.join(format!("{}.rb", f.name));
+                        if rb_file.exists() {
+                            f.rb_path = Some(rb_file);
+                        }
+                    }
+                    formulae
+                }
             } else {
                 debug!("Loading tap formulae from filesystem: {}", tap.full_name);
                 let formulae = tap_manager.load_formulae_from_tap(tap).await?;
