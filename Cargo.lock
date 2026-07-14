@@ -2696,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "waxpkg"
-version = "0.20.13"
+version = "0.20.14"
 dependencies = [
  "clap",
  "clap_complete",

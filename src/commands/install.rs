@@ -832,7 +832,8 @@ pub(crate) async fn install_impl(
     let mut user_direct_formula_names: HashSet<String> = HashSet::new();
 
     for package_name in package_names.iter() {
-        if installed.contains(package_name.as_str()) {
+        let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
+        if installed.contains(package_name.as_str()) || installed.contains(short_name) {
             already_installed.push(package_name.clone());
             continue;
         }
