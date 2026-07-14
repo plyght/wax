@@ -322,7 +322,6 @@ impl Builder {
 
     async fn build_make(&self, source_dir: &Path, prefix: &Path) -> Result<()> {
         info!("Building with Make");
-        crate::xcode::require_for_make_build()?;
 
         let make_args = vec![
             format!("PREFIX={}", prefix.display()),
