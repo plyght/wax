@@ -794,6 +794,8 @@ pub(crate) async fn install_impl(
     let by_full_name: std::collections::HashMap<&str, &crate::api::Formula> =
         formulae.iter().map(|f| (f.full_name.as_str(), f)).collect();
 
+    let all_casks = cache.load_all_casks().await?;
+
     let mut all_to_install = Vec::new();
     let mut all_to_install_set = HashSet::new();
     let mut already_installed = Vec::new();
@@ -804,6 +806,16 @@ pub(crate) async fn install_impl(
     for package_name in package_names.iter() {
         if installed.contains(package_name.as_str()) {
             already_installed.push(package_name.clone());
+            continue;
+        }
+
+        if cfg!(target_os = "macos")
+            && !package_name.contains('/')
+            && all_casks
+                .iter()
+                .any(|c| c.token == *package_name || c.full_token == *package_name)
+        {
+            detected_casks.push(package_name.clone());
             continue;
         }
 
@@ -827,8 +839,7 @@ pub(crate) async fn install_impl(
         let formula = match formula {
             Some(f) => f,
             None => {
-                let casks = cache.load_all_casks().await?;
-                let cask_exists = casks
+                let cask_exists = all_casks
                     .iter()
                     .any(|c| &c.token == package_name || &c.full_token == package_name);
 

@@ -165,14 +165,7 @@ impl Tap {
     pub fn cask_dir(&self) -> PathBuf {
         match &self.kind {
             TapKind::LocalFile { .. } => self.path.parent().unwrap_or(&self.path).to_path_buf(),
-            _ => {
-                let cask_subdir = self.path.join("Casks");
-                if cask_subdir.exists() {
-                    cask_subdir
-                } else {
-                    self.path.clone()
-                }
-            }
+            _ => self.path.join("Casks"),
         }
     }
 
@@ -593,13 +586,22 @@ impl TapManager {
 
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("rb") {
-                        match Self::parse_formula_file(&path, &tap.full_name).await {
-                            Ok(formula) => formulae.push(formula),
-                            Err(e) => {
-                                debug!("{}", e);
-                            }
+                    if path.extension().and_then(|s| s.to_str()) != Some("rb") {
+                        continue;
+                    }
+                    let content = match fs::read_to_string(&path).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            debug!("{}", e);
+                            continue;
                         }
+                    };
+                    if FormulaParser::is_homebrew_cask_rb(&content) {
+                        continue;
+                    }
+                    match Self::parse_formula_file(&path, &tap.full_name).await {
+                        Ok(formula) => formulae.push(formula),
+                        Err(e) => debug!("{}", e),
                     }
                 }
 
@@ -674,6 +676,9 @@ impl TapManager {
                 continue;
             }
             let content = fs::read_to_string(&path).await?;
+            if !FormulaParser::is_homebrew_cask_rb(&content) {
+                continue;
+            }
             match FormulaParser::parse_ruby_cask(&token, &tap.full_name, &content) {
                 Ok(mut cask) => {
                     cask.rb_path = Some(path);

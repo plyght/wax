@@ -19,6 +19,7 @@ mod system_pm;
 mod tap;
 mod ui;
 mod version;
+mod xcode;
 
 // Windows package manager support (scoop, winget, chocolatey)
 #[cfg(target_os = "windows")]

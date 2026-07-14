@@ -673,6 +673,16 @@ impl FormulaParser {
         Some(CaskLinuxArtifact { url, sha256 })
     }
 
+    /// True when `.rb` is a Homebrew cask (`cask "token" do`), not a formula class.
+    pub fn is_homebrew_cask_rb(content: &str) -> bool {
+        content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .next()
+            .is_some_and(|line| line.starts_with("cask "))
+    }
+
     fn extract_cask_string_field(content: &str, field: &str) -> Option<String> {
         let pattern = format!(r#"(?m)^\s*{field}\s+(?:"([^"]+)"|'([^']+)')"#);
         let re = Regex::new(&pattern).ok()?;
@@ -1006,6 +1016,20 @@ system "cmake", "-S", ".", "-B", "build", "-DBUILD_FLASHFETCH=OFF", "-DENABLE_SY
             "--install must not be a configure arg"
         );
         assert!(args.contains(&"-DFOO=ON".to_string()));
+    }
+
+    #[test]
+    fn is_homebrew_cask_rb_distinguishes_formula_class() {
+        let formula = r#"
+class Sketchybar < Formula
+  url "https://example.com/x.tar.gz"
+end
+"#;
+        let cask = r#"cask "aerospace" do
+  version "1"
+end"#;
+        assert!(!FormulaParser::is_homebrew_cask_rb(formula));
+        assert!(FormulaParser::is_homebrew_cask_rb(cask));
     }
 
     #[test]
