@@ -35,7 +35,6 @@ pub struct ParsedFormula {
     pub runtime_dependencies: Vec<String>,
     pub build_dependencies: Vec<String>,
     pub build_system: BuildSystem,
-    pub install_commands: Vec<String>,
     pub configure_args: Vec<String>,
     /// Files to copy to `bin/` via `bin.install "..."` (binary-release formulas).
     pub bin_installs: Vec<String>,
@@ -47,7 +46,6 @@ pub struct FormulaParser;
 
 static RE_FIELD: OnceLock<Regex> = OnceLock::new();
 static RE_DEPENDS: OnceLock<Regex> = OnceLock::new();
-static RE_SYSTEM: OnceLock<Regex> = OnceLock::new();
 static RE_VERSION: OnceLock<Regex> = OnceLock::new();
 static RE_HEAD: OnceLock<Regex> = OnceLock::new();
 static RE_CASK_URL: OnceLock<Regex> = OnceLock::new();
@@ -141,14 +139,33 @@ impl FormulaParser {
             })?;
         let build_system = Self::detect_build_system(&install_block);
         let configure_args = Self::extract_configure_args(&install_block);
-        let install_commands = Self::extract_install_commands(&install_block);
         let bin_install_targets = Self::extract_bin_install_targets(&install_block);
-        let bin_installs = bin_install_targets
+
+        let share_install_targets = Self::extract_share_install_targets(&install_block);
+
+        // Resolve #{version} etc. in install targets
+        let ver = &version;
+        let bin_install_targets: Vec<BinInstall> = bin_install_targets
+            .into_iter()
+            .map(|t| BinInstall {
+                source: Self::substitute_ruby_interpolations(&t.source, ver, None, None),
+                destination: Self::substitute_ruby_interpolations(&t.destination, ver, None, None),
+                optional: t.optional,
+            })
+            .collect();
+        let bin_installs: Vec<String> = bin_install_targets
             .iter()
             .map(|target| target.source.clone())
             .collect();
-
-        let share_install_targets = Self::extract_share_install_targets(&install_block);
+        let share_install_targets: Vec<ShareInstall> = share_install_targets
+            .into_iter()
+            .map(|t| ShareInstall {
+                source: Self::substitute_ruby_interpolations(&t.source, ver, None, None),
+                dest_prefix: Self::substitute_ruby_interpolations(&t.dest_prefix, ver, None, None),
+                destination: Self::substitute_ruby_interpolations(&t.destination, ver, None, None),
+                optional: t.optional,
+            })
+            .collect();
 
         Ok(ParsedFormula {
             name: name.to_string(),
@@ -164,7 +181,6 @@ impl FormulaParser {
             runtime_dependencies,
             build_dependencies,
             build_system,
-            install_commands,
             configure_args,
             bin_installs,
             bin_install_targets,
@@ -436,14 +452,17 @@ impl FormulaParser {
         args
     }
 
-    fn extract_install_commands(install_block: &str) -> Vec<String> {
-        let re = RE_SYSTEM.get_or_init(|| Regex::new(r#"system\s+"(?P<cmd>[^"]+)""#).unwrap());
-
-        let mut commands = Vec::new();
-        for cap in re.captures_iter(install_block) {
-            commands.push(cap["cmd"].to_string());
-        }
-        commands
+    pub fn substitute_ruby_interpolations(
+        s: &str,
+        version: &str,
+        prefix: Option<&str>,
+        name: Option<&str>,
+    ) -> String {
+        let mut out = s.replace("#{version}", version);
+        out = out.replace("#{prefix}", prefix.unwrap_or(""));
+        out = out.replace("#{name}", name.unwrap_or(""));
+        out = out.replace("#{HOMEBREW_PREFIX}", "/opt/homebrew");
+        out
     }
 
     /// Parse `bin.install "filename"` entries from a formula install block.
@@ -467,28 +486,71 @@ impl FormulaParser {
 
     pub(crate) fn extract_bin_install_targets(install_block: &str) -> Vec<BinInstall> {
         let re = Regex::new(r#"bin\.install\s+"([^"]+)"(?:\s*=>\s*"([^"]+)")?"#).unwrap();
+        let multi_re = Regex::new(
+            r#"bin\.install\s+"([^"]+)"\s*,\s*"([^"]+)"(?:\s*,\s*"([^"]+)")*(?:\s*,\s*"([^"]+)")*"#,
+        )
+        .unwrap();
+        let word_re = Regex::new(r#"bin\.install\s+%w\[([^\]]+)\]"#).unwrap();
         let dir_re =
             Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap();
         let var_re =
             Regex::new(r#"bin\.install\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*=>\s*"([^"]+)")?"#).unwrap();
         let dir_vars = Self::extract_dir_first_assignments(install_block);
         let mut targets: Vec<BinInstall> = Vec::new();
+        let optional = |line: &str| line.contains("if File.exist?");
+        let quoted_re = Regex::new(r#""([^"]+)""#).unwrap();
         for line in install_block.lines() {
-            targets.extend(re.captures_iter(line).map(|c| {
-                let source = c[1].to_string();
-                let destination = c.get(2).map(|m| m.as_str().to_string()).unwrap_or_else(|| {
-                    source
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(source.as_str())
-                        .to_string()
-                });
-                BinInstall {
-                    destination,
-                    optional: line.contains("if File.exist?"),
-                    source,
+            let trimmed = line.trim();
+            if !trimmed.contains("bin.install") {
+                continue;
+            }
+            // Multi-arg: bin.install "f1", "f2", "f3"
+            let is_multi = multi_re.is_match(trimmed);
+            // Word array: bin.install %w[f1 f2 f3]
+            let is_word = word_re.is_match(trimmed);
+            if is_multi {
+                for qcap in quoted_re.captures_iter(trimmed) {
+                    let src = qcap[1].to_string();
+                    if src == "bin.install" || src.starts_with("bin.install") {
+                        continue;
+                    }
+                    let dest = src.rsplit('/').next().unwrap_or(&src).to_string();
+                    targets.push(BinInstall {
+                        source: src,
+                        destination: dest,
+                        optional: optional(line),
+                    });
                 }
-            }));
+            } else if is_word {
+                if let Some(wcap) = word_re.captures(trimmed) {
+                    for token in wcap[1].split_whitespace() {
+                        let src = token.to_string();
+                        let dest = src.rsplit('/').next().unwrap_or(&src).to_string();
+                        targets.push(BinInstall {
+                            source: src,
+                            destination: dest,
+                            optional: optional(line),
+                        });
+                    }
+                }
+            } else {
+                targets.extend(re.captures_iter(line).map(|c| {
+                    let source = c[1].to_string();
+                    let destination =
+                        c.get(2).map(|m| m.as_str().to_string()).unwrap_or_else(|| {
+                            source
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or(source.as_str())
+                                .to_string()
+                        });
+                    BinInstall {
+                        destination,
+                        optional: optional(line),
+                        source,
+                    }
+                }));
+            }
             targets.extend(dir_re.captures_iter(line).map(|c| {
                 let source = c[1].to_string();
                 let destination = c
@@ -792,6 +854,61 @@ impl FormulaParser {
                 artifacts.push(CaskArtifact::Binary { binary });
             }
         }
+
+        // Simple artifact types: type "path" or type "path", target: "name"
+        macro_rules! simple_artifact {
+            ($re_type:ident, $key:expr, $variant:ident, $field:ident) => {
+                let $re_type = Regex::new(&format!(
+                    r#"(?m)^\s*{}\s+"([^"]+)"(?:\s*,\s*\{{\s*target:\s*"([^"]+)"\s*\}})?"#,
+                    regex::escape($key)
+                ))
+                .ok();
+                if let Some(re) = $re_type {
+                    for cap in re.captures_iter(content) {
+                        let source = cap[1].to_string();
+                        let mut vals = vec![serde_json::Value::String(source)];
+                        if let Some(target) = cap.get(2) {
+                            let mut obj = serde_json::Map::new();
+                            obj.insert(
+                                "target".to_string(),
+                                serde_json::Value::String(target.as_str().to_string()),
+                            );
+                            vals.push(serde_json::Value::Object(obj));
+                        }
+                        artifacts.push(CaskArtifact::$variant { $field: vals });
+                    }
+                }
+            };
+        }
+
+        simple_artifact!(re_font, "font", Font, font);
+        simple_artifact!(re_manpage, "manpage", Manpage, manpage);
+        simple_artifact!(
+            re_bash_completion,
+            "bash_completion",
+            BashCompletion,
+            bash_completion
+        );
+        simple_artifact!(
+            re_zsh_completion,
+            "zsh_completion",
+            ZshCompletion,
+            zsh_completion
+        );
+        simple_artifact!(
+            re_fish_completion,
+            "fish_completion",
+            FishCompletion,
+            fish_completion
+        );
+        simple_artifact!(re_prefpane, "prefpane", Prefpane, prefpane);
+        simple_artifact!(re_qlplugin, "qlplugin", Qlplugin, qlplugin);
+        simple_artifact!(re_colorpicker, "colorpicker", Colorpicker, colorpicker);
+        simple_artifact!(re_screen_saver, "screen_saver", ScreenSaver, screen_saver);
+        simple_artifact!(re_dictionary, "dictionary", Dictionary, dictionary);
+        simple_artifact!(re_service, "service", Service, service);
+        simple_artifact!(re_suite, "suite", Suite, suite);
+
         artifacts
     }
 
@@ -825,6 +942,8 @@ impl FormulaParser {
             .map(|c| c[1].to_string())
             .ok_or_else(|| WaxError::ParseError(format!("url not found in cask {}", token)))?;
         let version = Self::extract_cask_version(ruby_content);
+        let url = Self::substitute_ruby_interpolations(&url, &version, None, None);
+        let version = Self::substitute_ruby_interpolations(&version, &version, None, None);
         let desc = Self::extract_cask_string_field(ruby_content, "desc");
         let homepage =
             Self::extract_cask_string_field(ruby_content, "homepage").unwrap_or_default();
