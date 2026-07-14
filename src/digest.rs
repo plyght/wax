@@ -1,8 +1,17 @@
 use crate::error::{Result, WaxError};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::io::Read;
 use std::path::Path;
 use tracing::{debug, warn};
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+pub fn sha256_digest_hex(data: impl AsRef<[u8]>) -> String {
+    let out = sha2::Sha256::digest(data);
+    sha256_hex(&out)
+}
 
 /// Verify a file against an expected SHA256 hex digest.
 ///
@@ -20,7 +29,7 @@ pub fn verify_sha256_file(path: &Path, expected_sha256: &str) -> Result<()> {
     debug!("Verifying checksum for {:?}", path);
 
     let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
+    let mut hasher = sha2::Sha256::new();
     let mut buffer = [0u8; 8192];
 
     loop {
@@ -31,7 +40,7 @@ pub fn verify_sha256_file(path: &Path, expected_sha256: &str) -> Result<()> {
         hasher.update(&buffer[..n]);
     }
 
-    let hash = format!("{:x}", hasher.finalize());
+    let hash = sha256_hex(&hasher.finalize());
 
     if hash != expected_sha256 {
         return Err(WaxError::ChecksumMismatch {

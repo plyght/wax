@@ -20,7 +20,6 @@ use crate::ui::{
 };
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use sha2::Digest;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -103,7 +102,7 @@ async fn install_from_source_task(
             )));
         }
         let bytes = response.bytes().await?;
-        let actual_sha = format!("{:x}", sha2::Sha256::digest(&bytes));
+        let actual_sha = crate::digest::sha256_digest_hex(&bytes);
         if actual_sha != dl_sha {
             return Err(WaxError::ChecksumMismatch {
                 expected: dl_sha,
@@ -243,7 +242,7 @@ async fn install_from_source_task(
     }
 
     let content = response.bytes().await?;
-    let sha256 = format!("{:x}", sha2::Sha256::digest(&content));
+    let sha256 = crate::digest::sha256_digest_hex(&content);
     tokio::fs::write(&source_tarball, &content).await?;
     if sha256 != parsed_formula.source.sha256 {
         return Err(WaxError::ChecksumMismatch {

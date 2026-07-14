@@ -54,10 +54,10 @@ pub fn require_for_make_build() -> Result<()> {
     }
     Err(WaxError::BuildError(
         "Full Xcode is required for this build (Command Line Tools alone are not enough).\n\
-         Install Xcode or Xcode-beta from the App Store, then run:\n\
+         Install Xcode or Xcode Beta from the App Store, then run:\n\
            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer\n\
          or for beta:\n\
-           sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer"
+           sudo xcode-select -s '/Applications/Xcode Beta.app/Contents/Developer'"
             .to_string(),
     ))
 }

@@ -307,7 +307,7 @@ impl SystemPm {
         if let Some(expected) = sha256 {
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
-            let computed = format!("{:x}", hasher.finalize());
+            let computed = crate::digest::sha256_hex(&hasher.finalize());
             if computed != expected {
                 return Err(WaxError::InstallError(format!(
                     "{} checksum mismatch: expected {}, got {}",

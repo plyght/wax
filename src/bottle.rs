@@ -1660,7 +1660,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(b"hello world").unwrap();
-        let hash = format!("{:x}", Sha256::digest(b"hello world"));
+        let hash = crate::digest::sha256_hex(&Sha256::digest(b"hello world"));
         let result = crate::digest::verify_sha256_file(f.path(), &hash);
         assert!(result.is_ok(), "{:?}", result);
     }
