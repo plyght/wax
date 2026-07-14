@@ -256,15 +256,44 @@ async fn install_from_source_task(
     tokio::fs::create_dir_all(&install_prefix).await?;
 
     let builder = Builder::new();
-    builder
-        .build_from_source(
-            &parsed_formula,
-            &source_tarball,
-            &build_dir,
-            &install_prefix,
-            Some(&spinner),
-        )
-        .await?;
+
+    if !parsed_formula.bin_install_targets.is_empty() {
+        // Formula has bin.install entries — build only, then copy the targets.
+        spinner.set_message("Building from source...");
+        builder.extract_source(&source_tarball, &build_dir).await?;
+        let source_dir = builder.find_source_directory(&build_dir)?;
+        // Only Make is safe to build without install step; other systems
+        // may need configure/cmake phases that produce install targets.
+        builder.build_make_no_install(&source_dir).await?;
+        let bin_dir = install_prefix.join("bin");
+        tokio::fs::create_dir_all(&bin_dir).await?;
+        for target in &parsed_formula.bin_install_targets {
+            let cleaned = target.source.replace("#{buildpath}/", "");
+            let src = source_dir.join(&cleaned);
+            let dst = bin_dir.join(&target.destination);
+            if let Some(parent) = dst.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::copy(&src, &dst).await?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = tokio::fs::metadata(&dst).await?.permissions();
+                perms.set_mode(perms.mode() | 0o111);
+                tokio::fs::set_permissions(&dst, perms).await?;
+            }
+        }
+    } else {
+        builder
+            .build_from_source(
+                &parsed_formula,
+                &source_tarball,
+                &build_dir,
+                &install_prefix,
+                Some(&spinner),
+            )
+            .await?;
+    }
 
     spinner.set_message("Installing to Cellar...");
 

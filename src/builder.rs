@@ -134,7 +134,7 @@ impl Builder {
         Ok(())
     }
 
-    async fn extract_source(&self, tarball: &Path, dest: &Path) -> Result<()> {
+    pub(crate) async fn extract_source(&self, tarball: &Path, dest: &Path) -> Result<()> {
         debug!("Extracting {:?} to {:?}", tarball, dest);
 
         tokio::fs::create_dir_all(dest).await?;
@@ -157,7 +157,7 @@ impl Builder {
         Ok(())
     }
 
-    fn find_source_directory(&self, build_dir: &Path) -> Result<PathBuf> {
+    pub(crate) fn find_source_directory(&self, build_dir: &Path) -> Result<PathBuf> {
         let entries = std::fs::read_dir(build_dir)?
             .filter_map(|e| e.ok())
             .collect::<Vec<_>>();
@@ -318,6 +318,14 @@ impl Builder {
             .await?;
 
         Ok(())
+    }
+
+    /// Run `make` only (no `make install`). Used when formula has `bin.install`.
+    pub(crate) async fn build_make_no_install(&self, source_dir: &Path) -> Result<()> {
+        info!("Building with Make (no install)");
+        let make_args = vec![format!("-j{}", self.num_cores)];
+        self.run_command(source_dir, "make", &make_args, "Building")
+            .await
     }
 
     async fn build_make(&self, source_dir: &Path, prefix: &Path) -> Result<()> {
