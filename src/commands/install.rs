@@ -257,13 +257,13 @@ async fn install_from_source_task(
 
     let builder = Builder::new();
 
-    if !parsed_formula.bin_install_targets.is_empty() {
-        // Formula has bin.install entries — build only, then copy the targets.
+    if !parsed_formula.bin_install_targets.is_empty()
+        || !parsed_formula.share_install_targets.is_empty()
+    {
+        // Formula has install entries — build only, then copy the targets.
         spinner.set_message("Building from source...");
         builder.extract_source(&source_tarball, &build_dir).await?;
         let source_dir = builder.find_source_directory(&build_dir)?;
-        // Only Make is safe to build without install step; other systems
-        // may need configure/cmake phases that produce install targets.
         builder.build_make_no_install(&source_dir).await?;
         let bin_dir = install_prefix.join("bin");
         tokio::fs::create_dir_all(&bin_dir).await?;
@@ -281,6 +281,22 @@ async fn install_from_source_task(
                 let mut perms = tokio::fs::metadata(&dst).await?.permissions();
                 perms.set_mode(perms.mode() | 0o111);
                 tokio::fs::set_permissions(&dst, perms).await?;
+            }
+        }
+        for target in &parsed_formula.share_install_targets {
+            let cleaned = target.source.replace("#{buildpath}/", "");
+            let src = source_dir.join(&cleaned);
+            let share_sub = if target.dest_prefix.is_empty() {
+                format!("share/{}", formula.name)
+            } else {
+                format!("share/{}/{}", formula.name, target.dest_prefix)
+            };
+            let dst_base = install_prefix.join(&share_sub);
+            if src.is_dir() {
+                copy_dir_all(&src, &dst_base.join(&target.destination))?;
+            } else {
+                tokio::fs::create_dir_all(&dst_base).await?;
+                tokio::fs::copy(&src, dst_base.join(&target.destination)).await?;
             }
         }
     } else {

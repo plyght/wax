@@ -40,6 +40,7 @@ pub struct ParsedFormula {
     /// Files to copy to `bin/` via `bin.install "..."` (binary-release formulas).
     pub bin_installs: Vec<String>,
     pub bin_install_targets: Vec<BinInstall>,
+    pub share_install_targets: Vec<ShareInstall>,
 }
 
 pub struct FormulaParser;
@@ -64,6 +65,15 @@ pub struct CaskLinuxArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinInstall {
     pub source: String,
+    pub destination: String,
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareInstall {
+    pub source: String,
+    /// Relative prefix inside `share/`, e.g. `sketchybar/examples`
+    pub dest_prefix: String,
     pub destination: String,
     pub optional: bool,
 }
@@ -138,6 +148,8 @@ impl FormulaParser {
             .map(|target| target.source.clone())
             .collect();
 
+        let share_install_targets = Self::extract_share_install_targets(&install_block);
+
         Ok(ParsedFormula {
             name: name.to_string(),
             desc,
@@ -156,6 +168,7 @@ impl FormulaParser {
             configure_args,
             bin_installs,
             bin_install_targets,
+            share_install_targets,
         })
     }
 
@@ -501,6 +514,38 @@ impl FormulaParser {
                     source: glob,
                 })
             }));
+        }
+        targets
+    }
+
+    /// Extract `(pkgshare/"sub").install "file"` targets.
+    fn extract_share_install_targets(install_block: &str) -> Vec<ShareInstall> {
+        let re = Regex::new(
+            r#"(?x)
+            \( pkgshare \s* (?: / \s* "([^"]*)" )? \) 
+            \.install \s+ "([^"]+)"
+        "#,
+        )
+        .unwrap();
+        let mut targets = Vec::new();
+        for cap in re.captures_iter(install_block) {
+            let sub = cap
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let source = cap[2].to_string();
+            let clean_source = source.trim_end_matches('/');
+            let destination = clean_source
+                .rsplit('/')
+                .next()
+                .unwrap_or(clean_source)
+                .to_string();
+            targets.push(ShareInstall {
+                source,
+                dest_prefix: sub,
+                destination,
+                optional: false,
+            });
         }
         targets
     }
