@@ -493,7 +493,26 @@ async fn uninstall_cask(
                     app_basename
                 );
             }
+
+            if let Some(ref paths) = cask.binary_paths {
+                for bin_path in paths {
+                    let link = Path::new(bin_path);
+                    if link.is_symlink() {
+                        if let Ok(target) = std::fs::read_link(link) {
+                            if target.to_string_lossy().contains(cask_name) {
+                                let _ = tokio::fs::remove_file(link).await;
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    let caskroom = CaskState::caskroom_dir();
+    let version_dir = caskroom.join(cask_name).join(&cask.version);
+    if version_dir.exists() {
+        let _ = tokio::fs::remove_dir_all(&version_dir).await;
     }
 
     state.remove(cask_name).await?;
