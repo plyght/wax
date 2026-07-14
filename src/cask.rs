@@ -24,6 +24,8 @@ pub struct InstalledCask {
     pub binary_paths: Option<Vec<String>>,
     #[serde(default)]
     pub app_name: Option<String>,
+    #[serde(default)]
+    pub installed_paths: Vec<String>,
 }
 
 static CASK_STATE_WRITE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -174,7 +176,11 @@ fn merge_caskroom_entry(
                 .as_ref()
                 .and_then(|cask| cask.artifact_type.clone()),
             binary_paths: existing.as_ref().and_then(|cask| cask.binary_paths.clone()),
-            app_name: existing.and_then(|cask| cask.app_name),
+            app_name: existing.as_ref().and_then(|cask| cask.app_name.clone()),
+            installed_paths: existing
+                .as_ref()
+                .map(|cask| cask.installed_paths.clone())
+                .unwrap_or_default(),
         },
     );
 }
@@ -1975,6 +1981,7 @@ mod tests {
             artifact_type: Some("dmg".to_string()),
             binary_paths: Some(vec!["/opt/homebrew/bin/example".to_string()]),
             app_name: Some("Example.app".to_string()),
+            installed_paths: Vec::new(),
         };
 
         let source = cask_metadata_from_installed(&cask, None);
@@ -1985,6 +1992,20 @@ mod tests {
         assert_eq!(source["tap"], "homebrew/cask");
         assert_eq!(source["ruby_source_path"], "Casks/e/example-app.rb");
         assert_eq!(source["artifacts"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn installed_cask_backward_compat_deserializes_without_installed_paths() {
+        let json = r#"{
+            "name": "example-app",
+            "version": "1.0.0",
+            "install_date": 100,
+            "artifact_type": "dmg",
+            "app_name": "Example.app"
+        }"#;
+        let cask: InstalledCask = serde_json::from_str(json).unwrap();
+        assert_eq!(cask.name, "example-app");
+        assert!(cask.installed_paths.is_empty());
     }
 
     #[test]

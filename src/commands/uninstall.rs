@@ -390,6 +390,7 @@ async fn uninstall_cask(
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_default(),
                         ),
+                        installed_paths: Vec::new(),
                     },
                 );
                 break;
@@ -504,6 +505,21 @@ async fn uninstall_cask(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // Remove all tracked installed paths
+    for path_str in &cask.installed_paths {
+        let path = Path::new(path_str);
+        if path.exists() {
+            let meta = tokio::fs::symlink_metadata(path).await;
+            if let Ok(m) = meta {
+                if m.is_dir() && !m.file_type().is_symlink() {
+                    let _ = tokio::fs::remove_dir_all(path).await;
+                } else {
+                    let _ = tokio::fs::remove_file(path).await;
                 }
             }
         }

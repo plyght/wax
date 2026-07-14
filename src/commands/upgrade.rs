@@ -303,6 +303,7 @@ async fn apply_one_formula_package_upgrade(
     let uninstall_result = uninstall::uninstall_quiet(cache, &pkg.name, false).await;
     spinner.finish_and_clear();
 
+    let old_version = pkg.installed_version.clone();
     let result = match uninstall_result {
         Ok(()) => {
             set_current_op(format!("installing {}", pkg.name));
@@ -341,6 +342,14 @@ async fn apply_one_formula_package_upgrade(
                 )
                 .await;
                 install_pb.finish_and_clear();
+                if r.is_err() {
+                    eprintln!(
+                        "{} upgrade of {} failed. Old version was removed but new version could not be installed.",
+                        style("warning:").yellow().bold(),
+                        style(&pkg.name).magenta()
+                    );
+                    eprintln!("Try: wax install {}@{}", pkg.name, old_version);
+                }
                 r
             } else {
                 let (user_flag, global_flag) = match pkg.install_mode {
@@ -1102,6 +1111,7 @@ async fn upgrade_resolved_formula(
         &installed.name,
         &formula.full_name,
         Some(installed.install_mode),
+        &installed.version,
     )
     .await?;
 
@@ -1187,6 +1197,7 @@ async fn upgrade_formula_internal(
     installed_name: &str,
     formula_name: &str,
     install_mode: Option<InstallMode>,
+    old_version: &str,
 ) -> Result<()> {
     let _critical = CriticalSection::new();
 
@@ -1199,7 +1210,7 @@ async fn upgrade_formula_internal(
     };
 
     let formula_names = vec![formula_name.to_string()];
-    install::install_impl(
+    let install_result = install::install_impl(
         cache,
         &formula_names,
         install::InstallArgs {
@@ -1216,7 +1227,48 @@ async fn upgrade_formula_internal(
             external_pb: None,
         },
     )
-    .await?;
+    .await;
+
+    if let Err(e) = install_result {
+        eprintln!(
+            "{} upgrade of {} failed, attempting recovery…",
+            style("⚠").yellow(),
+            style(installed_name).magenta()
+        );
+        let recovery = install::install_impl(
+            cache,
+            std::slice::from_ref(&installed_name.to_string()),
+            install::InstallArgs {
+                dry_run: false,
+                ask: false,
+                cask: false,
+                user: user_flag,
+                global: global_flag,
+                build_from_source: false,
+                head: false,
+                run_scripts: true,
+                quiet: true,
+                force_reinstall: false,
+                external_pb: None,
+            },
+        )
+        .await;
+        if let Err(recovery_err) = recovery {
+            eprintln!(
+                "{} recovery also failed: {}",
+                style("✗").red(),
+                recovery_err
+            );
+            eprintln!(
+                "{} upgrade of {} failed. Old version was removed but new version could not be installed.",
+                style("warning:").yellow().bold(),
+                style(installed_name).magenta()
+            );
+            eprintln!("Try: wax install {}@{}", installed_name, old_version);
+            return Err(e);
+        }
+        return Err(e);
+    }
 
     Ok(())
 }
@@ -1417,6 +1469,7 @@ mod tests {
                 artifact_type: Some("dmg".to_string()),
                 binary_paths: None,
                 app_name: Some("Example.app".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
         let discovered = HashMap::from([(
@@ -1428,6 +1481,7 @@ mod tests {
                 artifact_type: Some("app".to_string()),
                 binary_paths: None,
                 app_name: Some("Example".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
 
@@ -1451,6 +1505,7 @@ mod tests {
                 artifact_type: Some("dmg".to_string()),
                 binary_paths: None,
                 app_name: Some("Example.app".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
         let discovered = HashMap::from([(
@@ -1462,6 +1517,7 @@ mod tests {
                 artifact_type: Some("app".to_string()),
                 binary_paths: None,
                 app_name: Some("Example".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
 
@@ -1487,6 +1543,7 @@ mod tests {
                 artifact_type: Some("app".to_string()),
                 binary_paths: None,
                 app_name: Some("Example".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
         let discovered = HashMap::from([(
@@ -1498,6 +1555,7 @@ mod tests {
                 artifact_type: Some("app".to_string()),
                 binary_paths: None,
                 app_name: Some("Example.app".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
 
@@ -1518,6 +1576,7 @@ mod tests {
                 artifact_type: Some("app".to_string()),
                 binary_paths: None,
                 app_name: Some("Example".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
         let discovered = HashMap::from([(
@@ -1529,6 +1588,7 @@ mod tests {
                 artifact_type: Some("app".to_string()),
                 binary_paths: None,
                 app_name: Some("Example".to_string()),
+                installed_paths: Vec::new(),
             },
         )]);
 

@@ -2324,6 +2324,7 @@ async fn install_from_downloaded(
 
     let mut binary_paths: Vec<String> = Vec::new();
     let mut installed_app_name: Option<String> = None;
+    let mut installed_paths: Vec<String> = Vec::new();
 
     if let Some(artifacts) = &cask.artifacts {
         for artifact in artifacts {
@@ -2335,6 +2336,8 @@ async fn install_from_downloaded(
                             .install_app(&staging, &mut rollback, source)
                             .await?;
                         installed_app_name = Some(source.to_string());
+                        let app_dest = CaskInstaller::applications_dir()?.join(source);
+                        installed_paths.push(app_dest.display().to_string());
                     }
                 }
                 CaskArtifact::Pkg { pkg } => {
@@ -2368,6 +2371,7 @@ async fn install_from_downloaded(
                             .await?
                         {
                             binary_paths.push(path.display().to_string());
+                            installed_paths.push(path.display().to_string());
                         }
                     }
                 }
@@ -2377,6 +2381,16 @@ async fn install_from_downloaded(
                         installer
                             .install_font(&staging, &mut rollback, source)
                             .await?;
+                        let font_name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        #[cfg(target_os = "macos")]
+                        let font_dest = dirs::home_dir()?.join("Library/Fonts").join(font_name);
+                        #[cfg(not(target_os = "macos"))]
+                        let font_dest =
+                            dirs::home_dir()?.join(".local/share/fonts").join(font_name);
+                        installed_paths.push(font_dest.display().to_string());
                     }
                 }
                 CaskArtifact::Manpage { manpage } => {
@@ -2385,6 +2399,19 @@ async fn install_from_downloaded(
                         installer
                             .install_manpage(&staging, &mut rollback, source)
                             .await?;
+                        let man_name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        let man_section = Path::new(man_name)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("1");
+                        let man_dest = crate::bottle::homebrew_prefix()
+                            .join("share/man")
+                            .join(format!("man{}", man_section))
+                            .join(man_name);
+                        installed_paths.push(man_dest.display().to_string());
                     }
                 }
                 CaskArtifact::Artifact { artifact } => {
@@ -2400,6 +2427,12 @@ async fn install_from_downloaded(
                         installer
                             .install_artifact(&staging, &mut rollback, source, target)
                             .await?;
+                        let artifact_dest = if Path::new(target).is_absolute() {
+                            PathBuf::from(target)
+                        } else {
+                            crate::bottle::homebrew_prefix().join(target)
+                        };
+                        installed_paths.push(artifact_dest.display().to_string());
                     }
                 }
                 CaskArtifact::Dictionary { dictionary } => {
@@ -2413,6 +2446,17 @@ async fn install_from_downloaded(
                                 &dirs::home_dir()?.join("Library/Dictionaries"),
                             )
                             .await?;
+                        let name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_paths.push(
+                            dirs::home_dir()?
+                                .join("Library/Dictionaries")
+                                .join(name)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::Colorpicker { colorpicker } => {
@@ -2426,6 +2470,17 @@ async fn install_from_downloaded(
                                 &dirs::home_dir()?.join("Library/ColorPickers"),
                             )
                             .await?;
+                        let name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_paths.push(
+                            dirs::home_dir()?
+                                .join("Library/ColorPickers")
+                                .join(name)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::Prefpane { prefpane } => {
@@ -2439,6 +2494,17 @@ async fn install_from_downloaded(
                                 &dirs::home_dir()?.join("Library/PreferencePanes"),
                             )
                             .await?;
+                        let name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_paths.push(
+                            dirs::home_dir()?
+                                .join("Library/PreferencePanes")
+                                .join(name)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::Qlplugin { qlplugin } => {
@@ -2452,6 +2518,17 @@ async fn install_from_downloaded(
                                 &dirs::home_dir()?.join("Library/QuickLook"),
                             )
                             .await?;
+                        let name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_paths.push(
+                            dirs::home_dir()?
+                                .join("Library/QuickLook")
+                                .join(name)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::ScreenSaver { screen_saver } => {
@@ -2465,6 +2542,17 @@ async fn install_from_downloaded(
                                 &dirs::home_dir()?.join("Library/Screen Savers"),
                             )
                             .await?;
+                        let name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_paths.push(
+                            dirs::home_dir()?
+                                .join("Library/Screen Savers")
+                                .join(name)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::Service { service } => {
@@ -2478,6 +2566,17 @@ async fn install_from_downloaded(
                                 &dirs::home_dir()?.join("Library/Services"),
                             )
                             .await?;
+                        let name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_paths.push(
+                            dirs::home_dir()?
+                                .join("Library/Services")
+                                .join(name)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::Suite { suite } => {
@@ -2491,6 +2590,16 @@ async fn install_from_downloaded(
                                 &CaskInstaller::applications_dir()?,
                             )
                             .await?;
+                        let name = Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_paths.push(
+                            CaskInstaller::applications_dir()?
+                                .join(name)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::BashCompletion { bash_completion } => {
@@ -2511,6 +2620,19 @@ async fn install_from_downloaded(
                                 target,
                             )
                             .await?;
+                        let filename = target.unwrap_or_else(|| {
+                            Path::new(source)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&cask.token)
+                        });
+                        installed_paths.push(
+                            crate::bottle::homebrew_prefix()
+                                .join("etc/bash_completion.d")
+                                .join(filename)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::ZshCompletion { zsh_completion } => {
@@ -2531,6 +2653,19 @@ async fn install_from_downloaded(
                                 target,
                             )
                             .await?;
+                        let filename = target.unwrap_or_else(|| {
+                            Path::new(source)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&cask.token)
+                        });
+                        installed_paths.push(
+                            crate::bottle::homebrew_prefix()
+                                .join("share/zsh/site-functions")
+                                .join(filename)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::FishCompletion { fish_completion } => {
@@ -2551,6 +2686,19 @@ async fn install_from_downloaded(
                                 target,
                             )
                             .await?;
+                        let filename = target.unwrap_or_else(|| {
+                            Path::new(source)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&cask.token)
+                        });
+                        installed_paths.push(
+                            crate::bottle::homebrew_prefix()
+                                .join("share/fish/vendor_completions.d")
+                                .join(filename)
+                                .display()
+                                .to_string(),
+                        );
                     }
                 }
                 CaskArtifact::Preflight {
@@ -2585,6 +2733,8 @@ async fn install_from_downloaded(
                         .install_app(&staging, &mut rollback, app_name)
                         .await?;
                     installed_app_name = Some(app_name.to_string());
+                    let app_dest = CaskInstaller::applications_dir()?.join(app_name);
+                    installed_paths.push(app_dest.display().to_string());
                     break;
                 }
             }
@@ -2608,6 +2758,7 @@ async fn install_from_downloaded(
             Some(binary_paths)
         },
         app_name: installed_app_name,
+        installed_paths,
     })
 }
 

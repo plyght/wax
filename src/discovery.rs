@@ -112,6 +112,7 @@ pub async fn discover_manually_installed_casks(
                         artifact_type: Some("app".to_string()),
                         binary_paths: None,
                         app_name: Some(app.bundle_name),
+                        installed_paths: Vec::new(),
                     });
             }
         }
