@@ -327,6 +327,32 @@ async fn install_from_source_task(
                 Some(&spinner),
             )
             .await?;
+
+        // Copy share_install_targets from source into install_prefix.
+        // build_from_source may clean up build_dir; re-extract to find them.
+        if !parsed_formula.share_install_targets.is_empty() {
+            let share_build_dir = temp_dir.path().join("share-build");
+            builder
+                .extract_source(&source_tarball, &share_build_dir)
+                .await?;
+            let source_dir = builder.find_source_directory(&share_build_dir)?;
+            for target in &parsed_formula.share_install_targets {
+                let cleaned = target.source.replace("#{buildpath}/", "");
+                let src = source_dir.join(&cleaned);
+                let share_sub = if target.dest_prefix.is_empty() {
+                    format!("share/{}", formula.name)
+                } else {
+                    format!("share/{}/{}", formula.name, target.dest_prefix)
+                };
+                let dst_base = install_prefix.join(&share_sub);
+                if src.is_dir() {
+                    copy_dir_all(&src, &dst_base.join(&target.destination))?;
+                } else {
+                    tokio::fs::create_dir_all(&dst_base).await?;
+                    tokio::fs::copy(&src, dst_base.join(&target.destination)).await?;
+                }
+            }
+        }
     }
 
     spinner.set_message("Installing to Cellar...");
