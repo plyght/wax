@@ -93,7 +93,7 @@ async fn info_formula(formula: &Formula, name: &str, formulae: &[Formula]) -> Re
     }
 
     println!();
-    println!("{}", &formula.homepage);
+    println!("{}", formula.homepage);
 
     if let Some(deps) = &formula.dependencies {
         if !deps.is_empty() {

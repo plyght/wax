@@ -678,8 +678,7 @@ impl FormulaParser {
         content
             .lines()
             .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .next()
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
             .is_some_and(|line| line.starts_with("cask "))
     }
 
@@ -709,7 +708,7 @@ impl FormulaParser {
         re.captures(content)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
-            .unwrap_or_else(|| String::new())
+            .unwrap_or_default()
     }
 
     fn extract_cask_artifacts(content: &str) -> Vec<CaskArtifact> {
