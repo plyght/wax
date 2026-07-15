@@ -112,9 +112,12 @@ jobs:
           else
             body=$(printf '%s\n\n%s' "## Release v$version" "Initial release.")
           fi
-          echo "body<<BODY" >> $GITHUB_OUTPUT
+          # Use a delimiter unlikely to appear in content
+          delimiter="EOF_$(date +%s)"
+          echo "body<<$delimiter" >> $GITHUB_OUTPUT
           printf '%s' "$body" >> $GITHUB_OUTPUT
-          echo "BODY" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "$delimiter" >> $GITHUB_OUTPUT
 
       - name: Create release
         uses: softprops/action-gh-release@v2
