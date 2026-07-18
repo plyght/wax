@@ -596,11 +596,32 @@ impl BottleDownloader {
         )))
     }
 
+    fn normalize_path(path: &Path) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                    normalized = PathBuf::from(component.as_os_str());
+                }
+                std::path::Component::Normal(c) => {
+                    normalized.push(c);
+                }
+            }
+        }
+        normalized
+    }
+
     fn extract_symlink<R: std::io::Read>(
         #[cfg_attr(not(unix), allow(unused_variables))] entry: &mut tar::Entry<'_, R>,
         path: &Path,
         #[cfg_attr(not(unix), allow(unused_variables))] full_path: &Path,
         #[cfg_attr(not(unix), allow(unused_variables))] canonical_dest: &Path,
+        #[cfg_attr(not(unix), allow(unused_variables))] homebrew_prefix: &Path,
+        #[cfg_attr(not(unix), allow(unused_variables))] user_prefix: Option<&Path>,
     ) -> Result<()> {
         #[cfg(unix)]
         {
@@ -617,104 +638,57 @@ impl BottleDownloader {
                     link_name.display()
                 )));
             }
+
+            let relative_to_dest = match full_path.strip_prefix(canonical_dest) {
+                Ok(p) => p,
+                Err(_) => path,
+            };
+
+            let mut is_safe = false;
+
+            // Check 1: target resolves inside the temporary staging directory.
             if let Some(parent) = full_path.parent() {
-                let relative_to_dest = full_path.strip_prefix(canonical_dest).unwrap_or(full_path);
-                let formula_name = canonical_dest.file_name().unwrap_or_default();
-
-                let hb_prefix = homebrew_prefix();
-                let user_prefix = crate::ui::dirs::home_dir()
-                    .map(|h| h.join(".local").join("wax"))
-                    .ok();
-
-                let mut is_safe = false;
-
-                // Check 1: Resolve inside the temporary staging directory (canonical_dest)
-                {
-                    let resolved = parent.join(&*link_name);
-                    let mut normalized = PathBuf::new();
-                    for component in resolved.components() {
-                        match component {
-                            std::path::Component::CurDir => {}
-                            std::path::Component::ParentDir => {
-                                normalized.pop();
-                            }
-                            _ => normalized.push(component),
-                        }
-                    }
-                    if normalized.starts_with(canonical_dest) {
-                        is_safe = true;
-                    }
+                let resolved = Self::normalize_path(&parent.join(&*link_name));
+                if resolved.starts_with(canonical_dest) {
+                    is_safe = true;
                 }
-
-                // Check 2: Simulate resolution inside global Homebrew Cellar
-                if !is_safe {
-                    let simulated_parent = hb_prefix
-                        .join("Cellar")
-                        .join(formula_name)
-                        .join(relative_to_dest.parent().unwrap_or(Path::new("")));
-                    let resolved = simulated_parent.join(&*link_name);
-                    let mut normalized = PathBuf::new();
-                    for component in resolved.components() {
-                        match component {
-                            std::path::Component::CurDir => {}
-                            std::path::Component::ParentDir => {
-                                normalized.pop();
-                            }
-                            _ => normalized.push(component),
-                        }
-                    }
-                    if normalized.starts_with(hb_prefix.join("Cellar").join(formula_name))
-                        || normalized.starts_with(hb_prefix.join("opt"))
-                    {
-                        is_safe = true;
-                    }
-                }
-
-                // Check 3: Simulate resolution inside user-local Wax Cellar
-                if !is_safe {
-                    if let Some(ref up) = user_prefix {
-                        let simulated_parent = up
-                            .join("Cellar")
-                            .join(formula_name)
-                            .join(relative_to_dest.parent().unwrap_or(Path::new("")));
-                        let resolved = simulated_parent.join(&*link_name);
-                        let mut normalized = PathBuf::new();
-                        for component in resolved.components() {
-                            match component {
-                                std::path::Component::CurDir => {}
-                                std::path::Component::ParentDir => {
-                                    normalized.pop();
-                                }
-                                _ => normalized.push(component),
-                            }
-                        }
-                        if normalized.starts_with(up.join("Cellar").join(formula_name))
-                            || normalized.starts_with(up.join("opt"))
-                        {
-                            is_safe = true;
-                        }
-                    }
-                }
-
-                if !is_safe {
-                    return Err(WaxError::InstallError(format!(
-                        "Symlink escapes destination: {} -> {}",
-                        path.display(),
-                        link_name.display()
-                    )));
-                }
-
-                std::fs::create_dir_all(parent)?;
-                if full_path.symlink_metadata().is_ok() {
-                    std::fs::remove_file(full_path)?;
-                }
-                std::os::unix::fs::symlink(&*link_name, full_path)?;
-            } else {
-                if full_path.symlink_metadata().is_ok() {
-                    std::fs::remove_file(full_path)?;
-                }
-                std::os::unix::fs::symlink(&*link_name, full_path)?;
             }
+
+            // Check 2 & 3: target resolves inside the intended Homebrew-style prefix.
+            // Bottles contain <name>/<version>/... and are installed to
+            // <prefix>/Cellar/<name>/<version>/... . Relative symlinks may
+            // legitimately point back to <prefix>/opt or <prefix>/Cellar.
+            if !is_safe {
+                if let Some(rel_parent) = relative_to_dest
+                    .parent()
+                    .filter(|p| p.components().count() >= 2)
+                {
+                    for prefix in [Some(homebrew_prefix), user_prefix].into_iter().flatten() {
+                        let simulated_parent = prefix.join("Cellar").join(rel_parent);
+                        let resolved = Self::normalize_path(&simulated_parent.join(&*link_name));
+                        if resolved.starts_with(prefix) {
+                            is_safe = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !is_safe {
+                return Err(WaxError::InstallError(format!(
+                    "Symlink escapes destination: {} -> {}",
+                    path.display(),
+                    link_name.display()
+                )));
+            }
+
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if full_path.symlink_metadata().is_ok() {
+                std::fs::remove_file(full_path)?;
+            }
+            std::os::unix::fs::symlink(&*link_name, full_path)?;
             Ok(())
         }
         #[cfg(not(unix))]
@@ -773,6 +747,10 @@ impl BottleDownloader {
         let mut archive = Archive::new(decoder);
 
         let canonical_dest = dunce::canonicalize(dest_dir)?;
+        let homebrew_prefix = homebrew_prefix();
+        let user_prefix = crate::ui::dirs::home_dir()
+            .ok()
+            .map(|h| h.join(".local").join("wax"));
         let mut extracted_bytes: u64 = 0;
 
         for entry in archive.entries()? {
@@ -809,7 +787,14 @@ impl BottleDownloader {
 
             match entry.header().entry_type() {
                 t if t.is_symlink() => {
-                    Self::extract_symlink(&mut entry, &path, &full_path, &canonical_dest)?;
+                    Self::extract_symlink(
+                        &mut entry,
+                        &path,
+                        &full_path,
+                        &canonical_dest,
+                        homebrew_prefix.as_path(),
+                        user_prefix.as_deref(),
+                    )?;
                 }
                 t if t.is_hard_link() => {
                     Self::extract_hard_link(&mut entry, &path, &full_path, &canonical_dest)?;
@@ -1723,6 +1708,63 @@ mod tests {
 
         assert!(result.is_err());
         assert!(format!("{:?}", result.unwrap_err()).contains("absolute"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_allows_homebrew_style_symlink_to_opt() {
+        let (_archive_dir, tarball) = archive_with_symlink(
+            "yt-dlp/2026.7.4/libexec/bin/python3.14",
+            "../../../../../opt/python@3.14/bin/python3.14",
+        );
+        let dest = tempfile::tempdir().unwrap();
+
+        BottleDownloader::extract(&tarball, dest.path()).unwrap();
+
+        let link = dest.path().join("yt-dlp/2026.7.4/libexec/bin/python3.14");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(link).unwrap(),
+            PathBuf::from("../../../../../opt/python@3.14/bin/python3.14")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_allows_homebrew_style_symlink_to_cellar() {
+        let (_archive_dir, tarball) = archive_with_symlink(
+            "yt-dlp/2026.7.4/libexec/bin/python3.14",
+            "../../../../../Cellar/python@3.14/3.14.0/bin/python3.14",
+        );
+        let dest = tempfile::tempdir().unwrap();
+
+        BottleDownloader::extract(&tarball, dest.path()).unwrap();
+
+        let link = dest.path().join("yt-dlp/2026.7.4/libexec/bin/python3.14");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(link).unwrap(),
+            PathBuf::from("../../../../../Cellar/python@3.14/3.14.0/bin/python3.14")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_rejects_homebrew_style_symlink_that_escapes_prefix() {
+        let (_archive_dir, tarball) = archive_with_symlink(
+            "yt-dlp/2026.7.4/libexec/bin/python3.14",
+            "../../../../../../etc/passwd",
+        );
+        let dest = tempfile::tempdir().unwrap();
+
+        let result = BottleDownloader::extract(&tarball, dest.path());
+
+        assert!(result.is_err());
+        assert!(dest
+            .path()
+            .join("yt-dlp/2026.7.4/libexec/bin/python3.14")
+            .symlink_metadata()
+            .is_err());
     }
 
     #[test]
