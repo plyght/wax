@@ -349,8 +349,11 @@ async fn uninstall_cask(
 
     let short_name = cask_name.rsplit('/').next().unwrap_or(cask_name);
 
+    let was_tracked =
+        installed_casks.contains_key(cask_name) || installed_casks.contains_key(short_name);
+
     // If cask not found, try discovering manually installed apps
-    if !installed_casks.contains_key(cask_name) && !installed_casks.contains_key(short_name) {
+    if !was_tracked {
         let casks = cache.load_all_casks().await?;
         if let Ok(discovered) = discover_manually_installed_casks(&casks).await {
             for (name, cask) in discovered {
@@ -487,7 +490,7 @@ async fn uninstall_cask(
                 }
             }
 
-            if !removed && !quiet {
+            if !removed && !quiet && !was_tracked {
                 eprintln!(
                     "warning: could not find {} in Applications — \
                     you may need to remove it manually",
@@ -545,7 +548,7 @@ async fn uninstall_cask(
     if !quiet {
         println!(
             "{} {}{}{}",
-            style("✗").red().bold(),
+            style("✓").green().bold(),
             style(cask_name).magenta(),
             style(format!("@{} (cask)", cask.version)).dim(),
             style(crate::ui::elapsed_suffix(start.elapsed())).dim(),

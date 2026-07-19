@@ -257,7 +257,8 @@ fn package_name_from_qualified_name(package_name: &str) -> &str {
 fn cask_failed_names_from_error(err: &WaxError) -> HashSet<String> {
     let message = err.to_string();
     message
-        .strip_prefix("Install error: Some casks failed: ")
+        .strip_prefix("Installation failed: Some casks failed: ")
+        .or_else(|| message.strip_prefix("Install error: Some casks failed: "))
         .or_else(|| message.strip_prefix("Some casks failed: "))
         .map(|names| {
             names
