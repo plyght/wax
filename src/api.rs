@@ -40,6 +40,8 @@ pub struct BottleInfo {
 pub struct BottleStable {
     #[serde(default)]
     pub rebuild: u32,
+    #[serde(default)]
+    pub cellar: Option<String>,
     pub files: std::collections::HashMap<String, BottleFile>,
 }
 
@@ -57,6 +59,20 @@ impl BottleStable {
                 "aarch64_linux" => self.files.get("arm64_linux"),
                 _ => None,
             })
+    }
+
+    pub fn compatible_with(&self, cellar: &std::path::Path) -> bool {
+        match self.cellar.as_deref() {
+            None => true,
+            Some("any") | Some("any_skip_relocation") => true,
+            Some(s) => {
+                let expected = std::path::Path::new(s);
+                match (dunce::canonicalize(expected), dunce::canonicalize(cellar)) {
+                    (Ok(a), Ok(b)) => a == b,
+                    _ => expected == cellar,
+                }
+            }
+        }
     }
 }
 
@@ -242,7 +258,11 @@ mod bottle_stable_tests {
     fn file_for_platform_matches_arm64_when_json_has_aarch64_linux() {
         let mut files = HashMap::new();
         files.insert("aarch64_linux".into(), sample_file());
-        let stable = BottleStable { rebuild: 0, files };
+        let stable = BottleStable {
+            rebuild: 0,
+            cellar: None,
+            files,
+        };
         let f = stable
             .file_for_platform("arm64_linux")
             .expect("aarch64_linux alias");
@@ -253,7 +273,11 @@ mod bottle_stable_tests {
     fn file_for_platform_matches_aarch64_when_json_has_arm64_linux() {
         let mut files = HashMap::new();
         files.insert("arm64_linux".into(), sample_file());
-        let stable = BottleStable { rebuild: 0, files };
+        let stable = BottleStable {
+            rebuild: 0,
+            cellar: None,
+            files,
+        };
         let f = stable
             .file_for_platform("aarch64_linux")
             .expect("arm64_linux alias");
@@ -264,7 +288,11 @@ mod bottle_stable_tests {
     fn file_for_platform_exact_match() {
         let mut files = HashMap::new();
         files.insert("x86_64_linux".into(), sample_file());
-        let stable = BottleStable { rebuild: 0, files };
+        let stable = BottleStable {
+            rebuild: 0,
+            cellar: None,
+            files,
+        };
         let f = stable
             .file_for_platform("x86_64_linux")
             .expect("exact match");
@@ -275,7 +303,11 @@ mod bottle_stable_tests {
     fn file_for_platform_fallback_to_all() {
         let mut files = HashMap::new();
         files.insert("all".into(), sample_file());
-        let stable = BottleStable { rebuild: 0, files };
+        let stable = BottleStable {
+            rebuild: 0,
+            cellar: None,
+            files,
+        };
         let f = stable
             .file_for_platform("x86_64_linux")
             .expect("fallback to all");
@@ -285,9 +317,38 @@ mod bottle_stable_tests {
     #[test]
     fn file_for_platform_no_match_returns_none() {
         let files = HashMap::new();
-        let stable = BottleStable { rebuild: 0, files };
+        let stable = BottleStable {
+            rebuild: 0,
+            cellar: None,
+            files,
+        };
         let f = stable.file_for_platform("x86_64_linux");
         assert!(f.is_none());
+    }
+
+    #[test]
+    fn compatible_with_cellar() {
+        let files = HashMap::new();
+        let mut stable = BottleStable {
+            rebuild: 0,
+            cellar: None,
+            files,
+        };
+        assert!(stable.compatible_with(std::path::Path::new("/opt/homebrew/Cellar")));
+
+        stable.cellar = Some("any".into());
+        assert!(stable.compatible_with(std::path::Path::new("/any/path")));
+
+        stable.cellar = Some("any_skip_relocation".into());
+        assert!(stable.compatible_with(std::path::Path::new("/another/path")));
+
+        stable.cellar = Some("/opt/homebrew/Cellar".into());
+        assert!(stable.compatible_with(std::path::Path::new("/opt/homebrew/Cellar")));
+        assert!(!stable.compatible_with(std::path::Path::new("/home/linuxbrew/.linuxbrew/Cellar",)));
+
+        let tmp = std::env::temp_dir();
+        stable.cellar = Some(tmp.to_string_lossy().into_owned());
+        assert!(stable.compatible_with(&tmp));
     }
 }
 
@@ -376,6 +437,7 @@ mod formula_tests {
         let f = dummy_formula(Some(BottleInfo {
             stable: Some(BottleStable {
                 rebuild: 42,
+                cellar: None,
                 files: std::collections::HashMap::new(),
             }),
         }));
