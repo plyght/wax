@@ -1111,8 +1111,8 @@ pub(crate) async fn install_impl(
                     .bottle
                     .as_ref()
                     .and_then(|b| b.stable.as_ref())
-                    .and_then(|s| s.file_for_platform(&platform))
-                    .is_some()
+                    .map(|s| s.file_for_platform(&platform).is_some() && s.compatible_with(&cellar))
+                    .unwrap_or(false)
         })
         .count();
 
@@ -1174,6 +1174,9 @@ pub(crate) async fn install_impl(
         .filter(|_pkg| !build_from_source)
         .filter_map(|pkg| {
             let f = pkg.bottle.as_ref()?.stable.as_ref()?;
+            if !f.compatible_with(&cellar) {
+                return None;
+            }
             let file = f.file_for_platform(&platform)?;
             Some((pkg.name.clone(), file.url.clone()))
         })
@@ -1239,12 +1242,14 @@ pub(crate) async fn install_impl(
     let temp_dir = Arc::new(TempDir::new()?);
 
     for pkg in packages_to_install {
-        let has_bottle = pkg
-            .bottle
-            .as_ref()
-            .and_then(|b| b.stable.as_ref())
+        let bottle_stable = pkg.bottle.as_ref().and_then(|b| b.stable.as_ref());
+        let bottle_compatible = bottle_stable
+            .map(|s| s.compatible_with(&cellar))
+            .unwrap_or(true);
+        let has_bottle = bottle_stable
             .and_then(|s| s.file_for_platform(&platform))
-            .is_some();
+            .is_some()
+            && bottle_compatible;
 
         if head {
             check_cancelled()?;
@@ -1262,6 +1267,14 @@ pub(crate) async fn install_impl(
             )
             .await?;
             continue;
+        }
+
+        if bottle_stable.is_some() && !bottle_compatible && !quiet {
+            println!();
+            println!(
+                "bottle for {} is not relocatable to this cellar, building from source",
+                pkg.name
+            );
         }
 
         if !has_bottle || build_from_source {
