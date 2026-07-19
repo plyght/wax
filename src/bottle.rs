@@ -820,11 +820,13 @@ impl BottleDownloader {
             "@@HOMEBREW_PREFIX@@",
             "@@HOMEBREW_CELLAR@@",
             "@@HOMEBREW_LIBRARY@@",
+            "@@HOMEBREW_REPOSITORY@@",
         ];
+        let repository = prefix;
         let cellar = format!("{}/Cellar", prefix);
         let library = format!("{}/Library", prefix);
 
-        Self::relocate_dir(dir, &placeholders, prefix, &cellar, &library)
+        Self::relocate_dir(dir, &placeholders, prefix, &cellar, &library, repository)
     }
 
     fn relocate_dir(
@@ -833,6 +835,7 @@ impl BottleDownloader {
         prefix: &str,
         cellar: &str,
         library: &str,
+        repository: &str,
     ) -> Result<()> {
         let entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
 
@@ -841,9 +844,9 @@ impl BottleDownloader {
             let file_type = entry.file_type()?;
 
             if file_type.is_dir() {
-                Self::relocate_dir(&path, placeholders, prefix, cellar, library)?;
+                Self::relocate_dir(&path, placeholders, prefix, cellar, library, repository)?;
             } else if file_type.is_file() {
-                Self::relocate_file(&path, placeholders, prefix, cellar, library)?;
+                Self::relocate_file(&path, placeholders, prefix, cellar, library, repository)?;
             }
         }
         Ok(())
@@ -855,6 +858,7 @@ impl BottleDownloader {
         prefix: &str,
         cellar: &str,
         library: &str,
+        repository: &str,
     ) -> Result<()> {
         let content = match std::fs::read(path) {
             Ok(c) => c,
@@ -862,12 +866,12 @@ impl BottleDownloader {
         };
 
         if content.len() >= 4 && &content[0..4] == b"\x7fELF" {
-            return Self::relocate_elf(path, prefix, cellar, library);
+            return Self::relocate_elf(path, prefix, cellar, library, repository);
         }
 
         // Detect Mach-O binaries (macOS): 32-bit, 64-bit, and fat/universal
         if is_mach_o(&content) {
-            return Self::relocate_macho(path, prefix, cellar, library);
+            return Self::relocate_macho(path, prefix, cellar, library, repository);
         }
 
         let mut content = content;
@@ -886,6 +890,7 @@ impl BottleDownloader {
             let replacement = match *placeholder {
                 "@@HOMEBREW_CELLAR@@" => cellar.as_bytes(),
                 "@@HOMEBREW_LIBRARY@@" => library.as_bytes(),
+                "@@HOMEBREW_REPOSITORY@@" => repository.as_bytes(),
                 _ => prefix.as_bytes(),
             };
 
@@ -913,7 +918,13 @@ impl BottleDownloader {
         Ok(())
     }
 
-    fn relocate_elf(path: &Path, prefix: &str, cellar: &str, library: &str) -> Result<()> {
+    fn relocate_elf(
+        path: &Path,
+        prefix: &str,
+        cellar: &str,
+        library: &str,
+        repository: &str,
+    ) -> Result<()> {
         use std::process::Command;
 
         let Some(patchelf) = which_patchelf() else {
@@ -967,7 +978,8 @@ impl BottleDownloader {
                 let new_rpath = rpath
                     .replace("@@HOMEBREW_PREFIX@@", prefix)
                     .replace("@@HOMEBREW_CELLAR@@", cellar)
-                    .replace("@@HOMEBREW_LIBRARY@@", library);
+                    .replace("@@HOMEBREW_LIBRARY@@", library)
+                    .replace("@@HOMEBREW_REPOSITORY@@", repository);
                 if new_rpath != rpath.as_ref() {
                     let _ = Command::new(&patchelf)
                         .args(["--set-rpath", new_rpath.trim(), path_str])
@@ -992,7 +1004,13 @@ impl BottleDownloader {
         validate_runtime_dir(dir)
     }
 
-    fn relocate_macho(path: &Path, prefix: &str, cellar: &str, library: &str) -> Result<()> {
+    fn relocate_macho(
+        path: &Path,
+        prefix: &str,
+        cellar: &str,
+        library: &str,
+        repository: &str,
+    ) -> Result<()> {
         use std::process::Command;
 
         #[cfg(unix)]
@@ -1008,9 +1026,10 @@ impl BottleDownloader {
 
         let mut modified = false;
 
-        modified |= relocate_macho_install_name(path_str, path, prefix, cellar, library);
-        modified |= relocate_macho_dylib_paths(path_str, path, prefix, cellar, library);
-        modified |= relocate_macho_rpaths(path_str, path, prefix, cellar, library);
+        modified |=
+            relocate_macho_install_name(path_str, path, prefix, cellar, library, repository);
+        modified |= relocate_macho_dylib_paths(path_str, path, prefix, cellar, library, repository);
+        modified |= relocate_macho_rpaths(path_str, path, prefix, cellar, library, repository);
         // Re-sign with an ad-hoc signature after any modification.
         // install_name_tool invalidates the code signature on Apple Silicon,
         // and macOS kills modified unsigned binaries with SIGKILL.
@@ -1030,11 +1049,13 @@ fn relocate_homebrew_placeholders(
     prefix: &str,
     cellar: &str,
     library: &str,
+    repository: &str,
 ) -> String {
     value
         .replace("@@HOMEBREW_CELLAR@@", cellar)
         .replace("@@HOMEBREW_PREFIX@@", prefix)
         .replace("@@HOMEBREW_LIBRARY@@", library)
+        .replace("@@HOMEBREW_REPOSITORY@@", repository)
 }
 
 fn macho_install_name(output: &str) -> Option<&str> {
@@ -1436,6 +1457,7 @@ fn relocate_macho_install_name(
     prefix: &str,
     cellar: &str,
     library: &str,
+    repository: &str,
 ) -> bool {
     use std::process::Command;
     let mut modified = false;
@@ -1443,8 +1465,13 @@ fn relocate_macho_install_name(
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
             if let Some(install_name) = macho_install_name(&text) {
-                let new_name =
-                    relocate_homebrew_placeholders(install_name, prefix, cellar, library);
+                let new_name = relocate_homebrew_placeholders(
+                    install_name,
+                    prefix,
+                    cellar,
+                    library,
+                    repository,
+                );
                 if new_name != install_name {
                     match Command::new("install_name_tool")
                         .args(["-id", &new_name, path_str])
@@ -1478,6 +1505,7 @@ fn relocate_macho_dylib_paths(
     prefix: &str,
     cellar: &str,
     library: &str,
+    repository: &str,
 ) -> bool {
     use std::process::Command;
     let mut modified = false;
@@ -1488,11 +1516,13 @@ fn relocate_macho_dylib_paths(
                 if !lib_path.contains("@@HOMEBREW_CELLAR@@")
                     && !lib_path.contains("@@HOMEBREW_PREFIX@@")
                     && !lib_path.contains("@@HOMEBREW_LIBRARY@@")
+                    && !lib_path.contains("@@HOMEBREW_REPOSITORY@@")
                 {
                     continue;
                 }
 
-                let new_path = relocate_homebrew_placeholders(lib_path, prefix, cellar, library);
+                let new_path =
+                    relocate_homebrew_placeholders(lib_path, prefix, cellar, library, repository);
 
                 let result = Command::new("install_name_tool")
                     .args(["-change", lib_path, &new_path, path_str])
@@ -1525,6 +1555,7 @@ fn relocate_macho_rpaths(
     prefix: &str,
     cellar: &str,
     library: &str,
+    repository: &str,
 ) -> bool {
     use std::process::Command;
     let mut modified = false;
@@ -1535,8 +1566,10 @@ fn relocate_macho_rpaths(
                 if rpath.contains("@@HOMEBREW_CELLAR@@")
                     || rpath.contains("@@HOMEBREW_PREFIX@@")
                     || rpath.contains("@@HOMEBREW_LIBRARY@@")
+                    || rpath.contains("@@HOMEBREW_REPOSITORY@@")
                 {
-                    let new_rpath = relocate_homebrew_placeholders(rpath, prefix, cellar, library);
+                    let new_rpath =
+                        relocate_homebrew_placeholders(rpath, prefix, cellar, library, repository);
                     let result = Command::new("install_name_tool")
                         .args(["-rpath", rpath, &new_rpath, path_str])
                         .output();
@@ -1781,7 +1814,7 @@ mod tests {
     #[test]
     fn relocate_file_replaces_longer_text_paths() {
         let mut f = NamedTempFile::new().unwrap();
-        f.write_all(b"exec @@HOMEBREW_CELLAR@@/odin/bin/odin\nlib @@HOMEBREW_LIBRARY@@/Homebrew\n")
+        f.write_all(b"exec @@HOMEBREW_CELLAR@@/odin/bin/odin\nlib @@HOMEBREW_LIBRARY@@/Homebrew\nrepo @@HOMEBREW_REPOSITORY@@/bin\n")
             .unwrap();
 
         BottleDownloader::relocate_file(
@@ -1790,18 +1823,22 @@ mod tests {
                 "@@HOMEBREW_CELLAR@@",
                 "@@HOMEBREW_PREFIX@@",
                 "@@HOMEBREW_LIBRARY@@",
+                "@@HOMEBREW_REPOSITORY@@",
             ],
             "/opt/homebrew",
             "/opt/homebrew/Cellar",
             "/opt/homebrew/Library",
+            "/opt/homebrew",
         )
         .unwrap();
 
         let contents = std::fs::read_to_string(f.path()).unwrap();
         assert!(contents.contains("/opt/homebrew/Cellar/odin/bin/odin"));
         assert!(contents.contains("/opt/homebrew/Library/Homebrew"));
+        assert!(contents.contains("/opt/homebrew/bin"));
         assert!(!contents.contains("@@HOMEBREW_CELLAR@@"));
         assert!(!contents.contains("@@HOMEBREW_LIBRARY@@"));
+        assert!(!contents.contains("@@HOMEBREW_REPOSITORY@@"));
     }
 
     #[test]
@@ -1838,15 +1875,16 @@ mod tests {
     #[test]
     fn homebrew_placeholder_relocation_updates_all_macho_fields() {
         let relocated = relocate_homebrew_placeholders(
-            "@@HOMEBREW_PREFIX@@/lib:@@HOMEBREW_CELLAR@@/pkg/1/lib:@@HOMEBREW_LIBRARY@@/Homebrew",
+            "@@HOMEBREW_PREFIX@@/lib:@@HOMEBREW_CELLAR@@/pkg/1/lib:@@HOMEBREW_LIBRARY@@/Homebrew:@@HOMEBREW_REPOSITORY@@/repo",
             "/opt/homebrew",
             "/opt/homebrew/Cellar",
             "/opt/homebrew/Library",
+            "/opt/homebrew",
         );
 
         assert_eq!(
             relocated,
-            "/opt/homebrew/lib:/opt/homebrew/Cellar/pkg/1/lib:/opt/homebrew/Library/Homebrew"
+            "/opt/homebrew/lib:/opt/homebrew/Cellar/pkg/1/lib:/opt/homebrew/Library/Homebrew:/opt/homebrew/repo"
         );
     }
 
