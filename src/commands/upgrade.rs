@@ -1602,12 +1602,10 @@ mod tests {
         assert!(installed.contains_key("vendor-example"));
     }
 
-    static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_get_outdated_packages() {
-        let _lock = HOME_MUTEX.lock().unwrap();
+        let _lock = crate::install::HOME_MUTEX.lock().unwrap();
         let original_home = std::env::var_os("HOME");
 
         use crate::api::{BottleFile, BottleInfo, BottleStable, Formula, Versions};
@@ -1688,7 +1686,11 @@ mod tests {
                 dependencies: None,
                 build_dependencies: None,
                 bottle: Some(BottleInfo {
-                    stable: Some(BottleStable { rebuild, files }),
+                    stable: Some(BottleStable {
+                        rebuild,
+                        cellar: None,
+                        files,
+                    }),
                 }),
                 deprecated: false,
                 disabled: false,
