@@ -5,9 +5,80 @@ use crate::ui::dirs;
 use crate::version::sort_versions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, instrument};
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut comps: Vec<OsString> = Vec::new();
+    let mut has_root = false;
+    for c in path.components() {
+        match c {
+            std::path::Component::Prefix(_) => {
+                comps.clear();
+                comps.push(c.as_os_str().to_os_string());
+                has_root = false;
+            }
+            std::path::Component::RootDir => {
+                comps.clear();
+                comps.push(c.as_os_str().to_os_string());
+                has_root = true;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if let Some(last) = comps.last() {
+                    if last.as_os_str() == OsStr::new("..") {
+                        comps.push(OsString::from(".."));
+                    } else if has_root && comps.len() == 1 {
+                    } else {
+                        comps.pop();
+                    }
+                } else {
+                    comps.push(OsString::from(".."));
+                }
+            }
+            std::path::Component::Normal(p) => comps.push(p.to_os_string()),
+        }
+    }
+    if comps.is_empty() {
+        PathBuf::from(".")
+    } else {
+        comps.into_iter().collect()
+    }
+}
+
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    let from = normalize_path(from);
+    let to = normalize_path(to);
+    if from == to {
+        return PathBuf::from(".");
+    }
+    let from_comps: Vec<_> = from
+        .components()
+        .map(|c| c.as_os_str().to_os_string())
+        .collect();
+    let to_comps: Vec<_> = to
+        .components()
+        .map(|c| c.as_os_str().to_os_string())
+        .collect();
+    let mut i = 0;
+    while i < from_comps.len() && i < to_comps.len() && from_comps[i] == to_comps[i] {
+        i += 1;
+    }
+    let mut result = PathBuf::new();
+    for _ in i..from_comps.len() {
+        result.push("..");
+    }
+    for comp in &to_comps[i..] {
+        result.push(comp);
+    }
+    if result.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        result
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -415,8 +486,9 @@ pub async fn create_symlinks(
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
-            symlink(&formula_path, &opt_link)
-                .or_else(|_| sudo::sudo_symlink(&formula_path, &opt_link).map(|_| ()))?;
+            let link_target = relative_path(&opt_dir, &formula_path);
+            symlink(&link_target, &opt_link)
+                .or_else(|_| sudo::sudo_symlink(&link_target, &opt_link).map(|_| ()))?;
         }
         created_links.push(opt_link);
     }
@@ -438,7 +510,7 @@ fn link_directory_recursive<'a>(
             let file_name = entry.file_name();
             let source_path = entry.path();
             let target_path = target_dir.join(&file_name);
-            let source_meta = entry.metadata().await?;
+            let source_meta = fs::symlink_metadata(&source_path).await?;
 
             // Safety check: ensure source is actually inside the formula path
             if !source_path.starts_with(formula_base) {
@@ -469,25 +541,22 @@ fn link_directory_recursive<'a>(
                             .or_else(|_| sudo::sudo_remove(&target_path).map(|_| ()))?;
                     }
                 }
-
                 if !dry_run {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::symlink;
-                        symlink(&source_path, &target_path).or_else(|_| {
-                            sudo::sudo_symlink(&source_path, &target_path).map(|_| ())
-                        })?;
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        return Err(WaxError::PlatformNotSupported(
-                            "Symlinks not supported on this platform".to_string(),
-                        ));
-                    }
+                    fs::create_dir(&target_path)
+                        .await
+                        .or_else(|_| sudo::sudo_mkdir(&target_path))?;
                 }
-                created_links.push(target_path);
+                link_directory_recursive(
+                    &source_path,
+                    &target_path,
+                    formula_base,
+                    dry_run,
+                    created_links,
+                )
+                .await?;
             } else {
-                if target_path.symlink_metadata().is_ok() {
+                let link_target = relative_path(target_path.parent().unwrap(), &source_path);
+                if fs::symlink_metadata(&target_path).await.is_ok() {
                     if !dry_run {
                         debug!("Removing existing symlink/file at {:?}", target_path);
                         fs::remove_file(&target_path)
@@ -503,8 +572,8 @@ fn link_directory_recursive<'a>(
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::symlink;
-                        symlink(&source_path, &target_path).or_else(|_| {
-                            sudo::sudo_symlink(&source_path, &target_path).map(|_| ())
+                        symlink(&link_target, &target_path).or_else(|_| {
+                            sudo::sudo_symlink(&link_target, &target_path).map(|_| ())
                         })?;
                     }
                     #[cfg(not(unix))]
@@ -555,7 +624,9 @@ pub async fn remove_symlinks(
         unlink_directory_recursive(
             &source_dir,
             &target_dir,
+            &target_dir,
             &formula_path,
+            &prefix,
             dry_run,
             &mut removed_links,
         )
@@ -568,8 +639,12 @@ pub async fn remove_symlinks(
         if let Ok(metadata) = fs::symlink_metadata(&opt_link).await {
             if metadata.is_symlink() {
                 if let Ok(link_target) = fs::read_link(&opt_link).await {
-                    let link_target = dunce::canonicalize(&link_target).unwrap_or(link_target);
-                    if link_target.starts_with(&formula_path) {
+                    let resolved = if link_target.is_absolute() {
+                        normalize_path(&link_target)
+                    } else {
+                        normalize_path(&opt_link.parent().unwrap().join(&link_target))
+                    };
+                    if resolved.starts_with(&formula_path) {
                         if !dry_run {
                             fs::remove_file(&opt_link)
                                 .await
@@ -586,17 +661,35 @@ pub async fn remove_symlinks(
     Ok(removed_links)
 }
 
+async fn is_dir_empty(path: &Path) -> bool {
+    let mut entries = match fs::read_dir(path).await {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    matches!(entries.next_entry().await, Ok(None))
+}
+
 fn unlink_directory_recursive<'a>(
     source_dir: &'a Path,
     target_dir: &'a Path,
+    top_target_dir: &'a Path,
     formula_path: &'a Path,
+    prefix: &'a Path,
     dry_run: bool,
     removed_links: &'a mut Vec<PathBuf>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
     Box::pin(async move {
         #[cfg(not(unix))]
         {
-            let _ = (source_dir, target_dir, formula_path, dry_run, removed_links);
+            let _ = (
+                source_dir,
+                target_dir,
+                top_target_dir,
+                formula_path,
+                prefix,
+                dry_run,
+                removed_links,
+            );
         }
 
         #[cfg(not(unix))]
@@ -613,6 +706,7 @@ fn unlink_directory_recursive<'a>(
                 let file_name = entry.file_name();
                 let source_path = entry.path();
                 let target_path = target_dir.join(&file_name);
+                let source_meta = fs::symlink_metadata(&source_path).await?;
 
                 let target_meta = match fs::symlink_metadata(&target_path).await {
                     Ok(m) => m,
@@ -621,8 +715,12 @@ fn unlink_directory_recursive<'a>(
 
                 if target_meta.is_symlink() {
                     if let Ok(link_target) = fs::read_link(&target_path).await {
-                        let link_target = dunce::canonicalize(&link_target).unwrap_or(link_target);
-                        if link_target.starts_with(formula_path) {
+                        let resolved = if link_target.is_absolute() {
+                            normalize_path(&link_target)
+                        } else {
+                            normalize_path(&target_path.parent().unwrap().join(&link_target))
+                        };
+                        if resolved.starts_with(formula_path) {
                             if !dry_run {
                                 fs::remove_file(&target_path)
                                     .await
@@ -631,18 +729,142 @@ fn unlink_directory_recursive<'a>(
                             removed_links.push(target_path);
                         }
                     }
-                } else if target_meta.is_dir() && source_path.is_dir() {
+                } else if target_meta.is_dir() && source_meta.is_dir() {
                     unlink_directory_recursive(
                         &source_path,
                         &target_path,
+                        top_target_dir,
                         formula_path,
+                        prefix,
                         dry_run,
                         removed_links,
                     )
                     .await?;
                 }
             }
+
+            if !dry_run
+                && target_dir != top_target_dir
+                && target_dir.starts_with(prefix)
+                && is_dir_empty(target_dir).await
+            {
+                fs::remove_dir(target_dir)
+                    .await
+                    .or_else(|_| sudo::sudo_remove(target_dir).map(|_| ()))?;
+            }
+
             Ok(())
         }
     })
+}
+
+#[cfg(test)]
+pub(crate) static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod tests {
+    use super::{create_symlinks, remove_symlinks, InstallMode, HOME_MUTEX};
+    use std::path::{Path, PathBuf};
+    use tokio::fs;
+
+    async fn setup_prefix() -> (
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        let guard = HOME_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", dir.path());
+        let prefix = dir.path().join(".local").join("wax");
+        let cellar = prefix.join("Cellar");
+        (dir, prefix, cellar, guard)
+    }
+
+    async fn write_formula_files(cellar: &Path, name: &str, version: &str, files: &[&str]) {
+        let formula = cellar.join(name).join(version);
+        for f in files {
+            let p = formula.join(f);
+            fs::create_dir_all(p.parent().unwrap()).await.unwrap();
+            fs::write(&p, b"x").await.unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn multiple_formulae_share_man_and_bin() {
+        let (_dir, prefix, cellar, _guard) = setup_prefix().await;
+        write_formula_files(&cellar, "a", "1.0", &["bin/a", "share/man/man1/a.1"]).await;
+        write_formula_files(&cellar, "b", "1.0", &["bin/b", "share/man/man1/b.1"]).await;
+        create_symlinks("a", "1.0", &cellar, false, InstallMode::User)
+            .await
+            .unwrap();
+        create_symlinks("b", "1.0", &cellar, false, InstallMode::User)
+            .await
+            .unwrap();
+
+        assert!(prefix.join("bin/a").is_symlink());
+        assert!(prefix.join("bin/b").is_symlink());
+        assert!(prefix.join("share/man/man1/a.1").is_symlink());
+        assert!(prefix.join("share/man/man1/b.1").is_symlink());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn symlinks_are_relative() {
+        let (_dir, prefix, cellar, _guard) = setup_prefix().await;
+        write_formula_files(&cellar, "foo", "1.0", &["bin/foo", "share/man/man1/foo.1"]).await;
+        let created = create_symlinks("foo", "1.0", &cellar, false, InstallMode::User)
+            .await
+            .unwrap();
+
+        for link in &created {
+            let target = fs::read_link(link).await.unwrap();
+            assert!(
+                !target.is_absolute(),
+                "symlink {} should be relative",
+                link.display()
+            );
+        }
+
+        let opt_link = prefix.join("opt").join("foo");
+        assert!(opt_link.is_symlink());
+        let opt_target = fs::read_link(&opt_link).await.unwrap();
+        assert!(!opt_target.is_absolute());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn uninstall_prunes_empty_parent_dirs() {
+        let (_dir, prefix, cellar, _guard) = setup_prefix().await;
+        write_formula_files(&cellar, "a", "1.0", &["bin/a", "share/man/man1/a.1"]).await;
+        write_formula_files(&cellar, "b", "1.0", &["bin/b", "share/man/man1/b.1"]).await;
+        create_symlinks("a", "1.0", &cellar, false, InstallMode::User)
+            .await
+            .unwrap();
+        create_symlinks("b", "1.0", &cellar, false, InstallMode::User)
+            .await
+            .unwrap();
+
+        remove_symlinks("a", "1.0", &cellar, false, InstallMode::User)
+            .await
+            .unwrap();
+
+        assert!(!prefix.join("bin/a").exists());
+        assert!(prefix.join("bin/b").is_symlink());
+        assert!(!prefix.join("share/man/man1/a.1").exists());
+        assert!(prefix.join("share/man/man1/b.1").is_symlink());
+        assert!(prefix.join("share/man/man1").is_dir());
+
+        remove_symlinks("b", "1.0", &cellar, false, InstallMode::User)
+            .await
+            .unwrap();
+
+        assert!(!prefix.join("bin/b").exists());
+        assert!(!prefix.join("share/man/man1/b.1").exists());
+        assert!(!prefix.join("share/man/man1").exists());
+        assert!(!prefix.join("share/man").exists());
+        assert!(prefix.join("share").is_dir());
+        assert!(prefix.join("bin").is_dir());
+    }
 }
