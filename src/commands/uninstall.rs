@@ -1,6 +1,6 @@
+use crate::adopt::{self, AdoptOptions, PackageKind};
 use crate::cache::Cache;
 use crate::cask::CaskState;
-use crate::discovery::discover_manually_installed_casks;
 use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
 use crate::lockfile::Lockfile;
@@ -36,10 +36,8 @@ pub async fn uninstall(
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let state = InstallState::new()?;
-            state.sync_from_cellar().await.ok();
-            let installed = state.load().await?;
-            let mut names: Vec<String> = installed.keys().cloned().collect();
+            let snapshot = adopt::sync_installed_state(cache, AdoptOptions::formulae_only()).await?;
+            let mut names: Vec<String> = snapshot.formulae.keys().cloned().collect();
             names.sort();
             names
         }
@@ -111,36 +109,16 @@ async fn uninstall_impl(
         return Err(WaxError::NotInstalled(formula_name.to_string()));
     }
 
-    if cask {
-        return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
+    let resolved = adopt::resolve_package(cache, formula_name, cask).await?;
+    if resolved.kind == PackageKind::Cask {
+        return uninstall_cask(cache, &resolved.name, dry_run, start, quiet).await;
     }
 
+    let package = resolved
+        .formula
+        .ok_or_else(|| WaxError::NotInstalled(formula_name.to_string()))?;
     let state = InstallState::new()?;
     let installed_packages = state.load().await?;
-
-    let short_name = formula_name.rsplit('/').next().unwrap_or(formula_name);
-
-    let package = if let Some(pkg) = installed_packages
-        .get(formula_name)
-        .or_else(|| installed_packages.get(short_name))
-    {
-        pkg.clone()
-    } else {
-        let cask_state = CaskState::new()?;
-        let installed_casks = cask_state.load().await?;
-
-        if installed_casks.contains_key(formula_name) || installed_casks.contains_key(short_name) {
-            return uninstall_cask(cache, formula_name, dry_run, start, quiet).await;
-        }
-
-        state.sync_from_cellar().await?;
-        let updated_packages = state.load().await?;
-
-        updated_packages
-            .get(formula_name)
-            .cloned()
-            .ok_or_else(|| WaxError::NotInstalled(formula_name.to_string()))?
-    };
 
     let formulae = cache.load_formulae().await?;
     let dependents: Vec<String> = formulae
@@ -178,7 +156,16 @@ async fn uninstall_impl(
         }
     }
 
-    uninstall_package_direct(formula_name, &package, state, dry_run, start, quiet, prefix).await
+    uninstall_package_direct(
+        &resolved.name,
+        &package,
+        state,
+        dry_run,
+        start,
+        quiet,
+        prefix,
+    )
+    .await
 }
 
 async fn uninstall_package_direct(
@@ -345,65 +332,14 @@ async fn uninstall_cask(
     quiet: bool,
 ) -> Result<()> {
     let state = CaskState::new()?;
-    let mut installed_casks = state.load().await?;
+    let installed_casks = state.load().await?;
 
-    let short_name = cask_name.rsplit('/').next().unwrap_or(cask_name);
-
-    let was_tracked =
-        installed_casks.contains_key(cask_name) || installed_casks.contains_key(short_name);
-
-    // If cask not found, try discovering manually installed apps
-    if !was_tracked {
-        let casks = cache.load_all_casks().await?;
-        if let Ok(discovered) = discover_manually_installed_casks(&casks).await {
-            for (name, cask) in discovered {
-                installed_casks.entry(name).or_insert(cask);
-            }
-        }
-    }
-
-    // Last resort: check /Applications for a matching .app bundle
-    if !installed_casks.contains_key(cask_name) && !installed_casks.contains_key(short_name) {
-        let app_name = resolve_cask_app_name(cache, cask_name, "unknown", None).await;
-        let app_candidates = [
-            std::path::PathBuf::from("/Applications").join(&app_name),
-            dirs::home_dir()
-                .map(|h| h.join("Applications").join(&app_name))
-                .unwrap_or_default(),
-        ];
-        for app_path in app_candidates {
-            if app_path.exists() {
-                let version = read_app_version_from_plist(&app_path)
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                installed_casks.insert(
-                    cask_name.to_string(),
-                    crate::cask::InstalledCask {
-                        name: cask_name.to_string(),
-                        version,
-                        install_date: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as i64,
-                        artifact_type: Some("app".to_string()),
-                        binary_paths: None,
-                        app_name: Some(
-                            app_path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                        ),
-                        installed_paths: Vec::new(),
-                    },
-                );
-                break;
-            }
-        }
-    }
+    let short_name = adopt::short_package_name(cask_name);
 
     let cask = installed_casks
         .get(cask_name)
         .or_else(|| installed_casks.get(short_name))
+        .cloned()
         .ok_or_else(|| WaxError::NotInstalled(cask_name.to_string()))?;
 
     if dry_run {
@@ -490,7 +426,7 @@ async fn uninstall_cask(
                 }
             }
 
-            if !removed && !quiet && !was_tracked {
+            if !removed && !quiet {
                 eprintln!(
                     "warning: could not find {} in Applications — \
                     you may need to remove it manually",
@@ -574,39 +510,6 @@ fn find_app_in_caskroom(cask_name: &str, version: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn sanitize_version_string(version: &str) -> String {
-    version.chars().filter(|c| !c.is_control()).collect()
-}
-
-async fn read_app_version_from_plist(path: &Path) -> Option<String> {
-    let plist = path.join("Contents/Info.plist");
-    if !plist.exists() {
-        return None;
-    }
-
-    let output = tokio::process::Command::new("plutil")
-        .arg("-extract")
-        .arg("CFBundleShortVersionString")
-        .arg("raw")
-        .arg("-o")
-        .arg("-")
-        .arg(&plist)
-        .output()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let value = sanitize_version_string(String::from_utf8_lossy(&output.stdout).trim());
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
 }
 
 #[cfg(target_os = "windows")]

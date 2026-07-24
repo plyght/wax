@@ -1,8 +1,9 @@
+use crate::adopt::{self, AdoptOptions};
 use crate::cache::Cache;
-use crate::cask::{CaskState, InstalledCask};
+use crate::cask::InstalledCask;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
-use crate::install::{InstallMode, InstallState, InstalledPackage};
+use crate::install::{InstallMode, InstalledPackage};
 use crate::signal::{clear_active_multi, clear_current_op, set_active_multi, set_current_op};
 use crate::ui::{PROGRESS_BAR_CHARS, PROGRESS_BAR_TEMPLATE, SPINNER_TICK_CHARS};
 use console::style;
@@ -192,12 +193,9 @@ async fn reinstall_package(
 }
 
 pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool) -> Result<()> {
-    let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
-
-    let cask_state = CaskState::new()?;
-    let installed_casks = cask_state.load().await?;
+    let snapshot = adopt::sync_installed_state(cache, AdoptOptions::default()).await?;
+    let installed = snapshot.formulae;
+    let installed_casks = snapshot.casks;
 
     let resolved = resolve_packages(packages, cask, all, &installed, &installed_casks)?;
     check_missing_packages(&resolved, cask, &installed, &installed_casks)?;

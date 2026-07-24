@@ -1,21 +1,21 @@
-use crate::cask::{relink_installed_cask, unlink_installed_cask, CaskState};
+use crate::adopt::{self, AdoptOptions};
+use crate::cache::Cache;
+use crate::cask::{relink_installed_cask, unlink_installed_cask};
 use crate::error::validate_package_name;
 use crate::error::{Result, WaxError};
-use crate::install::{create_symlinks, remove_symlinks, InstallState};
+use crate::install::{create_symlinks, remove_symlinks};
 use console::style;
 
-pub async fn link(packages: &[String]) -> Result<()> {
+pub async fn link(cache: &Cache, packages: &[String]) -> Result<()> {
     if packages.is_empty() {
         return Err(WaxError::InvalidInput(
             "Specify package name(s) to link".to_string(),
         ));
     }
 
-    let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
-    let cask_state = CaskState::new()?;
-    let installed_casks = cask_state.load().await?;
+    let snapshot = adopt::sync_installed_state(cache, AdoptOptions::default()).await?;
+    let installed = snapshot.formulae;
+    let installed_casks = snapshot.casks;
 
     for name in packages {
         validate_package_name(name)?;
@@ -53,18 +53,16 @@ pub async fn link(packages: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub async fn unlink(packages: &[String]) -> Result<()> {
+pub async fn unlink(cache: &Cache, packages: &[String]) -> Result<()> {
     if packages.is_empty() {
         return Err(WaxError::InvalidInput(
             "Specify package name(s) to unlink".to_string(),
         ));
     }
 
-    let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
-    let cask_state = CaskState::new()?;
-    let installed_casks = cask_state.load().await?;
+    let snapshot = adopt::sync_installed_state(cache, AdoptOptions::default()).await?;
+    let installed = snapshot.formulae;
+    let installed_casks = snapshot.casks;
 
     for name in packages {
         validate_package_name(name)?;

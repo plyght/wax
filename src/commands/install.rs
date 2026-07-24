@@ -7,7 +7,7 @@ use crate::cask::{
 };
 use crate::commands::version_install;
 use crate::deps::resolve_dependencies;
-use crate::discovery::discover_manually_installed_casks;
+use crate::adopt::{self, AdoptOptions};
 use crate::error::{Result, WaxError};
 use crate::formula_parser::{BuildSystem, FormulaParser};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
@@ -863,8 +863,7 @@ pub(crate) async fn install_impl(
 
     let formulae = cache.load_all_formulae().await?;
     let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed_packages = state.load().await?;
+    let installed_packages = adopt::sync_formulae().await?;
     let installed: HashSet<String> = installed_packages
         .iter()
         .filter_map(|(name, pkg)| {
@@ -1867,14 +1866,9 @@ async fn install_casks(
         Arc::new(crate::signal::clone_active_multi().unwrap_or_default());
 
     let casks = cache.load_all_casks().await?;
-    let _state = CaskState::new()?;
-    let mut installed_casks = _state.load().await?;
-
-    if cfg!(target_os = "macos") {
-        for (name, cask) in discover_manually_installed_casks(&casks).await? {
-            installed_casks.entry(name).or_insert(cask);
-        }
-    }
+    let installed_casks = adopt::sync_installed_state(cache, AdoptOptions::casks_only())
+        .await?
+        .casks;
 
     let mut to_install = Vec::new(); // macOS: full CaskInstaller path
     let mut linux_cask_installs = Vec::new(); // Linux: snap → flatpak → native PM

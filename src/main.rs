@@ -1,3 +1,4 @@
+mod adopt;
 mod api;
 mod bottle;
 mod builder;
@@ -751,12 +752,12 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
         Commands::Link { packages } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("link")?;
-            commands::link::link(&packages).await
+            commands::link::link(cache, &packages).await
         }
         Commands::Unlink { packages } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("unlink")?;
-            commands::link::unlink(&packages).await
+            commands::link::unlink(cache, &packages).await
         }
         Commands::Cleanup { dry_run } => {
             #[cfg(target_os = "windows")]

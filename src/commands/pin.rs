@@ -1,3 +1,4 @@
+use crate::adopt;
 use crate::error::validate_package_name;
 use crate::error::{Result, WaxError};
 use crate::install::InstallState;
@@ -9,8 +10,7 @@ pub async fn pin(packages: &[String]) -> Result<()> {
     }
 
     let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
+    let installed = adopt::sync_formulae().await?;
 
     for name in packages {
         validate_package_name(name)?;
@@ -44,8 +44,7 @@ pub async fn unpin(packages: &[String]) -> Result<()> {
     }
 
     let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
+    let installed = adopt::sync_formulae().await?;
 
     for name in packages {
         validate_package_name(name)?;

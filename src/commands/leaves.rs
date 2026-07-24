@@ -1,13 +1,11 @@
+use crate::adopt;
 use crate::cache::Cache;
 use crate::error::Result;
-use crate::install::InstallState;
 use console::style;
 use std::collections::{HashMap, HashSet};
 
 pub async fn leaves(cache: &Cache) -> Result<()> {
-    let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
+    let installed = adopt::sync_formulae().await?;
 
     if installed.is_empty() {
         println!("no packages installed");

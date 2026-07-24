@@ -1,12 +1,10 @@
+use crate::adopt;
 use crate::error::Result;
-use crate::install::InstallState;
 use crate::version::sort_versions;
 use console::style;
 
 pub async fn cleanup(dry_run: bool) -> Result<()> {
-    let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
+    let installed = adopt::sync_formulae().await?;
 
     let mut total_freed: u64 = 0;
     let mut removed_count = 0;

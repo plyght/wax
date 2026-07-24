@@ -1,7 +1,6 @@
+use crate::adopt::{self, AdoptOptions};
 use crate::bottle::{detect_platform, BottleDownloader};
 use crate::cache::Cache;
-use crate::cask::CaskState;
-use crate::discovery::{discover_linux_system_packages, discover_manually_installed_casks};
 use crate::error::{Result, WaxError};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
 use crate::lockfile::Lockfile;
@@ -32,11 +31,9 @@ pub async fn sync(cache: &Cache) -> Result<()> {
 
     let formulae = cache.load_formulae().await?;
     let state = InstallState::new()?;
-    let installed_packages = load_installed_packages(&state, &formulae).await?;
-
-    let casks = cache.load_casks().await?;
-    let cask_state = CaskState::new()?;
-    let installed_casks = load_installed_casks(&cask_state, &casks).await?;
+    let snapshot = adopt::sync_installed_state(cache, AdoptOptions::default()).await?;
+    let installed_packages = snapshot.formulae;
+    let installed_casks = snapshot.casks;
 
     let current_platform = detect_platform();
 
@@ -98,26 +95,6 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     );
 
     Ok(())
-}
-
-async fn load_installed_packages(
-    state: &InstallState,
-    formulae: &[crate::api::Formula],
-) -> Result<HashMap<String, InstalledPackage>> {
-    let mut installed_packages = state.load().await?;
-
-    if cfg!(target_os = "linux") {
-        for (name, package) in discover_linux_system_packages(formulae).await? {
-            installed_packages.entry(name).or_insert(package);
-        }
-    }
-
-    // Save discovered packages to InstallState
-    if !installed_packages.is_empty() {
-        state.save(&installed_packages).await?;
-    }
-
-    Ok(installed_packages)
 }
 
 struct SyncActions {
@@ -470,20 +447,4 @@ async fn install_extracted_packages(
     }
 
     Ok(())
-}
-
-async fn load_installed_casks(
-    cask_state: &CaskState,
-    casks: &[crate::api::Cask],
-) -> Result<HashMap<String, crate::cask::InstalledCask>> {
-    let mut installed_casks = cask_state.load().await?;
-
-    if cfg!(target_os = "macos") {
-        for (name, cask) in discover_manually_installed_casks(casks).await? {
-            installed_casks.entry(name).or_insert(cask);
-        }
-        cask_state.save(&installed_casks).await?;
-    }
-
-    Ok(installed_casks)
 }

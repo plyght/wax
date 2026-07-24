@@ -1,6 +1,6 @@
+use crate::adopt;
 use crate::cache::Cache;
 use crate::error::{Result, WaxError};
-use crate::install::InstallState;
 use console::style;
 use std::collections::{HashMap, HashSet};
 
@@ -17,9 +17,7 @@ pub async fn deps(cache: &Cache, formula: &str, tree: bool, installed: bool) -> 
         .ok_or_else(|| WaxError::FormulaNotFound(formula.to_string()))?;
 
     let installed_names: HashSet<String> = if installed {
-        let state = InstallState::new()?;
-        state.sync_from_cellar().await.ok();
-        state.load().await?.into_keys().collect()
+        adopt::sync_formulae().await?.into_keys().collect()
     } else {
         HashSet::new()
     };

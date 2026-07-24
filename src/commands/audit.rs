@@ -1,6 +1,5 @@
 use crate::cache::Cache;
 use crate::error::Result;
-use crate::install::InstallState;
 use crate::version::is_same_or_newer;
 use console::style;
 use std::collections::HashMap;
@@ -101,9 +100,7 @@ fn print_unknown(unknown: &[(&str, &str)]) {
 }
 
 pub async fn audit(cache: &Cache) -> Result<()> {
-    let state = InstallState::new()?;
-    state.sync_from_cellar().await.ok();
-    let installed = state.load().await?;
+    let installed = crate::adopt::sync_formulae().await?;
 
     if installed.is_empty() {
         println!("no packages installed");

@@ -1,6 +1,6 @@
+use crate::adopt;
 use crate::cache::Cache;
 use crate::error::Result;
-use crate::install::InstallState;
 use console::style;
 use std::collections::HashSet;
 
@@ -8,9 +8,7 @@ pub async fn uses(cache: &Cache, formula: &str, installed_only: bool) -> Result<
     let formulae = cache.load_all_formulae().await?;
 
     let installed_names: HashSet<String> = if installed_only {
-        let state = InstallState::new()?;
-        state.sync_from_cellar().await.ok();
-        state.load().await?.into_keys().collect()
+        adopt::sync_formulae().await?.into_keys().collect()
     } else {
         HashSet::new()
     };
