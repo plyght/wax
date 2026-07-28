@@ -445,7 +445,10 @@ enum TapAction {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
-    #[command(about = "List installed taps or packages in a tap", visible_alias = "ls")]
+    #[command(
+        about = "List installed taps or packages in a tap",
+        visible_alias = "ls"
+    )]
     List {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: Option<String>,

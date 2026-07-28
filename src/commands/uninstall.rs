@@ -36,7 +36,8 @@ pub async fn uninstall(
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let snapshot = adopt::sync_installed_state(cache, AdoptOptions::formulae_only()).await?;
+            let snapshot =
+                adopt::sync_installed_state(cache, AdoptOptions::formulae_only()).await?;
             let mut names: Vec<String> = snapshot.formulae.keys().cloned().collect();
             names.sort();
             names

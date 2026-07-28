@@ -1,8 +1,8 @@
+use crate::adopt::{self, AdoptOptions};
 use crate::bottle::{detect_platform, homebrew_prefix, BottleDownloader, DownloadTotals};
 use crate::cache::Cache;
 use crate::commands::self_update::{self_update, Channel};
 use crate::commands::{install, uninstall};
-use crate::adopt::{self, AdoptOptions};
 use crate::error::{Result, WaxError};
 use crate::install::{is_writable, InstallMode, InstallState};
 use crate::signal::{
@@ -1055,8 +1055,8 @@ async fn upgrade_resolved_formula(
 
 async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> Result<()> {
     let installed_casks = adopt::sync_installed_state(cache, AdoptOptions::casks_only())
-            .await?
-            .casks;
+        .await?
+        .casks;
 
     let installed = installed_casks
         .get(cask_name)
@@ -1296,8 +1296,8 @@ pub async fn get_outdated_packages_scoped(
     };
 
     let installed_casks = adopt::sync_installed_state(cache, AdoptOptions::casks_only())
-            .await?
-            .casks;
+        .await?
+        .casks;
 
     let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_all_casks().await?;
