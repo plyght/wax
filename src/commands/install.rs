@@ -1,3 +1,4 @@
+use crate::adopt::{self, AdoptOptions};
 use crate::api::{CaskArtifact, Formula};
 use crate::bottle::{detect_platform, BottleDownloader, DownloadTotals};
 use crate::builder::Builder;
@@ -7,7 +8,6 @@ use crate::cask::{
 };
 use crate::commands::version_install;
 use crate::deps::resolve_dependencies;
-use crate::adopt::{self, AdoptOptions};
 use crate::error::{Result, WaxError};
 use crate::formula_parser::{BuildSystem, FormulaParser};
 use crate::install::{create_symlinks, InstallMode, InstallState, InstalledPackage};
@@ -751,6 +751,31 @@ fn tap_name_from_qualified_package(package_name: &str) -> Option<String> {
     Some(format!("{}/{}", user, repo))
 }
 
+fn tap_spec_from_install_name(package_name: &str) -> Option<String> {
+    let parts: Vec<&str> = package_name.split('/').collect();
+    if parts.len() == 2 && is_github_tap_spec(package_name) {
+        return Some(format!("{}/{}", parts[0], parts[1]));
+    }
+    tap_name_from_qualified_package(package_name)
+}
+
+fn is_github_tap_spec(spec: &str) -> bool {
+    let parts: Vec<&str> = spec.split('/').collect();
+    parts.len() == 2
+        && !spec.contains('.')
+        && !spec.starts_with('/')
+        && parts[0].len() > 0
+        && parts[1].len() > 0
+}
+
+fn is_tap_only_spec(package_name: &str) -> bool {
+    is_github_tap_spec(package_name)
+}
+
+fn should_update_tap(already_updated: bool, added_during_install: bool) -> bool {
+    !already_updated && !added_during_install
+}
+
 fn hint_user_prefix_path_if_needed(install_mode: InstallMode, quiet: bool) {
     if quiet || install_mode != InstallMode::User {
         return;
@@ -834,29 +859,29 @@ pub(crate) async fn install_impl(
     if !dry_run {
         let mut updated_taps = HashSet::new();
         for package_name in package_names {
-            let Some(tap_name) = tap_name_from_qualified_package(package_name) else {
+            let Some(tap_name) = tap_spec_from_install_name(package_name) else {
                 continue;
             };
             if updated_taps.contains(&tap_name) {
                 continue;
             }
-            if !tap_manager.has_tap(&tap_name).await {
-                return Err(WaxError::TapError(format!(
-                    "Tap '{}' is not installed. Add and trust it first:\n  wax tap add {} --trust",
-                    tap_name, tap_name
-                )));
+            let added_during_install = if !tap_manager.has_tap(&tap_name).await {
+                if !quiet {
+                    println!("adding tap {}", style(&tap_name).cyan());
+                }
+                tap_manager.ensure_tap(&tap_name).await?;
+                cache.invalidate_all_tap_caches().await?;
+                true
+            } else {
+                false
+            };
+            if should_update_tap(updated_taps.contains(&tap_name), added_during_install) {
+                if !quiet {
+                    println!("updating tap {}", style(&tap_name).cyan());
+                }
+                tap_manager.update_tap(&tap_name).await?;
+                cache.invalidate_tap_cache(&tap_name).await?;
             }
-            if !tap_manager.is_tap_trusted(&tap_name) {
-                return Err(WaxError::TapError(format!(
-                    "Tap '{}' is untrusted. Trust it before installing formulae from it:\n  wax tap trust {}",
-                    tap_name, tap_name
-                )));
-            }
-            if !quiet {
-                println!("updating tap {}", style(&tap_name).cyan());
-            }
-            tap_manager.update_tap(&tap_name).await?;
-            cache.invalidate_tap_cache(&tap_name).await?;
             updated_taps.insert(tap_name);
         }
     }
@@ -891,6 +916,17 @@ pub(crate) async fn install_impl(
     let mut user_direct_formula_names: HashSet<String> = HashSet::new();
 
     for package_name in package_names.iter() {
+        if is_tap_only_spec(package_name) {
+            if !quiet {
+                println!(
+                    "{} tap {}",
+                    style("+").green(),
+                    style(package_name).magenta()
+                );
+            }
+            continue;
+        }
+
         let short_name = package_name.rsplit('/').next().unwrap_or(package_name);
         if installed.contains(package_name.as_str()) || installed.contains(short_name) {
             already_installed.push(package_name.clone());
@@ -961,12 +997,12 @@ pub(crate) async fn install_impl(
                         let tap_exists = tap_manager.has_tap(&tap_name).await;
                         if tap_exists {
                             format!(
-                                "Package '{}' not found in tap '{}'. Try: wax install {} (after `wax tap trust {}` if untrusted)",
-                                formula_name, tap_name, formula_name, tap_name
+                                "Package '{}' not found in tap '{}'. Try: wax install {}/{}",
+                                formula_name, tap_name, tap_name, formula_name
                             )
                         } else {
                             format!(
-                                "Tap '{}' not installed. Add it with: wax tap add {}",
+                                "Tap '{}' not installed. Add it with: wax tap {}",
                                 tap_name, tap_name
                             )
                         }
@@ -1873,6 +1909,7 @@ async fn install_casks(
     let mut to_install = Vec::new(); // macOS: full CaskInstaller path
     let mut linux_cask_installs = Vec::new(); // Linux: snap → flatpak → native PM
     let mut already_installed = Vec::new();
+    let mut missing_casks = Vec::new();
 
     for cask_name in cask_names {
         if installed_casks.contains_key(cask_name) && !force_reinstall {
@@ -1884,13 +1921,20 @@ async fn install_casks(
             {
                 to_install.push(cask_name.clone());
             } else {
-                eprintln!("{}: cask not found", style(cask_name).magenta());
+                missing_casks.push(cask_name.clone());
             }
         } else {
             // On Linux, Homebrew cask artifacts are macOS-only.
             // Route all cask requests through snap/flatpak/native PM instead.
             linux_cask_installs.push(cask_name.clone());
         }
+    }
+
+    if !missing_casks.is_empty() {
+        return Err(WaxError::InstallError(format!(
+            "cask not found: {}",
+            missing_casks.join(", ")
+        )));
     }
 
     if !already_installed.is_empty() {
@@ -2806,8 +2850,9 @@ async fn install_from_downloaded(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_already_installed_formula_linkages_with_cellar, stage_binary_release_download,
-        tap_name_from_qualified_package,
+        check_already_installed_formula_linkages_with_cellar, is_github_tap_spec, is_tap_only_spec,
+        should_update_tap, stage_binary_release_download, tap_name_from_qualified_package,
+        tap_spec_from_install_name,
     };
     use crate::install::{InstallMode, InstalledPackage};
     use std::collections::HashMap;
@@ -2824,6 +2869,39 @@ mod tests {
     fn tap_name_from_qualified_package_rejects_unqualified_names() {
         assert_eq!(tap_name_from_qualified_package("package"), None);
         assert_eq!(tap_name_from_qualified_package("user/tap"), None);
+    }
+
+    #[test]
+    fn skips_update_for_tap_just_added_during_install() {
+        assert!(!should_update_tap(false, true));
+        assert!(should_update_tap(false, false));
+        assert!(!should_update_tap(true, false));
+    }
+
+    #[test]
+    fn tap_spec_from_install_name_handles_tap_and_formula_specs() {
+        assert_eq!(
+            tap_spec_from_install_name("user/tap/package"),
+            Some("user/tap".to_string())
+        );
+        assert_eq!(
+            tap_spec_from_install_name("user/tap"),
+            Some("user/tap".to_string())
+        );
+        assert_eq!(tap_spec_from_install_name("package"), None);
+    }
+
+    #[test]
+    fn is_github_tap_spec_recognizes_user_repo() {
+        assert!(is_github_tap_spec("undivisible/tap"));
+        assert!(!is_github_tap_spec("package"));
+        assert!(!is_github_tap_spec("user/tap/formula"));
+    }
+
+    #[test]
+    fn is_tap_only_spec_matches_user_repo() {
+        assert!(is_tap_only_spec("undivisible/tap"));
+        assert!(!is_tap_only_spec("undivisible/tap/vro"));
     }
 
     #[test]

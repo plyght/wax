@@ -507,6 +507,102 @@ fn list_plain_no_match_reports_query_windows() {
     assert!(stdout.contains(needle), "{stdout}");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn cask_command_fails_when_no_requested_cask_resolves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("formulae.json"), "[]").unwrap();
+    std::fs::write(cache.join("casks.json"), "[]").unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        cache.join("metadata.json"),
+        format!(
+            r#"{{"last_updated":{now},"formula_count":0,"cask_count":0,"formulae_etag":null,"formulae_last_modified":null,"casks_etag":null,"casks_last_modified":null}}"#
+        ),
+    )
+    .unwrap();
+
+    let out = wax_with_home(tmp.path())
+        .env("WAX_CACHE_DIR", &cache)
+        .env("CI", "1")
+        .args(["cask", "--dry-run", "missing-cask"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "unexpected success: {stderr}");
+    assert!(stderr.contains("cask not found"), "{stderr}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn cask_command_indexes_a_newly_tapped_legacy_untrusted_cask() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    let tap = tmp.path().join("tinycast-tap");
+    std::fs::create_dir_all(tap.join("Casks")).unwrap();
+    std::fs::write(
+        tap.join("Casks/tinycast.rb"),
+        r#"cask "tinycast" do
+  version "1.0.0"
+  sha256 :no_check
+  url "https://example.invalid/tinycast.zip"
+  name "Tinycast"
+  desc "Test cask"
+  homepage "https://example.invalid/"
+  app "Tinycast.app"
+end
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("formulae.json"), "[]").unwrap();
+    std::fs::write(cache.join("casks.json"), "[]").unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        cache.join("metadata.json"),
+        format!(
+            r#"{{"last_updated":{now},"formula_count":0,"cask_count":0,"formulae_etag":null,"formulae_last_modified":null,"casks_etag":null,"casks_last_modified":null}}"#
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(home.join(".wax")).unwrap();
+    std::fs::write(
+        home.join(".wax/taps.json"),
+        serde_json::json!({
+            "abue-ammar/tinycast": {
+                "full_name": "abue-ammar/tinycast",
+                "path": tap,
+                "trusted": false
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let out = wax_with_home(&home)
+        .env("WAX_CACHE_DIR", &cache)
+        .env("CI", "1")
+        .args(["cask", "--dry-run", "abue-ammar/tinycast/tinycast"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        !stderr.contains("cask not found"),
+        "unexpected cask lookup failure: {stderr}"
+    );
+}
+
 #[cfg(not(windows))]
 #[test]
 fn tap_list_exits_zero() {

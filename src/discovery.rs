@@ -179,6 +179,59 @@ pub async fn discover_linux_system_packages(
 }
 
 #[allow(dead_code)]
+pub(crate) fn matching_manual_app_name<'a>(
+    requested_name: &str,
+    app_names: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    let requested = normalize_package_token(requested_name);
+    app_names
+        .into_iter()
+        .find(|app_name| {
+            let normalized_app_name = normalize_package_token(app_name);
+            normalized_app_name == requested
+                || normalized_app_name
+                    .strip_prefix(&requested)
+                    .is_some_and(|suffix| suffix.starts_with('-'))
+        })
+        .map(str::to_owned)
+}
+
+#[allow(dead_code)]
+pub async fn manually_installed_app_matching(requested_name: &str) -> Option<String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = requested_name;
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        for root in macos_application_roots() {
+            let Ok(mut entries) = tokio::fs::read_dir(root).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                if !file_name.ends_with(".app") || (!path.is_dir() && !path.is_symlink()) {
+                    continue;
+                }
+                let app = read_app_bundle_metadata(&path, &file_name).await;
+                if matching_manual_app_name(
+                    requested_name,
+                    [file_name.as_str(), app.bundle_name.as_str()],
+                )
+                .is_some()
+                {
+                    return Some(file_name);
+                }
+            }
+        }
+        None
+    }
+}
+
+#[allow(dead_code)]
 fn build_cask_candidate_index(casks: &[Cask]) -> HashMap<String, Vec<usize>> {
     let mut index = HashMap::new();
 
@@ -707,6 +760,19 @@ mod tests {
             "visual-studio-code"
         );
         assert_eq!(normalize_package_token("Docker Desktop"), "docker-desktop");
+    }
+
+    #[test]
+    fn matches_manual_beta_app_to_versioned_request() {
+        assert_eq!(
+            matching_manual_app_name("raycast@beta", ["Raycast Beta.app"]),
+            Some("Raycast Beta.app".to_string())
+        );
+        assert_eq!(
+            matching_manual_app_name("raycast", ["Raycast Beta.app"]),
+            Some("Raycast Beta.app".to_string())
+        );
+        assert_eq!(matching_manual_app_name("cast", ["Raycast Beta.app"]), None);
     }
 
     #[test]

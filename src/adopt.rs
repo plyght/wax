@@ -196,7 +196,7 @@ pub async fn resolve_package(
 
     if force_cask {
         let snapshot = sync_installed_state(cache, AdoptOptions::casks_only()).await?;
-        return lookup_cask(&snapshot.casks, name, short);
+        return lookup_cask(&snapshot.casks, name, short).await;
     }
 
     let snapshot = sync_installed_state(cache, AdoptOptions::default()).await?;
@@ -218,10 +218,10 @@ pub async fn resolve_package(
         });
     }
 
-    lookup_cask(&snapshot.casks, name, short)
+    lookup_cask(&snapshot.casks, name, short).await
 }
 
-fn lookup_cask(
+async fn lookup_cask(
     casks: &HashMap<String, InstalledCask>,
     name: &str,
     short: &str,
@@ -239,14 +239,32 @@ fn lookup_cask(
         });
     }
 
+    if let Some(app_name) = crate::discovery::manually_installed_app_matching(name).await {
+        return Err(manual_app_not_installed_error(name, &app_name));
+    }
+
     Err(WaxError::NotInstalled(name.to_string()))
+}
+
+fn manual_app_not_installed_error(requested_name: &str, app_name: &str) -> WaxError {
+    WaxError::NotInstalled(format!(
+        "{requested_name}\n  Found /Applications/{app_name}, but it is not managed by Wax. Wax will not remove it automatically; remove it in Finder or with that app's supported uninstaller."
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_discovered_casks, short_package_name};
+    use super::{manual_app_not_installed_error, merge_discovered_casks, short_package_name};
     use crate::cask::InstalledCask;
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn manual_app_suggestion_keeps_removal_explicit() {
+        let error = manual_app_not_installed_error("raycast@beta", "Raycast Beta.app");
+        assert!(error.to_string().contains("Raycast Beta.app"));
+        assert!(error.to_string().contains("not managed by Wax"));
+        assert!(error.to_string().contains("not remove it automatically"));
+    }
 
     #[test]
     fn short_package_name_uses_last_segment() {

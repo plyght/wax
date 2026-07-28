@@ -502,7 +502,7 @@ impl Cache {
         tap_manager.load().await?;
 
         let tap_names: Vec<String> = tap_manager
-            .trusted_taps()
+            .list_taps()
             .into_iter()
             .map(|tap| tap.full_name.clone())
             .collect();
@@ -518,7 +518,7 @@ impl Cache {
 
         let mut all = self.load_casks().await?;
 
-        for tap in tap_manager.trusted_taps() {
+        for tap in tap_manager.list_taps() {
             let tap_cache_path = self.tap_casks_cache_path(&tap.full_name);
 
             let tap_casks = if tap_cache_path.exists() {
@@ -585,7 +585,7 @@ impl Cache {
         tap_manager.load().await?;
 
         let tap_names: Vec<String> = tap_manager
-            .trusted_taps()
+            .list_taps()
             .into_iter()
             .map(|tap| tap.full_name.clone())
             .collect();
@@ -601,7 +601,7 @@ impl Cache {
 
         let mut all = self.load_formulae().await?;
 
-        for tap in tap_manager.trusted_taps() {
+        for tap in tap_manager.list_taps() {
             let tap_cache_path = self.tap_cache_path(&tap.full_name);
 
             let tap_formulae = if tap_cache_path.exists() {

@@ -434,8 +434,6 @@ enum TapAction {
     Add {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
-        #[arg(long, help = "Trust this tap for formula discovery and installs")]
-        trust: bool,
     },
     #[command(
         about = "Remove a custom tap",
@@ -447,20 +445,13 @@ enum TapAction {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
-    #[command(about = "List installed taps", visible_alias = "ls")]
-    List,
+    #[command(about = "List installed taps or packages in a tap", visible_alias = "ls")]
+    List {
+        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
+        tap: Option<String>,
+    },
     #[command(about = "Update a tap", visible_alias = "up")]
     Update {
-        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
-        tap: String,
-    },
-    #[command(about = "Trust a tap for formula discovery and installs")]
-    Trust {
-        #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
-        tap: String,
-    },
-    #[command(about = "Remove trust from a tap")]
-    Untrust {
         #[arg(help = "Tap specification: user/repo, Git URL, local directory, or .rb file path")]
         tap: String,
     },
