@@ -763,10 +763,10 @@ fn unlink_directory_recursive<'a>(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::{create_symlinks, remove_symlinks, InstallMode, HOME_MUTEX};
     use std::path::{Path, PathBuf};
