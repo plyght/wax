@@ -763,7 +763,7 @@ fn unlink_directory_recursive<'a>(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) static HOME_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(all(test, unix))]
