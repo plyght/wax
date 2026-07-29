@@ -5,11 +5,13 @@ use crate::ui::dirs;
 use crate::version::sort_versions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, instrument};
 
+#[cfg(unix)]
 fn normalize_path(path: &Path) -> PathBuf {
     let mut comps: Vec<OsString> = Vec::new();
     let mut has_root = false;
@@ -48,6 +50,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
+#[cfg(unix)]
 fn relative_path(from: &Path, to: &Path) -> PathBuf {
     let from = normalize_path(from);
     let to = normalize_path(to);
