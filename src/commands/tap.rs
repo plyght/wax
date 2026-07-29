@@ -80,13 +80,12 @@ pub async fn tap(
                 );
             }
         }
-        Some(crate::TapAction::List { tap }) => {
-            if let Some(tap_spec) = tap {
-                list_tap_packages(&manager, &tap_spec).await?;
-            } else {
-                list_installed_taps(&manager);
-            }
+        Some(crate::TapAction::List {
+            tap: Some(tap_spec),
+        }) => {
+            list_tap_packages(&manager, &tap_spec).await?;
         }
+        Some(crate::TapAction::List { tap: None }) => list_installed_taps(&manager),
         None => {
             list_installed_taps(&manager);
         }

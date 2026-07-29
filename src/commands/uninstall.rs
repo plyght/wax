@@ -1,4 +1,6 @@
-use crate::adopt::{self, AdoptOptions, PackageKind};
+#[cfg(not(target_os = "windows"))]
+use crate::adopt::AdoptOptions;
+use crate::adopt::{self, PackageKind};
 use crate::cache::Cache;
 use crate::cask::CaskState;
 use crate::error::{Result, WaxError};

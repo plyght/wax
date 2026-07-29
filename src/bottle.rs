@@ -596,6 +596,7 @@ impl BottleDownloader {
         )))
     }
 
+    #[cfg(unix)]
     fn normalize_path(path: &Path) -> PathBuf {
         let mut normalized = PathBuf::new();
         for component in path.components() {

@@ -764,8 +764,8 @@ fn is_github_tap_spec(spec: &str) -> bool {
     parts.len() == 2
         && !spec.contains('.')
         && !spec.starts_with('/')
-        && parts[0].len() > 0
-        && parts[1].len() > 0
+        && !parts[0].is_empty()
+        && !parts[1].is_empty()
 }
 
 fn is_tap_only_spec(package_name: &str) -> bool {

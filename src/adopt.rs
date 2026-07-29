@@ -46,6 +46,7 @@ impl Default for AdoptOptions {
 }
 
 impl AdoptOptions {
+    #[cfg(not(target_os = "windows"))]
     pub fn formulae_only() -> Self {
         Self {
             persist: true,

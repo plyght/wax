@@ -555,7 +555,6 @@ fn link_directory_recursive<'a>(
                 )
                 .await?;
             } else {
-                let link_target = relative_path(target_path.parent().unwrap(), &source_path);
                 if fs::symlink_metadata(&target_path).await.is_ok() {
                     if !dry_run {
                         debug!("Removing existing symlink/file at {:?}", target_path);
@@ -571,6 +570,8 @@ fn link_directory_recursive<'a>(
                 if !dry_run {
                     #[cfg(unix)]
                     {
+                        let link_target =
+                            relative_path(target_path.parent().unwrap(), &source_path);
                         use std::os::unix::fs::symlink;
                         symlink(&link_target, &target_path).or_else(|_| {
                             sudo::sudo_symlink(&link_target, &target_path).map(|_| ())
@@ -661,6 +662,7 @@ pub async fn remove_symlinks(
     Ok(removed_links)
 }
 
+#[cfg(unix)]
 async fn is_dir_empty(path: &Path) -> bool {
     let mut entries = match fs::read_dir(path).await {
         Ok(e) => e,
