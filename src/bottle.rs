@@ -1640,6 +1640,51 @@ mod tests {
         (temp, tarball)
     }
 
+    #[test]
+    fn test_homebrew_prefix() {
+        let prefix = homebrew_prefix();
+        assert!(prefix.is_absolute(), "Homebrew prefix must be an absolute path");
+
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+
+        match os {
+            "macos" => {
+                if arch == "aarch64" {
+                    assert!(
+                        prefix == PathBuf::from("/opt/homebrew") || prefix.join("Cellar").exists(),
+                        "Prefix should be standard /opt/homebrew or a valid custom prefix"
+                    );
+                } else {
+                    assert!(
+                        prefix == PathBuf::from("/usr/local") || prefix.join("Cellar").exists(),
+                        "Prefix should be standard /usr/local or a valid custom prefix"
+                    );
+                }
+            }
+            "linux" => {
+                let is_standard_linux = prefix == PathBuf::from("/home/linuxbrew/.linuxbrew") || prefix == PathBuf::from("/usr/local");
+                let is_user_linux = if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                    prefix == home.join(".linuxbrew")
+                } else {
+                    false
+                };
+
+                assert!(
+                    is_standard_linux || is_user_linux || prefix.join("Cellar").exists(),
+                    "Prefix should be standard linux path, user local path, or a valid custom prefix"
+                );
+            }
+            _ => {
+                assert_eq!(
+                    prefix,
+                    PathBuf::from("/usr/local"),
+                    "Non-macOS/Linux platforms should default to /usr/local"
+                );
+            }
+        }
+    }
+
     // ── num_connections ──────────────────────────────────────────────────────
 
     #[test]
