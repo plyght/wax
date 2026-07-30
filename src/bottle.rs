@@ -1641,9 +1641,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_homebrew_prefix() {
         let prefix = homebrew_prefix();
-        assert!(prefix.is_absolute(), "Homebrew prefix must be an absolute path");
+        assert!(
+            prefix.is_absolute(),
+            "Homebrew prefix must be an absolute path"
+        );
 
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
@@ -1652,19 +1656,24 @@ mod tests {
             "macos" => {
                 if arch == "aarch64" {
                     assert!(
-                        prefix == PathBuf::from("/opt/homebrew") || prefix.join("Cellar").exists(),
+                        prefix.as_path() == std::path::Path::new("/opt/homebrew")
+                            || prefix.join("Cellar").exists(),
                         "Prefix should be standard /opt/homebrew or a valid custom prefix"
                     );
                 } else {
                     assert!(
-                        prefix == PathBuf::from("/usr/local") || prefix.join("Cellar").exists(),
+                        prefix.as_path() == std::path::Path::new("/usr/local")
+                            || prefix.join("Cellar").exists(),
                         "Prefix should be standard /usr/local or a valid custom prefix"
                     );
                 }
             }
             "linux" => {
-                let is_standard_linux = prefix == PathBuf::from("/home/linuxbrew/.linuxbrew") || prefix == PathBuf::from("/usr/local");
-                let is_user_linux = if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                let is_standard_linux = prefix.as_path()
+                    == std::path::Path::new("/home/linuxbrew/.linuxbrew")
+                    || prefix.as_path() == std::path::Path::new("/usr/local");
+                let is_user_linux = if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+                {
                     prefix == home.join(".linuxbrew")
                 } else {
                     false
