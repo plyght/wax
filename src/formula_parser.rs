@@ -53,6 +53,14 @@ static RE_CASK_URL: OnceLock<Regex> = OnceLock::new();
 static RE_CASK_SHA: OnceLock<Regex> = OnceLock::new();
 static RE_SHARE_INSTALL: OnceLock<Regex> = OnceLock::new();
 
+static RE_BIN_INSTALL: OnceLock<Regex> = OnceLock::new();
+static RE_BIN_MULTI: OnceLock<Regex> = OnceLock::new();
+static RE_BIN_WORD: OnceLock<Regex> = OnceLock::new();
+static RE_BIN_DIR: OnceLock<Regex> = OnceLock::new();
+static RE_BIN_VAR: OnceLock<Regex> = OnceLock::new();
+static RE_BIN_QUOTED: OnceLock<Regex> = OnceLock::new();
+static RE_DIR_FIRST: OnceLock<Regex> = OnceLock::new();
+
 /// Linux artifact extracted from a Homebrew cask's `on_linux` block.
 #[derive(Debug, Clone)]
 pub struct CaskLinuxArtifact {
@@ -533,28 +541,33 @@ impl FormulaParser {
     fn extract_dir_first_assignments(
         install_block: &str,
     ) -> std::collections::HashMap<String, String> {
-        let re = Regex::new(r#"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*Dir\["([^"]+)"\]\.first"#)
-            .unwrap();
+        let re = RE_DIR_FIRST.get_or_init(|| {
+            Regex::new(r#"(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*Dir\["([^"]+)"\]\.first"#).unwrap()
+        });
         re.captures_iter(install_block)
             .map(|c| (c[1].to_string(), c[2].to_string()))
             .collect()
     }
 
     pub(crate) fn extract_bin_install_targets(install_block: &str) -> Vec<BinInstall> {
-        let re = Regex::new(r#"bin\.install\s+"([^"]+)"(?:\s*=>\s*"([^"]+)")?"#).unwrap();
-        let multi_re = Regex::new(
-            r#"bin\.install\s+"([^"]+)"\s*,\s*"([^"]+)"(?:\s*,\s*"([^"]+)")*(?:\s*,\s*"([^"]+)")*"#,
-        )
-        .unwrap();
-        let word_re = Regex::new(r#"bin\.install\s+%w\[([^\]]+)\]"#).unwrap();
-        let dir_re =
-            Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap();
-        let var_re =
-            Regex::new(r#"bin\.install\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*=>\s*"([^"]+)")?"#).unwrap();
+        let re = RE_BIN_INSTALL.get_or_init(|| {
+            Regex::new(r#"bin\.install\s+"([^"]+)"(?:\s*=>\s*"([^"]+)")?"#).unwrap()
+        });
+        let multi_re = RE_BIN_MULTI.get_or_init(|| {
+            Regex::new(r#"bin\.install\s+"([^"]+)"\s*,\s*"([^"]+)"(?:\s*,\s*"([^"]+)")*(?:\s*,\s*"([^"]+)")*"#).unwrap()
+        });
+        let word_re =
+            RE_BIN_WORD.get_or_init(|| Regex::new(r#"bin\.install\s+%w\[([^\]]+)\]"#).unwrap());
+        let dir_re = RE_BIN_DIR.get_or_init(|| {
+            Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap()
+        });
+        let var_re = RE_BIN_VAR.get_or_init(|| {
+            Regex::new(r#"bin\.install\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*=>\s*"([^"]+)")?"#).unwrap()
+        });
         let dir_vars = Self::extract_dir_first_assignments(install_block);
         let mut targets: Vec<BinInstall> = Vec::new();
         let optional = |line: &str| line.contains("if File.exist?");
-        let quoted_re = Regex::new(r#""([^"]+)""#).unwrap();
+        let quoted_re = RE_BIN_QUOTED.get_or_init(|| Regex::new(r#""([^"]+)""#).unwrap());
         for line in install_block.lines() {
             let trimmed = line.trim();
             if !trimmed.contains("bin.install") {
