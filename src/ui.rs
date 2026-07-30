@@ -274,6 +274,64 @@ mod tests {
     }
 
     #[test]
+    fn test_find_in_path_absolute_or_relative() {
+        let temp = tempdir().unwrap();
+        let file_path = temp.path().join("my_executable");
+
+        // Return None if it doesn't exist
+        assert_eq!(find_in_path(file_path.to_str().unwrap()), None);
+
+        // Create a file
+        fs::write(&file_path, "dummy").unwrap();
+
+        // Should find it now
+        assert_eq!(
+            find_in_path(file_path.to_str().unwrap()),
+            Some(file_path.clone())
+        );
+
+        // Create a directory instead of a file
+        let dir_path = temp.path().join("my_dir");
+        fs::create_dir(&dir_path).unwrap();
+
+        // Should return None because it's a directory, not a file
+        assert_eq!(find_in_path(dir_path.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn test_find_in_path_env_var() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let original_path = env::var_os("PATH");
+
+        let temp1 = tempdir().unwrap();
+        let temp2 = tempdir().unwrap();
+
+        let exec_name = "my_custom_exec";
+        let exec_path = temp2.path().join(exec_name);
+        fs::write(&exec_path, "dummy").unwrap();
+
+        // Also create a directory with the same name in temp1 to ensure it skips directories
+        let dir_path = temp1.path().join(exec_name);
+        fs::create_dir(&dir_path).unwrap();
+
+        let new_path = env::join_paths(vec![temp1.path(), temp2.path()]).unwrap();
+        env::set_var("PATH", &new_path);
+
+        // It should skip the directory in temp1 and find the file in temp2
+        assert_eq!(find_in_path(exec_name), Some(exec_path));
+
+        // Test with non-existent executable
+        assert_eq!(find_in_path("non_existent_exec"), None);
+
+        if let Some(p) = original_path {
+            env::set_var("PATH", p);
+        } else {
+            env::remove_var("PATH");
+        }
+    }
+
+    #[test]
     fn test_dirs_resolution() {
         let _guard = ENV_LOCK.lock().unwrap();
 
