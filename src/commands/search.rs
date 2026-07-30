@@ -139,7 +139,11 @@ fn find_unix_matches<'a>(
     });
     cask_matches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.token.cmp(&b.0.token)));
 
-    let formula_matches: Vec<_> = formula_matches.into_iter().take(20).map(|(f, _)| f).collect();
+    let formula_matches: Vec<_> = formula_matches
+        .into_iter()
+        .take(20)
+        .map(|(f, _)| f)
+        .collect();
     let tap_matches: Vec<_> = tap_matches.into_iter().take(10).map(|(f, _)| f).collect();
     let cask_matches: Vec<_> = cask_matches.into_iter().take(20).map(|(c, _)| c).collect();
 
@@ -157,7 +161,8 @@ fn print_unix_results(
     installed_casks: &std::collections::HashMap<String, crate::cask::InstalledCask>,
     query: &str,
 ) {
-    let total = results.formula_matches.len() + results.tap_matches.len() + results.cask_matches.len();
+    let total =
+        results.formula_matches.len() + results.tap_matches.len() + results.cask_matches.len();
 
     if total == 0 {
         println!("no results for '{}'", query);
