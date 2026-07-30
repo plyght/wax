@@ -1,0 +1,10 @@
+--- src/commands/install.rs
++++ src/commands/install.rs
+@@ -1913,7 +1913,7 @@
+
+     for cask_name in cask_names {
+         if installed_casks.contains_key(cask_name) && !force_reinstall {
+-            already_installed.push(cask_name.clone());
++            already_installed.push(cask_name.as_str());
+         } else if cfg!(target_os = "macos") {
+             if casks

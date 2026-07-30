@@ -1913,7 +1913,7 @@ async fn install_casks(
 
     for cask_name in cask_names {
         if installed_casks.contains_key(cask_name) && !force_reinstall {
-            already_installed.push(cask_name.as_str());
+            already_installed.push(cask_name.clone());
         } else if cfg!(target_os = "macos") {
             if casks
                 .iter()
