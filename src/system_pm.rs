@@ -125,47 +125,47 @@ impl SystemPm {
 
         match self {
             Self::Apt => {
-                let mut args = vec!["apt-get", "install", "-y"];
+                let mut args = vec!["apt-get", "install", "-y", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Dnf => {
-                let mut args = vec!["dnf", "install", "-y"];
+                let mut args = vec!["dnf", "install", "-y", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Pacman => {
-                let mut args = vec!["pacman", "-S", "--noconfirm"];
+                let mut args = vec!["pacman", "-S", "--noconfirm", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Apk => {
-                let mut args = vec!["apk", "add"];
+                let mut args = vec!["apk", "add", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Zypper => {
-                let mut args = vec!["zypper", "install", "-y"];
+                let mut args = vec!["zypper", "install", "-y", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Emerge => {
-                let mut args: Vec<&str> = vec!["emerge"];
+                let mut args: Vec<&str> = vec!["emerge", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Yum => {
-                let mut args = vec!["yum", "install", "-y"];
+                let mut args = vec!["yum", "install", "-y", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Xbps => {
-                let mut args = vec!["xbps-install", "-S"];
+                let mut args = vec!["xbps-install", "-S", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("sudo", &args).await?;
             }
             Self::Nix => {
-                let mut args = vec!["-i"];
+                let mut args = vec!["-i", "--"];
                 args.extend_from_slice(&pkg_args);
                 run_visible("nix-env", &args).await?;
             }
