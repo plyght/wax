@@ -60,6 +60,9 @@ static RE_BIN_DIR: OnceLock<Regex> = OnceLock::new();
 static RE_BIN_VAR: OnceLock<Regex> = OnceLock::new();
 static RE_BIN_QUOTED: OnceLock<Regex> = OnceLock::new();
 static RE_DIR_FIRST: OnceLock<Regex> = OnceLock::new();
+static RE_QUOTED: OnceLock<Regex> = OnceLock::new();
+static RE_WORD_ARRAY: OnceLock<Regex> = OnceLock::new();
+static RE_BARE_ARG: OnceLock<Regex> = OnceLock::new();
 
 /// Linux artifact extracted from a Homebrew cask's `on_linux` block.
 #[derive(Debug, Clone)]
@@ -484,12 +487,15 @@ impl FormulaParser {
 
     fn extract_configure_args(install_block: &str) -> Vec<String> {
         // Match args in double quotes: "--flag" or "-DFLAG=val"
-        let re_quoted =
-            Regex::new(r#""(?P<arg>(?:--[a-z0-9\-_=#{}/]+|-D[A-Za-z0-9_=\-#{}/.:+]+))""#).unwrap();
+        let re_quoted = RE_QUOTED.get_or_init(|| {
+            Regex::new(r#""(?P<arg>(?:--[a-z0-9\-_=#{}/]+|-D[A-Za-z0-9_=\-#{}/.:+]+))""#).unwrap()
+        });
         // Match bare args inside %W[...] or %w[...] word arrays (no quotes)
-        let re_word_array = Regex::new(r#"%[Ww]\[(?P<body>[^\]]*)\]"#).unwrap();
-        let re_bare_arg =
-            Regex::new(r"(?P<arg>(?:--[a-z0-9\-_=]+|-D[A-Za-z0-9_=\-.:+]+))").unwrap();
+        let re_word_array =
+            RE_WORD_ARRAY.get_or_init(|| Regex::new(r#"%[Ww]\[(?P<body>[^\]]*)\]"#).unwrap());
+        let re_bare_arg = RE_BARE_ARG.get_or_init(|| {
+            Regex::new(r"(?P<arg>(?:--[a-z0-9\-_=]+|-D[A-Za-z0-9_=\-.:+]+))").unwrap()
+        });
 
         let mut args = Vec::new();
 
