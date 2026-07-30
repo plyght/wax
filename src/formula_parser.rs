@@ -51,6 +51,7 @@ static RE_VERSION: OnceLock<Regex> = OnceLock::new();
 static RE_HEAD: OnceLock<Regex> = OnceLock::new();
 static RE_CASK_URL: OnceLock<Regex> = OnceLock::new();
 static RE_CASK_SHA: OnceLock<Regex> = OnceLock::new();
+static RE_SHARE_INSTALL: OnceLock<Regex> = OnceLock::new();
 
 /// Linux artifact extracted from a Homebrew cask's `on_linux` block.
 #[derive(Debug, Clone)]
@@ -637,13 +638,15 @@ impl FormulaParser {
 
     /// Extract `(pkgshare/"sub").install "file"` targets.
     fn extract_share_install_targets(install_block: &str) -> Vec<ShareInstall> {
-        let re = Regex::new(
-            r#"(?x)
+        let re = RE_SHARE_INSTALL.get_or_init(|| {
+            Regex::new(
+                r#"(?x)
             \( pkgshare \s* (?: / \s* "([^"]*)" )? \) 
             \.install \s+ "([^"]+)"
         "#,
-        )
-        .unwrap();
+            )
+            .unwrap()
+        });
         let mut targets = Vec::new();
         for cap in re.captures_iter(install_block) {
             let sub = cap
