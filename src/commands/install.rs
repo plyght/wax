@@ -93,7 +93,7 @@ async fn install_from_source_task(
             })?;
 
         spinner.set_message(format!("Downloading {}…", formula.name));
-        let client = crate::http_client::download();
+        let client = crate::http_client::default_client();
         let response = client.get(&dl_url).send().await?;
         if !response.status().is_success() {
             return Err(WaxError::BuildError(format!(
@@ -231,7 +231,7 @@ async fn install_from_source_task(
         formula.name, parsed_formula.source.version
     ));
 
-    let client = crate::http_client::download();
+    let client = crate::http_client::default_client();
     let response = client.get(&parsed_formula.source.url).send().await?;
 
     if !response.status().is_success() {
