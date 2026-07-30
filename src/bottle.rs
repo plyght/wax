@@ -1958,4 +1958,26 @@ mod tests {
         let contents = std::fs::read_to_string(formula_cellar.path().join("file.txt")).unwrap();
         assert_eq!(contents, "extract");
     }
+
+    #[test]
+    fn test_detect_platform() {
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+
+        let expected = match (os, arch) {
+            ("macos", arch) => {
+                let prefix = if arch == "aarch64" { "arm64_" } else { "" };
+                let codename = macos_codename();
+                format!("{}{}", prefix, codename)
+            }
+            ("linux", "x86_64") => "x86_64_linux".to_string(),
+            ("linux", "aarch64" | "arm") => "arm64_linux".to_string(),
+            _ => "unknown".to_string(),
+        };
+
+        let actual = detect_platform();
+        assert_eq!(actual, expected);
+        assert!(!actual.is_empty());
+        assert!(!actual.contains(' '));
+    }
 }
