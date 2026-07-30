@@ -52,3 +52,55 @@ pub fn verify_sha256_file(path: &Path, expected_sha256: &str) -> Result<()> {
     debug!("Checksum verified: {}", hash);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_verify_sha256_file_success() {
+        let mut file = NamedTempFile::new().unwrap();
+        let data = b"hello world";
+        file.write_all(data).unwrap();
+
+        let hash = sha256_digest_hex(data);
+        assert!(verify_sha256_file(file.path(), &hash).is_ok());
+    }
+
+    #[test]
+    fn test_verify_sha256_file_mismatch() {
+        let mut file = NamedTempFile::new().unwrap();
+        let data = b"hello world";
+        file.write_all(data).unwrap();
+
+        let expected_hash = "wronghash";
+        let err = verify_sha256_file(file.path(), expected_hash).unwrap_err();
+
+        match err {
+            WaxError::ChecksumMismatch { expected, actual } => {
+                assert_eq!(expected, "wronghash");
+                assert_eq!(actual, sha256_digest_hex(data));
+            }
+            _ => panic!("Expected ChecksumMismatch error"),
+        }
+    }
+
+    #[test]
+    fn test_verify_sha256_file_no_check() {
+        let path = Path::new("does_not_exist.txt");
+        assert!(verify_sha256_file(path, "no_check").is_ok());
+    }
+
+    #[test]
+    fn test_verify_sha256_file_not_found() {
+        let path = Path::new("does_not_exist.txt");
+        let err = verify_sha256_file(path, "somehash").unwrap_err();
+
+        match err {
+            WaxError::IoError(_) => {}
+            _ => panic!("Expected IoError"),
+        }
+    }
+}
