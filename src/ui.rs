@@ -285,7 +285,10 @@ mod tests {
         fs::write(&file_path, "dummy").unwrap();
 
         // Should find it now
-        assert_eq!(find_in_path(file_path.to_str().unwrap()), Some(file_path.clone()));
+        assert_eq!(
+            find_in_path(file_path.to_str().unwrap()),
+            Some(file_path.clone())
+        );
 
         // Create a directory instead of a file
         let dir_path = temp.path().join("my_dir");
