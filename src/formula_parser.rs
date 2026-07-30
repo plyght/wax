@@ -2,7 +2,8 @@ use crate::api::{Cask, CaskArtifact, CaskDetails};
 use crate::error::{Result, WaxError};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use tracing::{debug, instrument};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -790,8 +791,21 @@ impl FormulaParser {
     }
 
     fn extract_cask_string_field(content: &str, field: &str) -> Option<String> {
-        let pattern = format!(r#"(?m)^\s*{field}\s+(?:"([^"]+)"|'([^']+)')"#);
-        let re = Regex::new(&pattern).ok()?;
+        static RE_CACHE: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
+        let cache_mutex = RE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+        let re = {
+            let mut cache = cache_mutex.lock().unwrap();
+            if let Some(re) = cache.get(field) {
+                re.clone()
+            } else {
+                let pattern = format!(r#"(?m)^\s*{field}\s+(?:"([^"]+)"|'([^']+)')"#);
+                let re = Regex::new(&pattern).ok()?;
+                cache.insert(field.to_string(), re.clone());
+                re
+            }
+        };
+
         re.captures(content).and_then(|c| {
             c.get(1)
                 .or_else(|| c.get(2))
