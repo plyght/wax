@@ -345,6 +345,7 @@ impl TapManager {
             .arg("clone")
             .arg("--depth=1")
             .arg("--single-branch")
+            .arg("--")
             .arg(&url)
             .arg(&tap.path)
             .output()
