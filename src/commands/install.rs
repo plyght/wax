@@ -573,7 +573,7 @@ async fn install_from_head_task(
     spinner.set_message(format!("Cloning HEAD from {}...", head_url));
 
     let clone_output = tokio::process::Command::new("git")
-        .args(["clone", "--depth=1", head_url])
+        .args(["clone", "--depth=1", "--", head_url])
         .arg(&clone_dir)
         .output()
         .await?;
