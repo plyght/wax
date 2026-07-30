@@ -56,8 +56,8 @@ pub async fn info(cache: &Cache, name: &str, cask: bool) -> Result<()> {
     info_formula(formula, name, &formulae).await
 }
 
-async fn info_formula(formula: &Formula, name: &str, formulae: &[Formula]) -> Result<()> {
-    let installed_suffix = if let Some(installed) = &formula.installed {
+fn format_formula_installed_suffix(formula: &Formula) -> String {
+    if let Some(installed) = &formula.installed {
         if !installed.is_empty() {
             let installed_versions: Vec<_> = installed.iter().map(|i| i.version.as_str()).collect();
             if installed_versions.len() == 1 {
@@ -74,7 +74,11 @@ async fn info_formula(formula: &Formula, name: &str, formulae: &[Formula]) -> Re
         }
     } else {
         String::new()
-    };
+    }
+}
+
+async fn info_formula(formula: &Formula, name: &str, formulae: &[Formula]) -> Result<()> {
+    let installed_suffix = format_formula_installed_suffix(formula);
 
     println!();
     println!(
@@ -168,6 +172,18 @@ async fn info_formula(formula: &Formula, name: &str, formulae: &[Formula]) -> Re
     Ok(())
 }
 
+fn format_cask_installed_suffix(installed_version: Option<&String>, cask_version: &str) -> String {
+    if let Some(installed_ver) = installed_version {
+        if installed_ver == cask_version {
+            " · installed".to_string()
+        } else {
+            format!(" · installed ({})", installed_ver)
+        }
+    } else {
+        String::new()
+    }
+}
+
 #[instrument(skip(cache))]
 async fn info_cask(cache: &Cache, name: &str) -> Result<()> {
     cache.ensure_fresh().await?;
@@ -191,15 +207,7 @@ async fn info_cask(cache: &Cache, name: &str) -> Result<()> {
         .or_else(|| installed_casks.get(&cask_summary.token))
         .map(|i| &i.version);
 
-    let installed_suffix = if let Some(installed_ver) = installed_version {
-        if installed_ver == &cask.version {
-            " · installed".to_string()
-        } else {
-            format!(" · installed ({})", installed_ver)
-        }
-    } else {
-        String::new()
-    };
+    let installed_suffix = format_cask_installed_suffix(installed_version, &cask.version);
 
     println!();
     println!(
