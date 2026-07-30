@@ -51,3 +51,23 @@ pub fn download() -> &'static reqwest::Client {
 pub fn default_client() -> &'static reqwest::Client {
     DEFAULT_CLIENT.get_or_init(|| build_client(Duration::from_secs(60), true))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_homebrew_user_agent() {
+        let ua = homebrew_user_agent();
+        assert!(ua.starts_with("Homebrew/"));
+        assert!(ua.contains(" (Macintosh; "));
+        assert!(ua.ends_with(" Mac OS X)"));
+
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x86_64"
+        };
+        assert!(ua.contains(arch));
+    }
+}
