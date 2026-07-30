@@ -46,8 +46,15 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     let sync_package_count = actions.packages_to_install.len();
 
     if sync_package_count > 0 {
-        let entries =
-            build_sync_entries(actions.packages_to_install, &formulae, &current_platform)?;
+        let entries = build_sync_entries(
+            actions
+                .packages_to_install
+                .iter()
+                .map(|(n, p)| ((*n).clone(), (*p).clone()))
+                .collect(),
+            &formulae,
+            &current_platform,
+        )?;
 
         let temp_dir = Arc::new(TempDir::new()?);
         let extracted_packages =
@@ -60,7 +67,11 @@ pub async fn sync(cache: &Cache) -> Result<()> {
         println!();
         crate::commands::install::install_impl(
             cache,
-            &actions.casks_to_install,
+            &actions
+                .casks_to_install
+                .iter()
+                .map(|s| (*s).clone())
+                .collect::<Vec<String>>(),
             crate::commands::install::InstallArgs {
                 dry_run: false,
                 ask: false,
@@ -97,20 +108,20 @@ pub async fn sync(cache: &Cache) -> Result<()> {
     Ok(())
 }
 
-struct SyncActions {
-    packages_to_install: Vec<(String, crate::lockfile::LockfilePackage)>,
-    casks_to_install: Vec<String>,
-    up_to_date: Vec<String>,
-    upgrades: Vec<(String, String, String)>,
-    casks_up_to_date: Vec<String>,
-    cask_upgrades: Vec<(String, String, String)>,
+struct SyncActions<'a> {
+    packages_to_install: Vec<(&'a String, &'a crate::lockfile::LockfilePackage)>,
+    casks_to_install: Vec<&'a String>,
+    up_to_date: Vec<&'a String>,
+    upgrades: Vec<(&'a String, &'a String, &'a String)>,
+    casks_up_to_date: Vec<&'a String>,
+    cask_upgrades: Vec<(&'a String, &'a String, &'a String)>,
 }
 
-fn compute_sync_actions(
-    lockfile: &Lockfile,
-    installed_packages: &HashMap<String, InstalledPackage>,
-    installed_casks: &HashMap<String, crate::cask::InstalledCask>,
-) -> SyncActions {
+fn compute_sync_actions<'a>(
+    lockfile: &'a Lockfile,
+    installed_packages: &'a HashMap<String, InstalledPackage>,
+    installed_casks: &'a HashMap<String, crate::cask::InstalledCask>,
+) -> SyncActions<'a> {
     let mut packages_to_install = Vec::new();
     let mut casks_to_install = Vec::new();
     let mut up_to_date = Vec::new();
@@ -119,21 +130,17 @@ fn compute_sync_actions(
     for (name, lock_pkg) in &lockfile.packages {
         match installed_packages.get(name) {
             Some(installed) if installed.version != lock_pkg.version => {
-                upgrades.push((
-                    name.clone(),
-                    installed.version.clone(),
-                    lock_pkg.version.clone(),
-                ));
-                packages_to_install.push((name.clone(), lock_pkg.clone()));
+                upgrades.push((name, &installed.version, &lock_pkg.version));
+                packages_to_install.push((name, lock_pkg));
             }
             Some(installed) if installed.platform != lock_pkg.bottle => {
-                packages_to_install.push((name.clone(), lock_pkg.clone()));
+                packages_to_install.push((name, lock_pkg));
             }
             Some(_) => {
-                up_to_date.push(name.clone());
+                up_to_date.push(name);
             }
             None => {
-                packages_to_install.push((name.clone(), lock_pkg.clone()));
+                packages_to_install.push((name, lock_pkg));
             }
         }
     }
@@ -144,18 +151,14 @@ fn compute_sync_actions(
     for (name, lock_cask) in &lockfile.casks {
         match installed_casks.get(name) {
             Some(installed) if installed.version != lock_cask.version => {
-                cask_upgrades.push((
-                    name.clone(),
-                    installed.version.clone(),
-                    lock_cask.version.clone(),
-                ));
-                casks_to_install.push(name.clone());
+                cask_upgrades.push((name, &installed.version, &lock_cask.version));
+                casks_to_install.push(name);
             }
             Some(_) => {
-                casks_up_to_date.push(name.clone());
+                casks_up_to_date.push(name);
             }
             None => {
-                casks_to_install.push(name.clone());
+                casks_to_install.push(name);
             }
         }
     }
@@ -170,7 +173,7 @@ fn compute_sync_actions(
     }
 }
 
-fn print_sync_preview(actions: &SyncActions) -> bool {
+fn print_sync_preview(actions: &SyncActions<'_>) -> bool {
     if !actions.packages_to_install.is_empty() || !actions.upgrades.is_empty() {
         let upgrade_index: HashMap<_, _> = actions
             .upgrades
@@ -182,7 +185,7 @@ fn print_sync_preview(actions: &SyncActions) -> bool {
                 println!(
                     "  {} {} {} → {}",
                     style("↑").cyan(),
-                    style(name).magenta(),
+                    style(*name).magenta(),
                     style(*old_ver).dim(),
                     style(*new_ver).green()
                 );
@@ -208,7 +211,7 @@ fn print_sync_preview(actions: &SyncActions) -> bool {
                 println!(
                     "  {} {} {} {} → {}",
                     style("↑").cyan(),
-                    style(name).magenta(),
+                    style(*name).magenta(),
                     style("(cask)").yellow(),
                     style(*old_ver).dim(),
                     style(*new_ver).green()
