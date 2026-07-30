@@ -84,89 +84,32 @@ impl FormulaParser {
 
         let head_url = Self::extract_head_url(ruby_content);
         let platform_source = Self::extract_platform_source(ruby_content);
-        let url = Self::extract_field(ruby_content, "url").or_else(|e| {
-            if head_url.is_some() || platform_source.is_some() {
-                Ok(String::new())
-            } else {
-                Err(e)
-            }
-        })?;
-        let sha256 = Self::extract_field(ruby_content, "sha256").or_else(|e| {
-            if head_url.is_some() || platform_source.is_some() {
-                Ok(String::new())
-            } else {
-                Err(e)
-            }
-        })?;
+        let (url, sha256) = Self::extract_url_and_sha(ruby_content, &head_url, &platform_source)?;
+
         let desc = Self::extract_field(ruby_content, "desc").ok();
         let homepage = Self::extract_field(ruby_content, "homepage").ok();
         let license = Self::extract_field(ruby_content, "license").ok();
 
-        // Prefer an explicit `version "x.y.z"` field; fall back to parsing from URL.
-        let version = Self::extract_field(ruby_content, "version")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| {
-                if !url.is_empty() {
-                    Self::extract_version_from_url(&url)
-                } else if let Some((ref platform_url, _)) = platform_source {
-                    Self::extract_version_from_url(platform_url)
-                } else if head_url.is_some() {
-                    "HEAD".to_string()
-                } else {
-                    "unknown".to_string()
-                }
-            });
-
-        let (url, sha256) = if url.is_empty() {
-            if let Some((platform_url, platform_sha)) = platform_source {
-                (platform_url, platform_sha)
-            } else {
-                (url, sha256)
-            }
-        } else {
-            (url, sha256)
-        };
+        let version = Self::resolve_version(ruby_content, &url, &head_url, &platform_source);
+        let (url, sha256) = Self::resolve_url_and_sha(url, sha256, &platform_source);
 
         let runtime_dependencies = Self::extract_dependencies(ruby_content, false);
         let build_dependencies = Self::extract_dependencies(ruby_content, true);
 
-        let install_block = Self::extract_install_block(ruby_content)
-            .or_else(|_| Self::extract_define_method_install_block(ruby_content))
-            .or_else(|_| {
-                Self::extract_platform_install_block(ruby_content).ok_or_else(|| {
-                    WaxError::ParseError("Install block not found in formula".to_string())
-                })
-            })?;
+        let install_block = Self::resolve_install_block(ruby_content)?;
         let build_system = Self::detect_build_system(&install_block);
         let configure_args = Self::extract_configure_args(&install_block);
-        let bin_install_targets = Self::extract_bin_install_targets(&install_block);
 
+        let bin_install_targets = Self::extract_bin_install_targets(&install_block);
         let share_install_targets = Self::extract_share_install_targets(&install_block);
 
-        // Resolve #{version} etc. in install targets
-        let ver = &version;
-        let bin_install_targets: Vec<BinInstall> = bin_install_targets
-            .into_iter()
-            .map(|t| BinInstall {
-                source: Self::substitute_ruby_interpolations(&t.source, ver, None, None),
-                destination: Self::substitute_ruby_interpolations(&t.destination, ver, None, None),
-                optional: t.optional,
-            })
-            .collect();
+        let bin_install_targets = Self::resolve_bin_install_targets(bin_install_targets, &version);
         let bin_installs: Vec<String> = bin_install_targets
             .iter()
             .map(|target| target.source.clone())
             .collect();
-        let share_install_targets: Vec<ShareInstall> = share_install_targets
-            .into_iter()
-            .map(|t| ShareInstall {
-                source: Self::substitute_ruby_interpolations(&t.source, ver, None, None),
-                dest_prefix: Self::substitute_ruby_interpolations(&t.dest_prefix, ver, None, None),
-                destination: Self::substitute_ruby_interpolations(&t.destination, ver, None, None),
-                optional: t.optional,
-            })
-            .collect();
+        let share_install_targets =
+            Self::resolve_share_install_targets(share_install_targets, &version);
 
         Ok(ParsedFormula {
             name: name.to_string(),
@@ -187,6 +130,117 @@ impl FormulaParser {
             bin_install_targets,
             share_install_targets,
         })
+    }
+
+    fn extract_url_and_sha(
+        content: &str,
+        head_url: &Option<String>,
+        platform_source: &Option<(String, String)>,
+    ) -> Result<(String, String)> {
+        let url = Self::extract_field(content, "url").or_else(|e| {
+            if head_url.is_some() || platform_source.is_some() {
+                Ok(String::new())
+            } else {
+                Err(e)
+            }
+        })?;
+        let sha256 = Self::extract_field(content, "sha256").or_else(|e| {
+            if head_url.is_some() || platform_source.is_some() {
+                Ok(String::new())
+            } else {
+                Err(e)
+            }
+        })?;
+        Ok((url, sha256))
+    }
+
+    fn resolve_version(
+        content: &str,
+        url: &str,
+        head_url: &Option<String>,
+        platform_source: &Option<(String, String)>,
+    ) -> String {
+        Self::extract_field(content, "version")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| {
+                if !url.is_empty() {
+                    Self::extract_version_from_url(url)
+                } else if let Some((ref platform_url, _)) = platform_source {
+                    Self::extract_version_from_url(platform_url)
+                } else if head_url.is_some() {
+                    "HEAD".to_string()
+                } else {
+                    "unknown".to_string()
+                }
+            })
+    }
+
+    fn resolve_url_and_sha(
+        url: String,
+        sha256: String,
+        platform_source: &Option<(String, String)>,
+    ) -> (String, String) {
+        if url.is_empty() {
+            if let Some((platform_url, platform_sha)) = platform_source {
+                (platform_url.clone(), platform_sha.clone())
+            } else {
+                (url, sha256)
+            }
+        } else {
+            (url, sha256)
+        }
+    }
+
+    fn resolve_install_block(content: &str) -> Result<String> {
+        Self::extract_install_block(content)
+            .or_else(|_| Self::extract_define_method_install_block(content))
+            .or_else(|_| {
+                Self::extract_platform_install_block(content).ok_or_else(|| {
+                    WaxError::ParseError("Install block not found in formula".to_string())
+                })
+            })
+    }
+
+    fn resolve_bin_install_targets(targets: Vec<BinInstall>, version: &str) -> Vec<BinInstall> {
+        targets
+            .into_iter()
+            .map(|t| BinInstall {
+                source: Self::substitute_ruby_interpolations(&t.source, version, None, None),
+                destination: Self::substitute_ruby_interpolations(
+                    &t.destination,
+                    version,
+                    None,
+                    None,
+                ),
+                optional: t.optional,
+            })
+            .collect()
+    }
+
+    fn resolve_share_install_targets(
+        targets: Vec<ShareInstall>,
+        version: &str,
+    ) -> Vec<ShareInstall> {
+        targets
+            .into_iter()
+            .map(|t| ShareInstall {
+                source: Self::substitute_ruby_interpolations(&t.source, version, None, None),
+                dest_prefix: Self::substitute_ruby_interpolations(
+                    &t.dest_prefix,
+                    version,
+                    None,
+                    None,
+                ),
+                destination: Self::substitute_ruby_interpolations(
+                    &t.destination,
+                    version,
+                    None,
+                    None,
+                ),
+                optional: t.optional,
+            })
+            .collect()
     }
 
     fn extract_head_url(content: &str) -> Option<String> {
