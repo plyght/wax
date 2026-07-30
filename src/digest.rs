@@ -103,4 +103,32 @@ mod tests {
             _ => panic!("Expected IoError"),
         }
     }
+
+    #[test]
+    fn test_sha256_hex() {
+        let bytes = vec![0xde, 0xad, 0xbe, 0xef];
+        assert_eq!(sha256_hex(&bytes), "deadbeef");
+
+        let empty: Vec<u8> = vec![];
+        assert_eq!(sha256_hex(&empty), "");
+
+        let zeroes = vec![0x00, 0x00, 0x00];
+        assert_eq!(sha256_hex(&zeroes), "000000");
+
+        let ones = vec![0xff, 0xff];
+        assert_eq!(sha256_hex(&ones), "ffff");
+    }
+
+    #[test]
+    fn test_sha256_digest_hex() {
+        assert_eq!(
+            sha256_digest_hex(b"hello world"),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+
+        assert_eq!(
+            sha256_digest_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 }
