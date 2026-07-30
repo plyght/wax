@@ -180,14 +180,13 @@ async fn update_from_wax() -> Result<()> {
     Ok(())
 }
 
-async fn update_from_releases(force: bool) -> Result<()> {
-    println!(
-        "  {} {}",
-        style("detected:").dim(),
-        style("Script / binary release installation").cyan()
-    );
+#[derive(serde::Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
 
-    let client = crate::http_client::api();
+async fn fetch_release_metadata(client: &reqwest::Client) -> Result<Release> {
     let spinner = create_spinner("Checking for updates…");
 
     let resp = client
@@ -205,24 +204,86 @@ async fn update_from_releases(force: bool) -> Result<()> {
         )));
     }
 
-    #[derive(serde::Deserialize)]
-    struct Asset {
-        name: String,
-        browser_download_url: String,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct Release {
-        tag_name: String,
-        assets: Vec<Asset>,
-    }
-
     let release: Release = resp.json().await.map_err(|e| {
         spinner.finish_and_clear();
         WaxError::SelfUpdateError(format!("Failed to parse GitHub API response: {e}"))
     })?;
 
     spinner.finish_and_clear();
+
+    Ok(release)
+}
+
+#[derive(serde::Deserialize)]
+struct Release {
+    tag_name: String,
+    assets: Vec<Asset>,
+}
+
+async fn download_asset(client: &reqwest::Client, asset: &Asset) -> Result<Vec<u8>> {
+    println!(
+        "  {} downloading {}...",
+        style("download:").dim(),
+        style(&asset.name).yellow()
+    );
+
+    let download_resp = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to download asset: {e}")))?;
+
+    if !download_resp.status().is_success() {
+        return Err(WaxError::SelfUpdateError(format!(
+            "Failed to download asset: HTTP {}",
+            download_resp.status()
+        )));
+    }
+
+    let bytes = download_resp
+        .bytes()
+        .await
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to read asset bytes: {e}")))?;
+
+    Ok(bytes.to_vec())
+}
+
+fn install_binary(bytes: &[u8]) -> Result<()> {
+    let current_exe = std::env::current_exe().map_err(|e| {
+        WaxError::SelfUpdateError(format!("Failed to resolve current exe path: {e}"))
+    })?;
+
+    let exe_dir = current_exe.parent().ok_or_else(|| {
+        WaxError::SelfUpdateError("Current exe has no parent directory".to_string())
+    })?;
+
+    let temp_exe = exe_dir.join(".wax-update-tmp");
+
+    std::fs::write(&temp_exe, bytes)
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to write temporary binary: {e}")))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp_exe, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| WaxError::SelfUpdateError(format!("Failed to set permissions: {e}")))?;
+    }
+
+    std::fs::rename(&temp_exe, &current_exe)
+        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to overwrite executable: {e}")))?;
+
+    Ok(())
+}
+
+async fn update_from_releases(force: bool) -> Result<()> {
+    println!(
+        "  {} {}",
+        style("detected:").dim(),
+        style("Script / binary release installation").cyan()
+    );
+
+    let client = crate::http_client::api();
+    let release = fetch_release_metadata(client).await?;
 
     let latest_version = release.tag_name.trim_start_matches('v').to_string();
 
@@ -269,52 +330,8 @@ async fn update_from_releases(force: bool) -> Result<()> {
             ))
         })?;
 
-    println!(
-        "  {} downloading {}...",
-        style("download:").dim(),
-        style(&asset.name).yellow()
-    );
-
-    let download_resp = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to download asset: {e}")))?;
-
-    if !download_resp.status().is_success() {
-        return Err(WaxError::SelfUpdateError(format!(
-            "Failed to download asset: HTTP {}",
-            download_resp.status()
-        )));
-    }
-
-    let bytes = download_resp
-        .bytes()
-        .await
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to read asset bytes: {e}")))?;
-
-    let current_exe = std::env::current_exe().map_err(|e| {
-        WaxError::SelfUpdateError(format!("Failed to resolve current exe path: {e}"))
-    })?;
-
-    let exe_dir = current_exe.parent().ok_or_else(|| {
-        WaxError::SelfUpdateError("Current exe has no parent directory".to_string())
-    })?;
-
-    let temp_exe = exe_dir.join(".wax-update-tmp");
-
-    std::fs::write(&temp_exe, &bytes)
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to write temporary binary: {e}")))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temp_exe, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| WaxError::SelfUpdateError(format!("Failed to set permissions: {e}")))?;
-    }
-
-    std::fs::rename(&temp_exe, &current_exe)
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to overwrite executable: {e}")))?;
+    let bytes = download_asset(client, asset).await?;
+    install_binary(&bytes)?;
 
     println!(
         "{} updated to {}",
