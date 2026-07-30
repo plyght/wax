@@ -545,39 +545,179 @@ fn print_error_and_exit(err: error::WaxError) -> ! {
     std::process::exit(1);
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn execute_install_cask(
+    packages: Vec<String>,
+    dry_run: bool,
+    ask: bool,
+    user: bool,
+    global: bool,
+    no_script: bool,
+    cache: &Cache,
+    yes: bool,
+) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    crate::error::reject_homebrew_cli("install --cask")?;
+    commands::install::install(
+        cache,
+        &packages,
+        dry_run,
+        ask && !yes,
+        true,
+        user,
+        global,
+        false,
+        false,
+        !no_script,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_upgrade(
+    packages: Vec<String>,
+    upgrade_self: bool,
+    nightly: bool,
+    clean: bool,
+    no_clean: bool,
+    dry_run: bool,
+    ask: bool,
+    system: bool,
+    user: bool,
+    global: bool,
+    cache: &Cache,
+    yes: bool,
+) -> Result<()> {
+    if upgrade_self {
+        run_self_update(nightly, false, clean, no_clean).await?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    crate::error::reject_homebrew_cli("upgrade")?;
+
+    let explicit_packages_requested = !packages.is_empty();
+
+    commands::upgrade::upgrade(
+        cache,
+        &packages,
+        dry_run,
+        ask && !yes,
+        install_scope(user, global)?,
+    )
+    .await?;
+    if system {
+        handle_system_upgrade().await?;
+    }
+
+    // Only check for wax self-update after a full upgrade run.
+    // For explicit package upgrades (e.g. `wax up codex`), skip this
+    // to avoid unrelated self-update output in command results.
+    if !explicit_packages_requested {
+        commands::self_update::self_update(commands::self_update::Channel::Stable, false, None)
+            .await?;
+    }
+
+    Ok(())
+}
+
+async fn execute_system(action: SystemAction) -> Result<()> {
+    match action {
+        SystemAction::Upgrade => handle_system_upgrade().await,
+        SystemAction::Install { packages } => {
+            use crate::system_pm::SystemPm;
+            match SystemPm::detect().await {
+                Some(pm) => {
+                    println!("installing via {}", pm.name());
+                    pm.install(&packages).await
+                }
+                None => Err(crate::error::WaxError::PlatformNotSupported(
+                    "No supported system package manager found".to_string(),
+                )),
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_install(
+    packages: Vec<String>,
+    dry_run: bool,
+    ask: bool,
+    cask: bool,
+    user: bool,
+    global: bool,
+    build_from_source: bool,
+    head: bool,
+    no_script: bool,
+    cache: &Cache,
+    yes: bool,
+) -> Result<()> {
+    if packages.is_empty() && !cask {
+        #[cfg(target_os = "windows")]
+        crate::error::reject_homebrew_cli("install")?;
+        // No packages specified — sync from lockfile like `npm install`
+        commands::sync::sync(cache).await
+    } else {
+        commands::install::install(
+            cache,
+            &packages,
+            dry_run,
+            ask && !yes,
+            cask,
+            user,
+            global,
+            build_from_source,
+            head,
+            !no_script,
+        )
+        .await
+    }
+}
+
+async fn execute_update(
+    action: Option<String>,
+    mut update_self: bool,
+    mut nightly: bool,
+    force: bool,
+    clean: bool,
+    no_clean: bool,
+    cache: &Cache,
+) -> Result<()> {
+    if let Some(action) = action {
+        match action.as_str() {
+            "s" | "self" => update_self = true,
+            "sn" | "self-nightly" => {
+                update_self = true;
+                nightly = true;
+            }
+            other => {
+                return Err(error::WaxError::InvalidInput(format!(
+                    "Unknown update shorthand '{other}' (use s/self or sn/self-nightly)"
+                )));
+            }
+        }
+    }
+
+    if update_self {
+        run_self_update(nightly, force, clean, no_clean).await
+    } else {
+        #[cfg(target_os = "windows")]
+        crate::error::reject_homebrew_cli("update")?;
+        commands::update::update(cache).await
+    }
+}
+
 async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<()> {
     match command {
         Commands::Update {
             action,
-            mut update_self,
-            mut nightly,
+            update_self,
+            nightly,
             force,
             clean,
             no_clean,
-        } => {
-            if let Some(action) = action {
-                match action.as_str() {
-                    "s" | "self" => update_self = true,
-                    "sn" | "self-nightly" => {
-                        update_self = true;
-                        nightly = true;
-                    }
-                    other => {
-                        return Err(error::WaxError::InvalidInput(format!(
-                            "Unknown update shorthand '{other}' (use s/self or sn/self-nightly)"
-                        )));
-                    }
-                }
-            }
-
-            if update_self {
-                run_self_update(nightly, force, clean, no_clean).await
-            } else {
-                #[cfg(target_os = "windows")]
-                crate::error::reject_homebrew_cli("update")?;
-                commands::update::update(cache).await
-            }
-        }
+        } => execute_update(action, update_self, nightly, force, clean, no_clean, cache).await,
         Commands::SelfUpdate {
             nightly,
             force,
@@ -606,26 +746,20 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             head,
             no_script,
         } => {
-            if packages.is_empty() && !cask {
-                #[cfg(target_os = "windows")]
-                crate::error::reject_homebrew_cli("install")?;
-                // No packages specified — sync from lockfile like `npm install`
-                commands::sync::sync(cache).await
-            } else {
-                commands::install::install(
-                    cache,
-                    &packages,
-                    dry_run,
-                    ask && !yes,
-                    cask,
-                    user,
-                    global,
-                    build_from_source,
-                    head,
-                    !no_script,
-                )
-                .await
-            }
+            execute_install(
+                packages,
+                dry_run,
+                ask,
+                cask,
+                user,
+                global,
+                build_from_source,
+                head,
+                no_script,
+                cache,
+                yes,
+            )
+            .await
         }
         Commands::InstallCask {
             packages,
@@ -635,21 +769,7 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             global,
             no_script,
         } => {
-            #[cfg(target_os = "windows")]
-            crate::error::reject_homebrew_cli("install --cask")?;
-            commands::install::install(
-                cache,
-                &packages,
-                dry_run,
-                ask && !yes,
-                true,
-                user,
-                global,
-                false,
-                false,
-                !no_script,
-            )
-            .await
+            execute_install_cask(packages, dry_run, ask, user, global, no_script, cache, yes).await
         }
         Commands::Uninstall {
             formulae,
@@ -687,57 +807,23 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             user,
             global,
         } => {
-            if upgrade_self {
-                run_self_update(nightly, false, clean, no_clean).await?;
-                return Ok(());
-            }
-
-            #[cfg(target_os = "windows")]
-            crate::error::reject_homebrew_cli("upgrade")?;
-
-            let explicit_packages_requested = !packages.is_empty();
-
-            commands::upgrade::upgrade(
-                cache,
-                &packages,
+            execute_upgrade(
+                packages,
+                upgrade_self,
+                nightly,
+                clean,
+                no_clean,
                 dry_run,
-                ask && !yes,
-                install_scope(user, global)?,
+                ask,
+                system,
+                user,
+                global,
+                cache,
+                yes,
             )
-            .await?;
-            if system {
-                handle_system_upgrade().await?;
-            }
-
-            // Only check for wax self-update after a full upgrade run.
-            // For explicit package upgrades (e.g. `wax up codex`), skip this
-            // to avoid unrelated self-update output in command results.
-            if !explicit_packages_requested {
-                commands::self_update::self_update(
-                    commands::self_update::Channel::Stable,
-                    false,
-                    None,
-                )
-                .await?;
-            }
-
-            Ok(())
+            .await
         }
-        Commands::System { action } => match action {
-            SystemAction::Upgrade => handle_system_upgrade().await,
-            SystemAction::Install { packages } => {
-                use crate::system_pm::SystemPm;
-                match SystemPm::detect().await {
-                    Some(pm) => {
-                        println!("installing via {}", pm.name());
-                        pm.install(&packages).await
-                    }
-                    None => Err(crate::error::WaxError::PlatformNotSupported(
-                        "No supported system package manager found".to_string(),
-                    )),
-                }
-            }
-        },
+        Commands::System { action } => execute_system(action).await,
         Commands::Outdated { user, global } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("outdated")?;
