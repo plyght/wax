@@ -820,94 +820,117 @@ impl FormulaParser {
 
     fn extract_cask_artifacts(content: &str) -> Vec<CaskArtifact> {
         let mut artifacts = Vec::new();
-        let re_app = Regex::new(r#"(?m)^\s*app\s+"([^"]+)""#).ok();
-        if let Some(re) = re_app {
-            for cap in re.captures_iter(content) {
-                artifacts.push(CaskArtifact::App {
-                    app: vec![serde_json::Value::String(cap[1].to_string())],
-                });
-            }
+
+        static RE_APP: OnceLock<Regex> = OnceLock::new();
+        let re_app = RE_APP.get_or_init(|| Regex::new(r#"(?m)^\s*app\s+"([^"]+)""#).unwrap());
+        for cap in re_app.captures_iter(content) {
+            artifacts.push(CaskArtifact::App {
+                app: vec![serde_json::Value::String(cap[1].to_string())],
+            });
         }
-        let re_pkg = Regex::new(r#"(?m)^\s*pkg\s+"([^"]+)""#).ok();
-        if let Some(re) = re_pkg {
-            for cap in re.captures_iter(content) {
-                artifacts.push(CaskArtifact::Pkg {
-                    pkg: vec![serde_json::Value::String(cap[1].to_string())],
-                });
-            }
+
+        static RE_PKG: OnceLock<Regex> = OnceLock::new();
+        let re_pkg = RE_PKG.get_or_init(|| Regex::new(r#"(?m)^\s*pkg\s+"([^"]+)""#).unwrap());
+        for cap in re_pkg.captures_iter(content) {
+            artifacts.push(CaskArtifact::Pkg {
+                pkg: vec![serde_json::Value::String(cap[1].to_string())],
+            });
         }
-        let re_binary =
+
+        static RE_BINARY: OnceLock<Regex> = OnceLock::new();
+        let re_binary = RE_BINARY.get_or_init(|| {
             Regex::new(r#"(?m)^\s*binary\s+"([^"]+)"(?:\s*,\s*\{\s*target:\s*"([^"]+)"\s*\})?"#)
-                .ok();
-        if let Some(re) = re_binary {
-            for cap in re.captures_iter(content) {
-                let source = cap[1].to_string();
-                let mut binary = vec![serde_json::Value::String(source)];
-                if let Some(target) = cap.get(2) {
-                    let mut obj = serde_json::Map::new();
-                    obj.insert(
-                        "target".to_string(),
-                        serde_json::Value::String(target.as_str().to_string()),
-                    );
-                    binary.push(serde_json::Value::Object(obj));
-                }
-                artifacts.push(CaskArtifact::Binary { binary });
+                .unwrap()
+        });
+        for cap in re_binary.captures_iter(content) {
+            let source = cap[1].to_string();
+            let mut binary = vec![serde_json::Value::String(source)];
+            if let Some(target) = cap.get(2) {
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "target".to_string(),
+                    serde_json::Value::String(target.as_str().to_string()),
+                );
+                binary.push(serde_json::Value::Object(obj));
             }
+            artifacts.push(CaskArtifact::Binary { binary });
         }
 
         // Simple artifact types: type "path" or type "path", target: "name"
         macro_rules! simple_artifact {
-            ($re_type:ident, $key:expr, $variant:ident, $field:ident) => {
-                let $re_type = Regex::new(&format!(
-                    r#"(?m)^\s*{}\s+"([^"]+)"(?:\s*,\s*\{{\s*target:\s*"([^"]+)"\s*\}})?"#,
-                    regex::escape($key)
-                ))
-                .ok();
-                if let Some(re) = $re_type {
-                    for cap in re.captures_iter(content) {
-                        let source = cap[1].to_string();
-                        let mut vals = vec![serde_json::Value::String(source)];
-                        if let Some(target) = cap.get(2) {
-                            let mut obj = serde_json::Map::new();
-                            obj.insert(
-                                "target".to_string(),
-                                serde_json::Value::String(target.as_str().to_string()),
-                            );
-                            vals.push(serde_json::Value::Object(obj));
-                        }
-                        artifacts.push(CaskArtifact::$variant { $field: vals });
+            ($re_type:ident, $static_name:ident, $key:expr, $variant:ident, $field:ident) => {
+                static $static_name: OnceLock<Regex> = OnceLock::new();
+                let $re_type = $static_name.get_or_init(|| {
+                    Regex::new(&format!(
+                        r#"(?m)^\s*{}\s+"([^"]+)"(?:\s*,\s*\{{\s*target:\s*"([^"]+)"\s*\}})?"#,
+                        regex::escape($key)
+                    ))
+                    .unwrap()
+                });
+                for cap in $re_type.captures_iter(content) {
+                    let source = cap[1].to_string();
+                    let mut vals = vec![serde_json::Value::String(source)];
+                    if let Some(target) = cap.get(2) {
+                        let mut obj = serde_json::Map::new();
+                        obj.insert(
+                            "target".to_string(),
+                            serde_json::Value::String(target.as_str().to_string()),
+                        );
+                        vals.push(serde_json::Value::Object(obj));
                     }
+                    artifacts.push(CaskArtifact::$variant { $field: vals });
                 }
             };
         }
 
-        simple_artifact!(re_font, "font", Font, font);
-        simple_artifact!(re_manpage, "manpage", Manpage, manpage);
+        simple_artifact!(re_font, RE_FONT, "font", Font, font);
+        simple_artifact!(re_manpage, RE_MANPAGE, "manpage", Manpage, manpage);
         simple_artifact!(
             re_bash_completion,
+            RE_BASH_COMPLETION,
             "bash_completion",
             BashCompletion,
             bash_completion
         );
         simple_artifact!(
             re_zsh_completion,
+            RE_ZSH_COMPLETION,
             "zsh_completion",
             ZshCompletion,
             zsh_completion
         );
         simple_artifact!(
             re_fish_completion,
+            RE_FISH_COMPLETION,
             "fish_completion",
             FishCompletion,
             fish_completion
         );
-        simple_artifact!(re_prefpane, "prefpane", Prefpane, prefpane);
-        simple_artifact!(re_qlplugin, "qlplugin", Qlplugin, qlplugin);
-        simple_artifact!(re_colorpicker, "colorpicker", Colorpicker, colorpicker);
-        simple_artifact!(re_screen_saver, "screen_saver", ScreenSaver, screen_saver);
-        simple_artifact!(re_dictionary, "dictionary", Dictionary, dictionary);
-        simple_artifact!(re_service, "service", Service, service);
-        simple_artifact!(re_suite, "suite", Suite, suite);
+        simple_artifact!(re_prefpane, RE_PREFPANE, "prefpane", Prefpane, prefpane);
+        simple_artifact!(re_qlplugin, RE_QLPLUGIN, "qlplugin", Qlplugin, qlplugin);
+        simple_artifact!(
+            re_colorpicker,
+            RE_COLORPICKER,
+            "colorpicker",
+            Colorpicker,
+            colorpicker
+        );
+        simple_artifact!(
+            re_screen_saver,
+            RE_SCREEN_SAVER,
+            "screen_saver",
+            ScreenSaver,
+            screen_saver
+        );
+        simple_artifact!(
+            re_dictionary,
+            RE_DICTIONARY,
+            "dictionary",
+            Dictionary,
+            dictionary
+        );
+        simple_artifact!(re_service, RE_SERVICE, "service", Service, service);
+        simple_artifact!(re_suite, RE_SUITE, "suite", Suite, suite);
 
         artifacts
     }
