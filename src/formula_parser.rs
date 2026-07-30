@@ -500,9 +500,8 @@ impl FormulaParser {
         let multi_re = RE_BIN_MULTI.get_or_init(|| {
             Regex::new(r#"bin\.install\s+"([^"]+)"\s*,\s*"([^"]+)"(?:\s*,\s*"([^"]+)")*(?:\s*,\s*"([^"]+)")*"#).unwrap()
         });
-        let word_re = RE_BIN_WORD.get_or_init(|| {
-            Regex::new(r#"bin\.install\s+%w\[([^\]]+)\]"#).unwrap()
-        });
+        let word_re =
+            RE_BIN_WORD.get_or_init(|| Regex::new(r#"bin\.install\s+%w\[([^\]]+)\]"#).unwrap());
         let dir_re = RE_BIN_DIR.get_or_init(|| {
             Regex::new(r#"bin\.install\s+Dir\["([^"]+)"\]\.first(?:\s*=>\s*"([^"]+)")?"#).unwrap()
         });
@@ -512,9 +511,7 @@ impl FormulaParser {
         let dir_vars = Self::extract_dir_first_assignments(install_block);
         let mut targets: Vec<BinInstall> = Vec::new();
         let optional = |line: &str| line.contains("if File.exist?");
-        let quoted_re = RE_BIN_QUOTED.get_or_init(|| {
-            Regex::new(r#""([^"]+)""#).unwrap()
-        });
+        let quoted_re = RE_BIN_QUOTED.get_or_init(|| Regex::new(r#""([^"]+)""#).unwrap());
         for line in install_block.lines() {
             let trimmed = line.trim();
             if !trimmed.contains("bin.install") {
