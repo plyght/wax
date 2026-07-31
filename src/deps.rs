@@ -91,6 +91,8 @@ pub fn resolve_dependencies(
 ) -> Result<Vec<String>> {
     debug!("Resolving dependencies for {}", formula.name);
 
+    let by_name: HashMap<&str, &Formula> = formulae.iter().map(|f| (f.name.as_str(), f)).collect();
+
     let mut graph = DependencyGraph::new();
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
@@ -103,9 +105,9 @@ pub fn resolve_dependencies(
         }
         visited.insert(name.clone());
 
-        let f = formulae
-            .iter()
-            .find(|f| f.name == name)
+        let f = by_name
+            .get(name.as_str())
+            .copied()
             .ok_or_else(|| WaxError::FormulaNotFound(name.clone()))?;
 
         let deps = f.dependencies.clone().unwrap_or_default();

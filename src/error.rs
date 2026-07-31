@@ -117,6 +117,46 @@ pub fn validate_package_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject version strings that could escape the install root via path join.
+/// Versions are parsed from third-party tap formulae/casks and Scoop manifests,
+/// so they are attacker-controlled strings.
+pub fn validate_version(version: &str) -> Result<()> {
+    if version.is_empty()
+        || version == "."
+        || version == ".."
+        || version.contains(['/', '\\', '\0'])
+        || version.starts_with('-')
+        || version.chars().any(|c| c.is_control())
+    {
+        return Err(WaxError::InvalidInput(format!(
+            "invalid version string: {:?}",
+            version
+        )));
+    }
+    Ok(())
+}
+
+/// Reject HEAD URLs that could inject git options or commands.
+/// The URL is regex-extracted from a tap formula, so it is attacker-controlled.
+pub fn validate_head_url(url: &str) -> Result<()> {
+    let valid_scheme = url.starts_with("https://")
+        || url.starts_with("http://")
+        || url.starts_with("git://")
+        || url.starts_with("ssh://")
+        || url.starts_with("git@");
+    if !valid_scheme
+        || url.starts_with('-')
+        || url.contains(['\0', '\n', '\r', ' '])
+        || url.chars().any(|c| c.is_control())
+    {
+        return Err(WaxError::InvalidInput(format!(
+            "invalid HEAD URL: {:?}",
+            url
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 pub const BREW_UNAVAILABLE_MSG: &str =
     "Homebrew formulae and casks are not supported on Windows; use scoop/, winget/, or choco/ prefixes";
@@ -144,6 +184,30 @@ pub fn reject_brew_ecosystem(force: Option<crate::package_spec::Ecosystem>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_version() {
+        assert!(validate_version("1.2.3").is_ok());
+        assert!(validate_version("latest").is_ok());
+        assert!(validate_version("2.4.4,1055").is_ok());
+        assert!(validate_version("").is_err());
+        assert!(validate_version("..").is_err());
+        assert!(validate_version("../..").is_err());
+        assert!(validate_version("a/b").is_err());
+        assert!(validate_version("a\\b").is_err());
+        assert!(validate_version("-x").is_err());
+        assert!(validate_version("a\0b").is_err());
+    }
+
+    #[test]
+    fn test_validate_head_url() {
+        assert!(validate_head_url("https://github.com/u/r.git").is_ok());
+        assert!(validate_head_url("git@github.com:u/r.git").is_ok());
+        assert!(validate_head_url("ssh://git@github.com/u/r.git").is_ok());
+        assert!(validate_head_url("-upload-pack=sh -c 'id'").is_err());
+        assert!(validate_head_url("../../local/path").is_err());
+        assert!(validate_head_url("https://x y").is_err());
+    }
 
     #[test]
     fn test_validate_package_name_valid() {

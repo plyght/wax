@@ -277,6 +277,17 @@ fn download_kind_from_url(url: &str) -> Result<&'static str> {
 
 fn exe_filename(resolved: &ResolvedScoopPackage) -> Result<String> {
     if let Some(name) = &resolved.save_as {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains(['/', '\\', '\0'])
+            || name.starts_with('-')
+        {
+            return Err(WaxError::InvalidInput(format!(
+                "unsafe save_as filename: {:?}",
+                name
+            )));
+        }
         return Ok(name.clone());
     }
     let path = resolved
@@ -297,11 +308,20 @@ fn exe_filename(resolved: &ResolvedScoopPackage) -> Result<String> {
 }
 
 pub(crate) fn extract_zip_file(zip_path: &Path, dest_dir: &Path) -> Result<()> {
+    const MAX_EXTRACT_BYTES: u64 = 5 * 1024 * 1024 * 1024; // 5 GB
+    const MAX_ENTRIES: usize = 1_000_000;
+
     let file = std::fs::File::open(zip_path)?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| WaxError::InstallError(e.to_string()))?;
 
+    let mut total_bytes: u64 = 0;
     for i in 0..archive.len() {
+        if i >= MAX_ENTRIES {
+            return Err(WaxError::InstallError(
+                "archive exceeds entry count limit".to_string(),
+            ));
+        }
         let mut entry = archive
             .by_index(i)
             .map_err(|e| WaxError::InstallError(e.to_string()))?;
@@ -320,7 +340,13 @@ pub(crate) fn extract_zip_file(zip_path: &Path, dest_dir: &Path) -> Result<()> {
                 std::fs::create_dir_all(p)?;
             }
             let mut outfile = std::fs::File::create(&out_path)?;
-            std::io::copy(&mut entry, &mut outfile)?;
+            let copied = std::io::copy(&mut entry, &mut outfile)?;
+            total_bytes = total_bytes.saturating_add(copied);
+            if total_bytes > MAX_EXTRACT_BYTES {
+                return Err(WaxError::InstallError(
+                    "archive exceeds extracted size limit".to_string(),
+                ));
+            }
         }
     }
     Ok(())
@@ -503,6 +529,8 @@ fn wax_user_root() -> Result<PathBuf> {
 }
 
 fn resolved_staging_dir(package: &str, version: &str) -> Result<PathBuf> {
+    crate::error::validate_version(version)?;
+    crate::error::validate_package_name(package)?;
     Ok(wax_user_root()?
         .join("scoop-apps")
         .join(package)

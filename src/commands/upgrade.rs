@@ -1073,10 +1073,24 @@ async fn upgrade_cask_single(cache: &Cache, cask_name: &str, dry_run: bool) -> R
     } else {
         cask_summary.token.as_str()
     };
+
+    let installed_version = &installed.version;
+    if is_same_or_newer(installed_version, &cask_summary.version) {
+        println!(
+            "{} {} is already on the latest version ({}).",
+            style(cask_name).magenta(),
+            style("(cask)").yellow(),
+            style(installed_version).dim()
+        );
+        if dry_run {
+            println!("\ndry run - no changes made");
+        }
+        return Ok(());
+    }
+
     let cask_details = cache.fetch_cask_details(lookup).await?;
 
     let latest_version = &cask_details.version;
-    let installed_version = &installed.version;
 
     if is_same_or_newer(installed_version, latest_version) {
         println!(
@@ -1357,6 +1371,9 @@ pub async fn get_outdated_packages_scoped(
 
     for (name, installed) in &installed_casks {
         if let Some(cask) = cask_index.get(name.as_str()) {
+            if is_same_or_newer(&installed.version, &cask.version) {
+                continue;
+            }
             if let Ok(details) = cache.fetch_cask_details(&cask.token).await {
                 if !is_same_or_newer(&installed.version, &details.version) {
                     outdated.push(OutdatedPackage {

@@ -659,7 +659,10 @@ async fn install_portable_winget_zip(
     if staging.exists() {
         let _ = std::fs::remove_dir_all(&staging);
     }
-    std::fs::create_dir_all(staging.parent().unwrap())?;
+    let staging_parent = staging
+        .parent()
+        .ok_or_else(|| WaxError::InstallError("invalid staging path".to_string()))?;
+    std::fs::create_dir_all(staging_parent)?;
     crate::ui::copy_dir_all(&extract_root, &staging)?;
 
     let mut files = windows_state::collect_files(&staging)?;

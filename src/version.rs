@@ -52,6 +52,18 @@ impl Ord for BrewVersion {
         }
 
         if self_parts.len() != other_parts.len() || self.base != other.base {
+            // A release (no prerelease suffix) is newer than its own prereleases,
+            // so "2.5.0" must sort above "2.5.0-rc1".
+            if self.base.starts_with(&other.base)
+                && self.base.as_bytes().get(other.base.len()) == Some(&b'-')
+            {
+                return Ordering::Less;
+            }
+            if other.base.starts_with(&self.base)
+                && other.base.as_bytes().get(self.base.len()) == Some(&b'-')
+            {
+                return Ordering::Greater;
+            }
             return self.base.cmp(&other.base);
         }
 
@@ -177,5 +189,22 @@ mod tests {
         ];
         sort_versions(&mut versions);
         assert_eq!(versions, vec!["2.51.0", "2.52.0", "2.52.0_1", "2.52.0_2"]);
+    }
+
+    #[test]
+    fn test_prerelease_sorts_below_release() {
+        // A release must be newer than its own prereleases, so upgrade
+        // logic does not skip a stable release in favor of an old -rc/-beta.
+        assert!(is_same_or_newer("2.5.0", "2.5.0-rc1"));
+        assert!(!is_same_or_newer("2.5.0-rc1", "2.5.0"));
+        assert!(is_same_or_newer("2.5.0-beta2", "2.5.0-alpha1"));
+        assert!(is_same_or_newer("2.5.0", "2.5.0-beta1"));
+        let mut versions = vec![
+            "2.5.0-rc1".to_string(),
+            "2.5.0".to_string(),
+            "2.5.0-beta1".to_string(),
+        ];
+        sort_versions(&mut versions);
+        assert_eq!(versions, vec!["2.5.0-beta1", "2.5.0-rc1", "2.5.0"]);
     }
 }
