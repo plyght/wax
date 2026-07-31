@@ -133,14 +133,9 @@ fn copy_dir_all_inner(src: &Path, dst: &Path) -> Result<()> {
                         .or_else(|_| sudo::sudo_remove(&dst_path).map(|_| ()))?;
                 }
             }
-            copy_regular_file(&src_path, &dst_path)?;
+            std::fs::copy(&src_path, &dst_path)?;
         }
     }
-    Ok(())
-}
-
-fn copy_regular_file(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::copy(src, dst)?;
     Ok(())
 }
 

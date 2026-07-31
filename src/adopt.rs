@@ -24,8 +24,6 @@ pub struct ResolvedPackage {
     pub name: String,
     pub kind: PackageKind,
     pub formula: Option<InstalledPackage>,
-    #[allow(dead_code)]
-    pub cask: Option<InstalledCask>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,7 +132,9 @@ fn manual_app_key(cask: &InstalledCask) -> Option<String> {
 /// Sync formula installs from Cellar without requiring a package cache.
 pub async fn sync_formulae() -> Result<HashMap<String, InstalledPackage>> {
     let state = InstallState::new()?;
-    let _ = state.sync_from_cellar().await;
+    if let Err(e) = state.sync_from_cellar().await {
+        tracing::warn!("sync_from_cellar failed: {e}");
+    }
     state.load().await
 }
 
@@ -146,7 +146,9 @@ pub async fn sync_installed_state(
 
     if options.formulae {
         let state = InstallState::new()?;
-        state.sync_from_cellar().await.ok();
+        if let Err(e) = state.sync_from_cellar().await {
+            tracing::warn!("sync_from_cellar failed: {e}");
+        }
         let mut formulae = state.load().await?;
 
         if cfg!(target_os = "linux") {
@@ -164,7 +166,13 @@ pub async fn sync_installed_state(
 
     if options.casks {
         let cask_state = CaskState::new()?;
-        let caskroom_synced_names = cask_state.sync_from_caskrooms().await.unwrap_or_default();
+        let caskroom_synced_names = match cask_state.sync_from_caskrooms().await {
+            Ok(synced) => synced,
+            Err(e) => {
+                tracing::warn!("sync_from_caskrooms failed: {e}");
+                Default::default()
+            }
+        };
         let mut casks = cask_state.load().await?;
 
         if cfg!(target_os = "macos") {
@@ -215,7 +223,6 @@ pub async fn resolve_package(
             },
             kind: PackageKind::Formula,
             formula: Some(pkg.clone()),
-            cask: None,
         });
     }
 
@@ -227,7 +234,7 @@ async fn lookup_cask(
     name: &str,
     short: &str,
 ) -> Result<ResolvedPackage> {
-    if let Some(cask) = casks.get(name).or_else(|| casks.get(short)) {
+    if casks.contains_key(name) || casks.contains_key(short) {
         return Ok(ResolvedPackage {
             name: if casks.contains_key(name) {
                 name.to_string()
@@ -236,7 +243,6 @@ async fn lookup_cask(
             },
             kind: PackageKind::Cask,
             formula: None,
-            cask: Some(cask.clone()),
         });
     }
 

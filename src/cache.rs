@@ -284,7 +284,9 @@ impl Cache {
     pub async fn save_formulae(&self, formulae: &[Formula]) -> Result<()> {
         self.ensure_cache_dir().await?;
         let json = serde_json::to_string(formulae)?;
-        fs::write(self.formulae_path(), json).await?;
+        let tmp = self.formulae_path().with_extension("json.tmp");
+        fs::write(&tmp, json).await?;
+        fs::rename(&tmp, self.formulae_path()).await?;
         if let Ok(payload) = encode_index(formulae) {
             let _ = fs::write(self.formulae_bin_path(), payload).await;
         }
@@ -297,7 +299,9 @@ impl Cache {
     pub async fn save_casks(&self, casks: &[Cask]) -> Result<()> {
         self.ensure_cache_dir().await?;
         let json = serde_json::to_string(casks)?;
-        fs::write(self.casks_path(), json).await?;
+        let tmp = self.casks_path().with_extension("json.tmp");
+        fs::write(&tmp, json).await?;
+        fs::rename(&tmp, self.casks_path()).await?;
         if let Ok(payload) = encode_index(casks) {
             let _ = fs::write(self.casks_bin_path(), payload).await;
         }

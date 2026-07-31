@@ -28,6 +28,9 @@ pub struct InstalledCask {
     pub installed_paths: Vec<String>,
 }
 
+// ponytail: process-local lock; concurrent wax processes race load-modify-save
+// on cask state (atomic rename prevents torn files, not lost updates). Add an
+// OS lockfile if multi-process installs ever matter.
 static CASK_STATE_WRITE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn cask_state_write_lock() -> &'static tokio::sync::Mutex<()> {
@@ -529,13 +532,21 @@ impl CaskState {
         let caskroom = Self::caskroom_dir();
         let cask_dir = caskroom.join(name);
         if cask_dir.exists() {
-            let _ = fs::remove_dir_all(&cask_dir).await;
+            match fs::remove_dir_all(&cask_dir).await {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+                Ok(()) => {}
+            }
         }
 
         if let Ok(user_dir) = Self::user_caskroom_dir() {
             let user_cask_dir = user_dir.join(name);
             if user_cask_dir.exists() {
-                let _ = fs::remove_dir_all(&user_cask_dir).await;
+                match fs::remove_dir_all(&user_cask_dir).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                    Ok(()) => {}
+                }
             }
         }
 

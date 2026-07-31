@@ -1,6 +1,4 @@
-use crate::cask::CaskState;
 use crate::error::{Result, WaxError};
-use crate::install::InstallState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,41 +31,6 @@ impl Lockfile {
             packages: HashMap::new(),
             casks: HashMap::new(),
         }
-    }
-
-    #[instrument]
-    #[allow(dead_code)]
-    pub async fn generate() -> Result<Self> {
-        debug!("Generating lockfile from installed packages");
-
-        let state = InstallState::new()?;
-        let installed_packages = state.load().await?;
-
-        let mut packages = HashMap::new();
-        for (name, pkg) in installed_packages {
-            packages.insert(
-                name,
-                LockfilePackage {
-                    version: pkg.version,
-                    bottle: pkg.platform,
-                },
-            );
-        }
-
-        let cask_state = CaskState::new()?;
-        let installed_casks = cask_state.load().await?;
-
-        let mut casks = HashMap::new();
-        for (name, pkg) in installed_casks {
-            casks.insert(
-                name,
-                LockfileCask {
-                    version: pkg.version,
-                },
-            );
-        }
-
-        Ok(Self { packages, casks })
     }
 
     #[instrument(skip(self))]

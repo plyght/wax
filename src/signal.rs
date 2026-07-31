@@ -91,7 +91,7 @@ pub fn clear_current_op() {
 
 fn get_current_op() -> String {
     current_op_mutex()
-        .lock()
+        .try_lock()
         .map(|g| g.clone())
         .unwrap_or_default()
 }
