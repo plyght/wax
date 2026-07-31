@@ -1976,6 +1976,7 @@ async fn install_casks(
     let cache = Arc::new(cache.clone());
     let installer = Arc::new(CaskInstaller::new());
     let semaphore = Arc::new(Semaphore::new(8));
+    let casks_arc = Arc::new(casks);
 
     let detail_tasks: Vec<_> = to_install
         .iter()
@@ -1983,12 +1984,13 @@ async fn install_casks(
             let cache = Arc::clone(&cache);
             let inst = Arc::clone(&installer);
             let sem = Arc::clone(&semaphore);
+            let casks = Arc::clone(&casks_arc);
             let name = name.clone();
             tokio::spawn(async move {
                 let _permit = sem.acquire().await.map_err(|e| {
                     WaxError::InstallError(format!("cask detail semaphore closed: {e}"))
                 })?;
-                let details = cache.fetch_cask_details(&name).await?;
+                let details = cache.fetch_cask_details_from_index(&casks, &name).await?;
                 let artifact_type = if let Some(t) = detect_artifact_type(&details.url) {
                     t
                 } else if let Some(t) = inst.probe_artifact_type(&details.url).await {

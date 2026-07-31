@@ -1,5 +1,5 @@
 use crate::api::{Cask, CaskDetails, FetchResult, Formula, CASK_API_URL, FORMULA_API_URL};
-use crate::error::Result;
+use crate::error::{Result, WaxError};
 use crate::tap::TapManager;
 use crate::ui::dirs;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -11,6 +11,27 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::fs;
 use tracing::{debug, info, instrument};
+
+/// Magic prefix for the bincode index sidecars so format/version mismatches
+/// (e.g. from an older wax writing a different struct layout) fall back to JSON.
+const INDEX_BIN_MAGIC: &[u8] = b"WAXBIN1\0";
+
+fn encode_index<T: Serialize>(items: &[T]) -> Result<Vec<u8>> {
+    let mut payload = INDEX_BIN_MAGIC.to_vec();
+    bincode::serialize_into(&mut payload, items)
+        .map_err(|e| WaxError::CacheError(format!("bincode encode: {e}")))?;
+    Ok(payload)
+}
+
+fn decode_index<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T> {
+    if !payload.starts_with(INDEX_BIN_MAGIC) {
+        return Err(WaxError::CacheError(
+            "index cache format mismatch".to_string(),
+        ));
+    }
+    bincode::deserialize(&payload[INDEX_BIN_MAGIC.len()..])
+        .map_err(|e| WaxError::CacheError(format!("bincode decode: {e}")))
+}
 
 struct FormulaeIndexCache {
     signature: u64,
@@ -112,8 +133,16 @@ impl Cache {
         self.cache_dir.join("formulae.json")
     }
 
+    fn formulae_bin_path(&self) -> PathBuf {
+        self.cache_dir.join("formulae.bin")
+    }
+
     fn casks_path(&self) -> PathBuf {
         self.cache_dir.join("casks.json")
+    }
+
+    fn casks_bin_path(&self) -> PathBuf {
+        self.cache_dir.join("casks.bin")
     }
 
     fn metadata_path(&self) -> PathBuf {
@@ -256,6 +285,9 @@ impl Cache {
         self.ensure_cache_dir().await?;
         let json = serde_json::to_string(formulae)?;
         fs::write(self.formulae_path(), json).await?;
+        if let Ok(payload) = encode_index(formulae) {
+            let _ = fs::write(self.formulae_bin_path(), payload).await;
+        }
         clear_formulae_index_cache();
         info!("Saved {} formulae to cache", formulae.len());
         Ok(())
@@ -266,6 +298,9 @@ impl Cache {
         self.ensure_cache_dir().await?;
         let json = serde_json::to_string(casks)?;
         fs::write(self.casks_path(), json).await?;
+        if let Ok(payload) = encode_index(casks) {
+            let _ = fs::write(self.casks_bin_path(), payload).await;
+        }
         info!("Saved {} casks to cache", casks.len());
         Ok(())
     }
@@ -277,24 +312,45 @@ impl Cache {
         Ok(())
     }
 
-    pub async fn load_formulae(&self) -> Result<Vec<Formula>> {
-        let path = self.formulae_path();
-        if !path.exists() {
+    /// Load an index, preferring the bincode sidecar when it is at least as
+    /// fresh as the JSON (avoids re-parsing ~17MB of JSON every process).
+    async fn load_index<T: serde::de::DeserializeOwned>(
+        &self,
+        json_path: &Path,
+        bin_path: &Path,
+    ) -> Result<Vec<T>> {
+        if !json_path.exists() {
             self.auto_init().await?;
         }
-        let json = fs::read_to_string(path).await?;
-        let formulae = serde_json::from_str(&json)?;
-        Ok(formulae)
+        if let Ok(bin_meta) = fs::metadata(bin_path).await {
+            let bin_mtime = bin_meta
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if let Ok(json_meta) = fs::metadata(json_path).await {
+                let json_mtime = json_meta
+                    .modified()
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                if bin_mtime >= json_mtime {
+                    if let Ok(payload) = fs::read(bin_path).await {
+                        if let Ok(items) = decode_index::<Vec<T>>(&payload) {
+                            return Ok(items);
+                        }
+                    }
+                }
+            }
+        }
+        let json = fs::read_to_string(json_path).await?;
+        Ok(serde_json::from_str(&json)?)
+    }
+
+    pub async fn load_formulae(&self) -> Result<Vec<Formula>> {
+        self.load_index(&self.formulae_path(), &self.formulae_bin_path())
+            .await
     }
 
     pub async fn load_casks(&self) -> Result<Vec<Cask>> {
-        let path = self.casks_path();
-        if !path.exists() {
-            self.auto_init().await?;
-        }
-        let json = fs::read_to_string(path).await?;
-        let casks = serde_json::from_str(&json)?;
-        Ok(casks)
+        self.load_index(&self.casks_path(), &self.casks_bin_path())
+            .await
     }
 
     async fn auto_init(&self) -> Result<()> {
@@ -527,11 +583,12 @@ impl Cache {
         crate::formula_parser::FormulaParser::parse_ruby_cask_details(token, &content)
     }
 
-    #[instrument(skip(self))]
-    pub async fn fetch_cask_details(&self, cask_name: &str) -> Result<CaskDetails> {
+    pub async fn fetch_cask_details_from_index(
+        &self,
+        casks: &[Cask],
+        cask_name: &str,
+    ) -> Result<CaskDetails> {
         crate::error::validate_package_name(cask_name)?;
-
-        let casks = self.load_all_casks().await?;
         if let Some(summary) = casks
             .iter()
             .find(|c| c.token == cask_name || c.full_token == cask_name)
@@ -550,6 +607,12 @@ impl Cache {
         let cask: CaskDetails = response.json().await?;
         info!("Fetched details for cask: {}", api_token);
         Ok(cask)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fetch_cask_details(&self, cask_name: &str) -> Result<CaskDetails> {
+        let casks = self.load_all_casks().await?;
+        self.fetch_cask_details_from_index(&casks, cask_name).await
     }
 
     pub async fn load_all_casks(&self) -> Result<Vec<Cask>> {
@@ -680,6 +743,16 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_bin_roundtrip() {
+        let items = vec!["a".to_string(), "b".to_string()];
+        let payload = encode_index(&items).unwrap();
+        let decoded: Vec<String> = decode_index(&payload).unwrap();
+        assert_eq!(decoded, items);
+        assert!(decode_index::<Vec<String>>(b"nope").is_err());
+        assert!(decode_index::<Vec<String>>(b"WAXBIN1\0garbage").is_err());
+    }
 
     #[test]
     fn cache_metadata_serializes_roundtrip() {

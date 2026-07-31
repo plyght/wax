@@ -1,6 +1,6 @@
 [package]
 name = "waxpkg"
-version = "0.20.23"
+version = "0.20.24"
 edition = "2021"
 authors = ["Wax Contributors"]
 description = "Fast Homebrew-compatible package manager"
@@ -32,6 +32,7 @@ clap_complete = "4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "time", "io-util"] }
 reqwest = { version = "0.13", features = ["json", "stream", "gzip", "brotli"] }
 serde = { version = "1", features = ["derive"] }
+bincode = "1"
 serde_json = "1"
 toml = "1.1"
 
