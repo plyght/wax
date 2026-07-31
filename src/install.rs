@@ -243,11 +243,9 @@ impl InstallState {
 
     pub async fn load(&self) -> Result<HashMap<String, InstalledPackage>> {
         match fs::read_to_string(&self.state_path).await {
-            Ok(json) => {
-                let packages: HashMap<String, InstalledPackage> = serde_json::from_str(&json)?;
-                Ok(packages)
-            }
-            Err(_) => Ok(HashMap::new()),
+            Ok(json) => Ok(serde_json::from_str(&json)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -259,7 +257,9 @@ impl InstallState {
         fs::create_dir_all(parent).await?;
 
         let json = serde_json::to_string_pretty(packages)?;
-        fs::write(&self.state_path, json).await?;
+        let tmp_path = self.state_path.with_extension("json.tmp");
+        fs::write(&tmp_path, json).await?;
+        fs::rename(&tmp_path, &self.state_path).await?;
         Ok(())
     }
 
@@ -400,12 +400,6 @@ impl InstallState {
         }
 
         Ok(())
-    }
-}
-
-impl Default for InstallState {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize install state")
     }
 }
 
