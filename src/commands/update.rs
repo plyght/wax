@@ -30,8 +30,8 @@ pub async fn update(cache: &Cache) -> Result<()> {
         .unwrap_or((None, None));
 
     let (formulae_result, casks_result) = tokio::join!(
-        cache.fetch_formulae_conditional(formulae_etag, formulae_last_modified),
-        cache.fetch_casks_conditional(casks_etag, casks_last_modified)
+        cache.fetch_formulae_conditional(formulae_etag, formulae_last_modified, None),
+        cache.fetch_casks_conditional(casks_etag, casks_last_modified, None)
     );
 
     let mut formulae_fetch = formulae_result?;

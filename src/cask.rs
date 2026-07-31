@@ -716,8 +716,8 @@ impl Drop for RollbackContext {
                 self.installed_paths.len()
             ));
             for path in &self.installed_paths {
-                if path.exists() {
-                    if path.is_dir() {
+                if let Ok(meta) = std::fs::symlink_metadata(path) {
+                    if meta.file_type().is_dir() {
                         let _ = std::fs::remove_dir_all(path);
                     } else {
                         let _ = std::fs::remove_file(path);
@@ -803,9 +803,18 @@ impl StagingContext {
         artifact_type: &str,
         url: &str,
         target_dir: PathBuf,
+        progress: Option<&ProgressBar>,
     ) -> Result<Self> {
         tokio::fs::create_dir_all(&target_dir).await?;
-        Self::new_internal(download_path, artifact_type, url, target_dir, None).await
+        Self::new_internal(
+            download_path,
+            artifact_type,
+            url,
+            target_dir,
+            None,
+            progress,
+        )
+        .await
     }
 
     async fn new_internal(
@@ -814,6 +823,7 @@ impl StagingContext {
         url: &str,
         staging_root: PathBuf,
         temp_dir: Option<tempfile::TempDir>,
+        progress: Option<&ProgressBar>,
     ) -> Result<Self> {
         let mut mount_point = None;
 
@@ -822,6 +832,9 @@ impl StagingContext {
                 let mp = staging_root.join("mount");
                 tokio::fs::create_dir_all(&mp).await?;
 
+                if let Some(pb) = progress {
+                    pb.set_message("mounting dmg…");
+                }
                 let attach_output = tokio::process::Command::new("hdiutil")
                     .arg("attach")
                     .arg("-nobrowse")
@@ -837,6 +850,9 @@ impl StagingContext {
                 } else {
                     // Some casks use extensionless endpoints that are actually ZIP files.
                     // If DMG mounting fails, try ZIP extraction as a fallback.
+                    if let Some(pb) = progress {
+                        pb.set_message("unzipping…");
+                    }
                     let unzip_output = tokio::process::Command::new("unzip")
                         .arg("-q")
                         .arg("-o")
@@ -856,6 +872,9 @@ impl StagingContext {
                 }
             }
             "zip" => {
+                if let Some(pb) = progress {
+                    pb.set_message("unzipping…");
+                }
                 let unzip_output = tokio::process::Command::new("unzip")
                     .arg("-q")
                     .arg("-o")
@@ -873,6 +892,9 @@ impl StagingContext {
                 }
             }
             "tar.gz" | "tar" | "tgz" | "tar.bz2" | "tbz" | "tar.xz" | "txz" => {
+                if let Some(pb) = progress {
+                    pb.set_message("extracting…");
+                }
                 let tar_output = tokio::process::Command::new("tar")
                     .arg("-xf")
                     .arg(download_path)
@@ -914,6 +936,9 @@ impl StagingContext {
                     )));
                 }
 
+                if let Some(pb) = progress {
+                    pb.set_message("copying…");
+                }
                 let dest = staging_root.join(filename);
                 tokio::fs::copy(download_path, &dest).await?;
             }
@@ -927,6 +952,9 @@ impl StagingContext {
 
         // Guard against zip-bomb / archive-bomb resource exhaustion.
         let staging_root_for_size = actual_staging_root.clone();
+        if let Some(pb) = progress {
+            pb.set_message("scanning…");
+        }
         match tokio::task::spawn_blocking(move || dir_size(&staging_root_for_size))
             .await
             .map_err(|e| {

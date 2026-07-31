@@ -1,12 +1,14 @@
 use crate::api::{Cask, CaskDetails, FetchResult, Formula, CASK_API_URL, FORMULA_API_URL};
 use crate::error::Result;
 use crate::tap::TapManager;
-use crate::ui::{create_spinner, dirs};
+use crate::ui::dirs;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::fs;
 use tracing::{debug, info, instrument};
 
@@ -138,6 +140,24 @@ impl Cache {
         self.formulae_path().exists() && self.casks_path().exists()
     }
 
+    fn index_progress_bars() -> (MultiProgress, ProgressBar, ProgressBar) {
+        let multi = MultiProgress::new();
+        let formulae_pb = multi.add(ProgressBar::new(0));
+        let casks_pb = multi.add(ProgressBar::new(0));
+        for (pb, label) in [(&formulae_pb, "formulae.json"), (&casks_pb, "casks.json")] {
+            pb.set_message(label.to_string());
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "{spinner:.green} {msg} {bar:40.cyan/blue} {bytes}/{total} {percent}%",
+                    )
+                    .unwrap(),
+            );
+            pb.enable_steady_tick(Duration::from_millis(80));
+        }
+        (multi, formulae_pb, casks_pb)
+    }
+
     pub async fn ensure_fresh(&self) -> Result<()> {
         if !self.is_initialized() {
             self.auto_init().await?;
@@ -157,7 +177,7 @@ impl Cache {
         };
 
         if is_stale {
-            let spinner = create_spinner("Refreshing index…");
+            let (_multi, formulae_pb, casks_pb) = Self::index_progress_bars();
 
             let (formulae_etag, formulae_last_modified) = metadata
                 .as_ref()
@@ -175,9 +195,15 @@ impl Cache {
                 .unwrap_or((None, None));
 
             let (formulae_result, casks_result) = tokio::join!(
-                self.fetch_formulae_conditional(formulae_etag, formulae_last_modified),
-                self.fetch_casks_conditional(casks_etag, casks_last_modified)
+                self.fetch_formulae_conditional(
+                    formulae_etag,
+                    formulae_last_modified,
+                    Some(&formulae_pb),
+                ),
+                self.fetch_casks_conditional(casks_etag, casks_last_modified, Some(&casks_pb))
             );
+            formulae_pb.finish_and_clear();
+            casks_pb.finish_and_clear();
 
             let formulae_fetch = formulae_result?;
             let casks_fetch = casks_result?;
@@ -221,8 +247,6 @@ impl Cache {
                 }),
             };
             self.save_metadata(&new_metadata).await?;
-
-            spinner.finish_and_clear();
         }
         Ok(())
     }
@@ -274,12 +298,14 @@ impl Cache {
     }
 
     async fn auto_init(&self) -> Result<()> {
-        let spinner = create_spinner("Fetching package index…");
+        let (_multi, formulae_pb, casks_pb) = Self::index_progress_bars();
 
         let (formulae_result, casks_result) = tokio::join!(
-            self.fetch_formulae_conditional(None, None),
-            self.fetch_casks_conditional(None, None)
+            self.fetch_formulae_conditional(None, None, Some(&formulae_pb)),
+            self.fetch_casks_conditional(None, None, Some(&casks_pb))
         );
+        formulae_pb.finish_and_clear();
+        casks_pb.finish_and_clear();
 
         let formulae_fetch = formulae_result?;
         let casks_fetch = casks_result?;
@@ -306,7 +332,6 @@ impl Cache {
         };
         self.save_metadata(&metadata).await?;
 
-        spinner.finish_and_clear();
         Ok(())
     }
 
@@ -351,6 +376,7 @@ impl Cache {
         &self,
         etag: Option<&str>,
         last_modified: Option<&str>,
+        progress: Option<&ProgressBar>,
     ) -> Result<FetchResult<Vec<Formula>>> {
         info!("Fetching formulae from API with conditional headers");
         let client = crate::http_client::api();
@@ -363,7 +389,7 @@ impl Cache {
             request = request.header("If-Modified-Since", last_modified);
         }
 
-        let response = request.send().await?;
+        let mut response = request.send().await?;
 
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
             info!("Formulae not modified (304)");
@@ -387,7 +413,21 @@ impl Cache {
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
-        let body = response.bytes().await?;
+        let total = response.content_length();
+        if let Some(pb) = progress {
+            pb.set_message("formulae.json");
+            if let Some(len) = total {
+                pb.set_length(len);
+            }
+        }
+
+        let mut body = Vec::with_capacity(total.unwrap_or(0).min(512 * 1024 * 1024) as usize);
+        while let Some(chunk) = response.chunk().await? {
+            if let Some(pb) = progress {
+                pb.inc(chunk.len() as u64);
+            }
+            body.extend_from_slice(&chunk);
+        }
         let formulae: Vec<Formula> = serde_json::from_slice(&body)?;
         info!("Fetched {} formulae", formulae.len());
 
@@ -404,6 +444,7 @@ impl Cache {
         &self,
         etag: Option<&str>,
         last_modified: Option<&str>,
+        progress: Option<&ProgressBar>,
     ) -> Result<FetchResult<Vec<Cask>>> {
         info!("Fetching casks from API with conditional headers");
         let client = crate::http_client::api();
@@ -416,7 +457,7 @@ impl Cache {
             request = request.header("If-Modified-Since", last_modified);
         }
 
-        let response = request.send().await?;
+        let mut response = request.send().await?;
 
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
             info!("Casks not modified (304)");
@@ -440,7 +481,21 @@ impl Cache {
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
-        let body = response.bytes().await?;
+        let total = response.content_length();
+        if let Some(pb) = progress {
+            pb.set_message("casks.json");
+            if let Some(len) = total {
+                pb.set_length(len);
+            }
+        }
+
+        let mut body = Vec::with_capacity(total.unwrap_or(0).min(512 * 1024 * 1024) as usize);
+        while let Some(chunk) = response.chunk().await? {
+            if let Some(pb) = progress {
+                pb.inc(chunk.len() as u64);
+            }
+            body.extend_from_slice(&chunk);
+        }
         let casks: Vec<Cask> = serde_json::from_slice(&body)?;
         info!("Fetched {} casks", casks.len());
 
@@ -523,39 +578,16 @@ impl Cache {
 
             let tap_casks = if tap_cache_path.exists() {
                 debug!("Loading tap casks from cache: {}", tap_cache_path.display());
-                // Check if any .rb file is newer than the cache.
-                let cache_mtime = std::fs::metadata(&tap_cache_path)?.modified()?;
-                let mut stale = false;
                 let cask_dir = tap.cask_dir();
-                if cask_dir.exists() {
-                    for entry in std::fs::read_dir(&cask_dir)?.flatten() {
-                        if entry.path().extension().and_then(|s| s.to_str()) == Some("rb") {
-                            if let Ok(m) = entry.metadata() {
-                                if m.modified().unwrap_or(cache_mtime) > cache_mtime {
-                                    stale = true;
-                                    break;
-                                }
-                            }
-                        }
+                let json = fs::read_to_string(&tap_cache_path).await?;
+                let mut casks: Vec<Cask> = serde_json::from_str(&json)?;
+                for c in &mut casks {
+                    let rb_file = cask_dir.join(format!("{}.rb", c.token));
+                    if rb_file.exists() {
+                        c.rb_path = Some(rb_file);
                     }
                 }
-                if stale {
-                    debug!("Tap casks cache is stale, re-parsing: {}", tap.full_name);
-                    let casks = tap_manager.load_casks_from_tap(tap).await?;
-                    let json = serde_json::to_string_pretty(&casks)?;
-                    fs::write(&tap_cache_path, json).await?;
-                    casks
-                } else {
-                    let json = fs::read_to_string(&tap_cache_path).await?;
-                    let mut casks: Vec<Cask> = serde_json::from_str(&json)?;
-                    for c in &mut casks {
-                        let rb_file = cask_dir.join(format!("{}.rb", c.token));
-                        if rb_file.exists() {
-                            c.rb_path = Some(rb_file);
-                        }
-                    }
-                    casks
-                }
+                casks
             } else {
                 debug!("Loading tap casks from filesystem: {}", tap.full_name);
                 let casks = tap_manager.load_casks_from_tap(tap).await?;
@@ -609,40 +641,17 @@ impl Cache {
                     "Loading tap formulae from cache: {}",
                     tap_cache_path.display()
                 );
-                // Check if any .rb file is newer than the cache.
-                let cache_mtime = std::fs::metadata(&tap_cache_path)?.modified()?;
-                let mut stale = false;
                 let formula_dir = tap.formula_dir();
-                if formula_dir.exists() {
-                    for entry in std::fs::read_dir(&formula_dir)?.flatten() {
-                        if entry.path().extension().and_then(|s| s.to_str()) == Some("rb") {
-                            if let Ok(m) = entry.metadata() {
-                                if m.modified().unwrap_or(cache_mtime) > cache_mtime {
-                                    stale = true;
-                                    break;
-                                }
-                            }
-                        }
+                let json = fs::read_to_string(&tap_cache_path).await?;
+                let mut formulae: Vec<Formula> = serde_json::from_str(&json)?;
+                // rb_path is skipped during serialisation — restore it from the filesystem.
+                for f in &mut formulae {
+                    let rb_file = formula_dir.join(format!("{}.rb", f.name));
+                    if rb_file.exists() {
+                        f.rb_path = Some(rb_file);
                     }
                 }
-                if stale {
-                    debug!("Tap formula cache is stale, re-parsing: {}", tap.full_name);
-                    let formulae = tap_manager.load_formulae_from_tap(tap).await?;
-                    let json = serde_json::to_string_pretty(&formulae)?;
-                    fs::write(&tap_cache_path, json).await?;
-                    formulae
-                } else {
-                    let json = fs::read_to_string(&tap_cache_path).await?;
-                    let mut formulae: Vec<Formula> = serde_json::from_str(&json)?;
-                    // rb_path is skipped during serialisation — restore it from the filesystem.
-                    for f in &mut formulae {
-                        let rb_file = formula_dir.join(format!("{}.rb", f.name));
-                        if rb_file.exists() {
-                            f.rb_path = Some(rb_file);
-                        }
-                    }
-                    formulae
-                }
+                formulae
             } else {
                 debug!("Loading tap formulae from filesystem: {}", tap.full_name);
                 let formulae = tap_manager.load_formulae_from_tap(tap).await?;
@@ -665,12 +674,6 @@ impl Cache {
         }
 
         Ok(all)
-    }
-}
-
-impl Default for Cache {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize cache")
     }
 }
 

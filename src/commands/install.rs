@@ -184,6 +184,7 @@ async fn install_from_source_task(
 
         spinner.set_message("Installing to Cellar...");
         let version = &parsed_formula.source.version;
+        crate::error::validate_version(version)?;
         let formula_cellar = cellar.join(&formula.name).join(version);
         tokio::fs::create_dir_all(&formula_cellar).await?;
         copy_dir_all(&install_prefix, &formula_cellar)?;
@@ -358,6 +359,7 @@ async fn install_from_source_task(
     spinner.set_message("Installing to Cellar...");
 
     let version = &parsed_formula.source.version;
+    crate::error::validate_version(version)?;
     let formula_cellar = cellar.join(&formula.name).join(version);
     tokio::fs::create_dir_all(&formula_cellar).await?;
 
@@ -570,6 +572,7 @@ async fn install_from_head_task(
     let temp_dir = TempDir::new()?;
     let clone_dir = temp_dir.path().join("head-src");
 
+    crate::error::validate_head_url(head_url)?;
     spinner.set_message(format!("Cloning HEAD from {}...", head_url));
 
     let clone_output = tokio::process::Command::new("git")
@@ -1752,6 +1755,7 @@ pub async fn install_extracted_bottle(
     };
 
     let formula_cellar = cellar.join(name).join(&cellar_version);
+    crate::error::validate_version(&cellar_version)?;
     if formula_cellar.exists() {
         step!("cleaning old version...");
         tokio::fs::remove_dir_all(&formula_cellar)
@@ -2384,6 +2388,7 @@ async fn install_from_downloaded(
 
     step!("staging...");
     let cask_dir = CaskState::caskroom_dir().join(&cask.token);
+    crate::error::validate_version(&cask.version)?;
     let version_dir = cask_dir.join(&cask.version);
 
     // Clean up if version_dir already exists to ensure a fresh extraction
@@ -2391,9 +2396,14 @@ async fn install_from_downloaded(
         tokio::fs::remove_dir_all(&version_dir).await?;
     }
 
-    let staging =
-        StagingContext::new_in_dir(download_path, artifact_type, &cask.url, version_dir.clone())
-            .await?;
+    let staging = StagingContext::new_in_dir(
+        download_path,
+        artifact_type,
+        &cask.url,
+        version_dir.clone(),
+        Some(line),
+    )
+    .await?;
     let mut rollback = RollbackContext::new();
 
     // Ensure we rollback the version_dir if installation fails
