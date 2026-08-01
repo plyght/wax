@@ -41,6 +41,7 @@ struct CaskMatch {
     version: Option<String>,
 }
 
+#[allow(dead_code)]
 pub async fn discover_manually_installed_casks(
     casks: &[Cask],
 ) -> Result<HashMap<String, InstalledCask>> {
@@ -127,6 +128,7 @@ pub async fn discover_manually_installed_casks(
     }
 }
 
+#[allow(dead_code)]
 #[allow(clippy::needless_return)]
 pub async fn discover_linux_system_packages(
     formulae: &[Formula],
@@ -176,6 +178,7 @@ pub async fn discover_linux_system_packages(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn matching_manual_app_name<'a>(
     requested_name: &str,
     app_names: impl IntoIterator<Item = &'a str>,
@@ -193,6 +196,7 @@ pub(crate) fn matching_manual_app_name<'a>(
         .map(str::to_owned)
 }
 
+#[allow(dead_code)]
 pub async fn manually_installed_app_matching(requested_name: &str) -> Option<String> {
     #[cfg(not(target_os = "macos"))]
     {
@@ -227,6 +231,7 @@ pub async fn manually_installed_app_matching(requested_name: &str) -> Option<Str
     }
 }
 
+#[allow(dead_code)]
 fn build_cask_candidate_index(casks: &[Cask]) -> HashMap<String, Vec<usize>> {
     let mut index = HashMap::new();
 
@@ -244,12 +249,30 @@ fn build_cask_candidate_index(casks: &[Cask]) -> HashMap<String, Vec<usize>> {
     index
 }
 
+#[allow(dead_code)]
+fn build_formula_token_index(formulae: &[Formula]) -> HashMap<String, String> {
+    let mut index = HashMap::new();
+
+    for formula in formulae {
+        index
+            .entry(normalize_package_token(&formula.name))
+            .or_insert_with(|| formula.name.clone());
+        index
+            .entry(normalize_package_token(&formula.full_name))
+            .or_insert_with(|| formula.name.clone());
+    }
+
+    index
+}
+
+#[allow(dead_code)]
 fn cask_tokens(cask: &Cask) -> Vec<String> {
     let mut aliases = vec![cask.token.clone(), cask.full_token.clone()];
     aliases.extend(cask.name.clone());
     aliases
 }
 
+#[allow(dead_code)]
 fn candidate_indices_for_value(
     candidate_index: &HashMap<String, Vec<usize>>,
     value: &str,
@@ -273,6 +296,7 @@ fn candidate_indices_for_value(
     candidates
 }
 
+#[allow(dead_code)]
 fn resolve_cask_match(
     casks: &[Cask],
     candidate_index: &HashMap<String, Vec<usize>>,
@@ -320,6 +344,7 @@ fn resolve_cask_match(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn normalize_package_token(value: &str) -> String {
     let value = value
         .replace(".app", "")
@@ -443,6 +468,7 @@ async fn read_app_bundle_metadata(path: &Path, file_name: &str) -> AppBundleMeta
     }
 }
 
+#[allow(dead_code)]
 async fn read_app_bundle_name(path: &Path) -> Option<String> {
     if let Some(name) = read_info_plist_string(path, "CFBundleDisplayName").await {
         return Some(name);
@@ -512,6 +538,201 @@ async fn read_info_plist_string(path: &Path, key: &str) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
+async fn read_linux_package_inventory() -> Result<Vec<(String, String)>> {
+    let mut inventories = Vec::new();
+
+    if let Some(pkgs) = query_dpkg_inventory().await? {
+        inventories.extend(pkgs);
+    }
+
+    if let Some(pkgs) = query_pacman_inventory().await? {
+        inventories.extend(pkgs);
+    }
+
+    if let Some(pkgs) = query_apk_inventory().await? {
+        inventories.extend(pkgs);
+    }
+
+    if let Some(pkgs) = query_rpm_inventory().await? {
+        inventories.extend(pkgs);
+    }
+
+    Ok(inventories)
+}
+
+#[allow(dead_code)]
+async fn query_dpkg_inventory() -> Result<Option<Vec<(String, String)>>> {
+    let output = Command::new("dpkg-query")
+        .arg("-W")
+        .arg("-f=${binary:Package}\t${Version}\n")
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(parse_tab_inventory_lines(&output.stdout, true)))
+}
+
+#[allow(dead_code)]
+async fn query_pacman_inventory() -> Result<Option<Vec<(String, String)>>> {
+    let output = Command::new("pacman").arg("-Q").output().await;
+
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(parse_space_inventory_lines(&output.stdout, false)))
+}
+
+#[allow(dead_code)]
+async fn query_apk_inventory() -> Result<Option<Vec<(String, String)>>> {
+    let names_output = Command::new("apk").arg("info").arg("-e").output().await;
+
+    let Ok(names_output) = names_output else {
+        return Ok(None);
+    };
+
+    if !names_output.status.success() {
+        return Ok(None);
+    }
+
+    let package_names = parse_line_list(&names_output.stdout);
+    if package_names.is_empty() {
+        return Ok(None);
+    }
+
+    let details_output = Command::new("apk").arg("info").arg("-v").output().await;
+
+    let Ok(details_output) = details_output else {
+        return Ok(None);
+    };
+
+    if !details_output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(parse_apk_inventory_lines(
+        &details_output.stdout,
+        &package_names,
+    )))
+}
+
+#[allow(dead_code)]
+async fn query_rpm_inventory() -> Result<Option<Vec<(String, String)>>> {
+    let output = Command::new("rpm")
+        .arg("-qa")
+        .arg("--qf")
+        .arg("%{NAME}\t%{VERSION}-%{RELEASE}\n")
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(parse_tab_inventory_lines(&output.stdout, false)))
+}
+
+#[allow(dead_code)]
+fn parse_line_list(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect()
+}
+
+#[allow(dead_code)]
+fn parse_space_inventory_lines(stdout: &[u8], strip_arch_suffix: bool) -> Vec<(String, String)> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?;
+            let version = parts.next()?;
+            let name = if strip_arch_suffix {
+                name.split_once(':').map(|(base, _)| base).unwrap_or(name)
+            } else {
+                name
+            };
+            if name.is_empty() || version.is_empty() {
+                None
+            } else {
+                Some((name.to_string(), version.to_string()))
+            }
+        })
+        .collect()
+}
+
+#[allow(dead_code)]
+fn parse_tab_inventory_lines(stdout: &[u8], strip_arch_suffix: bool) -> Vec<(String, String)> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, version) = line.split_once('\t')?;
+            let name = if strip_arch_suffix {
+                name.split_once(':').map(|(base, _)| base).unwrap_or(name)
+            } else {
+                name
+            };
+            let name = name.trim();
+            let version = version.trim();
+            if name.is_empty() || version.is_empty() {
+                None
+            } else {
+                Some((name.to_string(), version.to_string()))
+            }
+        })
+        .collect()
+}
+
+#[allow(dead_code)]
+fn parse_apk_inventory_lines(stdout: &[u8], package_names: &[String]) -> Vec<(String, String)> {
+    let mut names = package_names.to_vec();
+    names.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+
+            let package_name = names.iter().find(|name| {
+                line.starts_with(name.as_str()) && line.as_bytes().get(name.len()) == Some(&b'-')
+            })?;
+
+            let version = line[package_name.len() + 1..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim();
+
+            if version.is_empty() {
+                None
+            } else {
+                Some((package_name.clone(), version.to_string()))
+            }
+        })
+        .collect()
+}
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn system_time_to_unix_seconds(time: SystemTime) -> Option<i64> {
     time.duration_since(UNIX_EPOCH)
@@ -682,5 +903,43 @@ mod tests {
             combine_bundle_version_for_cask("1.2.3", "123", "1.2.3,456"),
             None
         );
+    }
+
+    #[test]
+    fn parses_tab_inventory_lines() {
+        let input = b"vim	2:9.1.0000-1
+chromium:amd64	125.0.6422.141-1
+";
+        let parsed = parse_tab_inventory_lines(input, true);
+        assert_eq!(parsed[0], ("vim".to_string(), "2:9.1.0000-1".to_string()));
+        assert_eq!(
+            parsed[1],
+            ("chromium".to_string(), "125.0.6422.141-1".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_space_inventory_lines() {
+        let input = b"pacman 6.1.0-3
+pacman:amd64 6.1.0-3
+";
+        let parsed = parse_space_inventory_lines(input, true);
+        assert_eq!(parsed[0], ("pacman".to_string(), "6.1.0-3".to_string()));
+        assert_eq!(parsed[1], ("pacman".to_string(), "6.1.0-3".to_string()));
+    }
+
+    #[test]
+    fn parses_apk_inventory_lines_with_longest_prefix_match() {
+        let names = vec![
+            "foo".to_string(),
+            "foo-bar".to_string(),
+            "busybox".to_string(),
+        ];
+        let input = b"foo-bar-1.2.3-r0 BusyBox package
+busybox-1.36.1-r2 busybox utilities
+";
+        let parsed = parse_apk_inventory_lines(input, &names);
+        assert_eq!(parsed[0], ("foo-bar".to_string(), "1.2.3-r0".to_string()));
+        assert_eq!(parsed[1], ("busybox".to_string(), "1.36.1-r2".to_string()));
     }
 }
