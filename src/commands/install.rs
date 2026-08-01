@@ -2199,10 +2199,22 @@ async fn install_casks(
     if !successful_casks.is_empty() {
         let cask_state = CaskState::new().map_err(|e| WaxError::InstallError(e.to_string()))?;
         for (name, installed_cask, details) in successful_casks {
+            let cask_name = installed_cask.name.clone();
+            let cask_version = installed_cask.version.clone();
+            let installed_paths = installed_cask.installed_paths.clone();
             if let Err(e) = cask_state
                 .add_with_details(installed_cask, Some(&details))
                 .await
             {
+                // State save failed after files were installed: undo what we
+                // installed so we don't leave a ghost cask (files, no state).
+                for p in &installed_paths {
+                    let _ = tokio::fs::remove_dir_all(p).await;
+                }
+                let version_dir = CaskState::caskroom_dir()
+                    .join(&cask_name)
+                    .join(&cask_version);
+                let _ = tokio::fs::remove_dir_all(&version_dir).await;
                 pipeline_outcomes.push(Err(CaskPipelineFail::Install { name, err: e }));
             } else {
                 pipeline_outcomes.push(Ok(()));

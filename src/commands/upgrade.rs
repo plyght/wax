@@ -87,7 +87,9 @@ pub async fn upgrade(
     let start = std::time::Instant::now();
 
     cache.ensure_fresh().await?;
-    refresh_taps(cache).await?;
+    if !dry_run {
+        refresh_taps(cache).await?;
+    }
 
     if packages.is_empty() {
         upgrade_all(cache, dry_run, ask, start, scope).await

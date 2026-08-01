@@ -9,7 +9,7 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tracing::{debug, info, instrument};
 
@@ -53,6 +53,58 @@ fn temp_path_for(path: &Path) -> PathBuf {
         .and_then(|n| n.to_str())
         .unwrap_or("installed_casks.json");
     path.with_file_name(format!(".{}.{}.{}.tmp", file_name, pid, nanos))
+}
+
+/// Cross-process advisory lock for cask state read-modify-write cycles.
+/// Removes the lock file on drop; stale locks older than 30s are broken.
+struct CaskStateFileLock {
+    path: PathBuf,
+}
+
+impl CaskStateFileLock {
+    async fn acquire(path: PathBuf) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let mut waited = Duration::ZERO;
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .await
+            {
+                Ok(_) => return Ok(Self { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = fs::metadata(&path)
+                        .await
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|m| m.elapsed().ok())
+                        .map(|age| age > Duration::from_secs(30))
+                        .unwrap_or(false);
+                    if stale {
+                        let _ = fs::remove_file(&path).await;
+                        continue;
+                    }
+                    if waited >= Duration::from_secs(30) {
+                        return Err(WaxError::CacheError(
+                            "timed out waiting for cask state lock".to_string(),
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    waited += Duration::from_millis(50);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+}
+
+impl Drop for CaskStateFileLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 fn normalize_existing_prefix(path: &Path) -> PathBuf {
@@ -396,6 +448,8 @@ impl CaskState {
 
     pub async fn sync_from_caskrooms(&self) -> Result<HashSet<String>> {
         let _guard = cask_state_write_lock().lock().await;
+        let _file_lock =
+            CaskStateFileLock::acquire(self.legacy_state_path.with_extension("json.lock")).await?;
         let mut casks = self.load().await?;
         let mut synced_names = HashSet::new();
         let mut roots = vec![Self::caskroom_dir()];
@@ -465,6 +519,8 @@ impl CaskState {
         details: Option<&CaskDetails>,
     ) -> Result<()> {
         let _guard = cask_state_write_lock().lock().await;
+        let _file_lock =
+            CaskStateFileLock::acquire(self.legacy_state_path.with_extension("json.lock")).await?;
         let mut casks = self.load().await?;
 
         // Also create Caskroom structure
@@ -527,6 +583,8 @@ impl CaskState {
 
     pub async fn remove(&self, name: &str) -> Result<()> {
         let _guard = cask_state_write_lock().lock().await;
+        let _file_lock =
+            CaskStateFileLock::acquire(self.legacy_state_path.with_extension("json.lock")).await?;
         let mut casks = self.load().await?;
 
         let caskroom = Self::caskroom_dir();
