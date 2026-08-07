@@ -117,19 +117,27 @@ async fn install_from_source_task(
                 .await?;
 
         // Find the single extracted subdirectory, or use extract_dir itself.
-        let src_dir = std::fs::read_dir(&extract_dir)
-            .ok()
-            .and_then(|mut rd| {
-                let entries: Vec<_> = rd.by_ref().filter_map(|e| e.ok()).collect();
-                if entries.len() == 1 {
-                    let e = &entries[0];
-                    if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                        return Some(e.path());
+        let mut src_dir = extract_dir.clone();
+        if let Ok(mut rd) = tokio::fs::read_dir(&extract_dir).await {
+            let mut first_entry = None;
+            let mut count = 0;
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                if count == 0 {
+                    first_entry = Some(entry);
+                }
+                count += 1;
+                if count > 1 {
+                    break;
+                }
+            }
+            if count == 1 {
+                if let Some(e) = first_entry {
+                    if e.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                        src_dir = e.path();
                     }
                 }
-                None
-            })
-            .unwrap_or_else(|| extract_dir.clone());
+            }
+        }
 
         // Copy bin_install targets into install_prefix/bin/.
         let install_prefix = temp_dir.path().join("install");
