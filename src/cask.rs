@@ -886,6 +886,14 @@ impl StagingContext {
         .await
     }
 
+    fn ensure_absolute_path(path: &Path) -> Result<PathBuf> {
+        if path.is_absolute() {
+            Ok(path.to_path_buf())
+        } else {
+            std::env::current_dir().map(|cwd| cwd.join(path)).map_err(|e| WaxError::InstallError(format!("Failed to get current directory: {}", e)))
+        }
+    }
+
     async fn new_internal(
         download_path: &Path,
         artifact_type: &str,
@@ -894,6 +902,7 @@ impl StagingContext {
         temp_dir: Option<tempfile::TempDir>,
         progress: Option<&ProgressBar>,
     ) -> Result<Self> {
+        let abs_download_path = Self::ensure_absolute_path(download_path)?;
         let mut mount_point = None;
 
         match artifact_type {
@@ -910,7 +919,7 @@ impl StagingContext {
                     .arg("-quiet")
                     .arg("-mountpoint")
                     .arg(&mp)
-                    .arg(download_path)
+                    .arg(&abs_download_path)
                     .output()
                     .await?;
 
@@ -925,7 +934,7 @@ impl StagingContext {
                     let unzip_output = tokio::process::Command::new("unzip")
                         .arg("-q")
                         .arg("-o")
-                        .arg(download_path)
+                        .arg(&abs_download_path)
                         .arg("-d")
                         .arg(&staging_root)
                         .output()
@@ -947,7 +956,7 @@ impl StagingContext {
                 let unzip_output = tokio::process::Command::new("unzip")
                     .arg("-q")
                     .arg("-o")
-                    .arg(download_path)
+                    .arg(&abs_download_path)
                     .arg("-d")
                     .arg(&staging_root)
                     .output()
@@ -966,7 +975,7 @@ impl StagingContext {
                 }
                 let tar_output = tokio::process::Command::new("tar")
                     .arg("-xf")
-                    .arg(download_path)
+                    .arg(&abs_download_path)
                     .arg("-C")
                     .arg(&staging_root)
                     .output()
@@ -1052,9 +1061,10 @@ impl StagingContext {
 impl Drop for StagingContext {
     fn drop(&mut self) {
         if let Some(ref mp) = self.mount_point {
+            let abs_mp = StagingContext::ensure_absolute_path(mp).unwrap_or_else(|_| mp.to_path_buf());
             let _ = std::process::Command::new("hdiutil")
                 .arg("detach")
-                .arg(mp)
+                .arg(&abs_mp)
                 .arg("-quiet")
                 .status();
         }
@@ -1067,7 +1077,8 @@ pub struct CaskInstaller {
 
 #[cfg(target_os = "macos")]
 fn strip_macos_quarantine(path: &Path) {
-    let path_arg = path.to_string_lossy();
+    let abs_path = StagingContext::ensure_absolute_path(path).unwrap_or_else(|_| path.to_path_buf());
+    let path_arg = abs_path.to_string_lossy();
     match std::process::Command::new("xattr")
         .args(["-dr", "com.apple.quarantine", path_arg.as_ref()])
         .status()
@@ -1451,6 +1462,7 @@ impl CaskInstaller {
         #[cfg(target_os = "macos")]
         {
             let source = self.resolve_source_path(_staging, source_rel);
+            let abs_source = StagingContext::ensure_absolute_path(&source)?;
             info!("Installing PKG: {:?}", source);
 
             if !source.exists() {
@@ -1463,7 +1475,7 @@ impl CaskInstaller {
             // Verify the PKG file signature before executing it with elevated privileges.
             let verify_output = tokio::process::Command::new("pkgutil")
                 .arg("--check-signature")
-                .arg(&source)
+                .arg(&abs_source)
                 .output()
                 .await?;
 
@@ -1505,7 +1517,7 @@ impl CaskInstaller {
             let install_output = tokio::process::Command::new("sudo")
                 .arg("installer")
                 .arg("-pkg")
-                .arg(&source)
+                .arg(&abs_source)
                 .arg("-target")
                 .arg("/")
                 .output()
