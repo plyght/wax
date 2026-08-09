@@ -341,6 +341,7 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 mod tests {
     #[cfg(unix)]
     use super::sudo_copy;
+    #[cfg_attr(windows, allow(unused_imports))]
     use super::{
         acquire_sudo_for, has_sudo_cached, is_file_exists_error, is_permission_error,
         is_running_as_root, normalize_path, now_unix_secs, sudo_password_prompt,
@@ -599,7 +600,7 @@ fi
         }
         #[cfg(not(unix))]
         {
-            assert_eq!(is_root, false);
+            assert!(!is_root);
         }
     }
 

@@ -31,6 +31,7 @@ pub struct ResolvedPackage {
 
 #[derive(Debug, Clone, Copy)]
 pub struct AdoptOptions {
+    #[cfg_attr(windows, allow(dead_code))]
     pub persist: bool,
     pub formulae: bool,
     pub casks: bool,
@@ -143,6 +144,7 @@ pub async fn sync_formulae() -> Result<HashMap<String, InstalledPackage>> {
     state.load().await
 }
 
+#[cfg_attr(windows, allow(unused_variables))]
 pub async fn sync_installed_state(
     cache: &Cache,
     options: AdoptOptions,

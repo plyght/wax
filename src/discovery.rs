@@ -13,11 +13,13 @@ use crate::api::Formula;
 use crate::bottle::detect_platform;
 #[cfg(target_os = "macos")]
 use crate::cask::InstalledCask;
+#[cfg_attr(target_os = "windows", allow(unused_imports))]
 use crate::error::Result;
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use crate::install::{InstallMode, InstalledPackage};
 #[cfg(target_os = "macos")]
 use crate::ui::dirs;
+#[cfg_attr(target_os = "windows", allow(unused_imports))]
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::path::Path;
@@ -25,6 +27,7 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg_attr(target_os = "windows", allow(unused_imports))]
 use tokio::process::Command;
 #[cfg(target_os = "macos")]
 use tracing::debug;
@@ -320,6 +323,7 @@ fn resolve_cask_match(
     }
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(crate) fn normalize_package_token(value: &str) -> String {
     let value = value
         .replace(".app", "")
