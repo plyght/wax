@@ -1459,6 +1459,7 @@ impl CaskInstaller {
             // Verify the PKG file signature before executing it with elevated privileges.
             let verify_output = tokio::process::Command::new("pkgutil")
                 .arg("--check-signature")
+                .arg("--")
                 .arg(&source)
                 .output()
                 .await?;
@@ -1498,10 +1499,16 @@ impl CaskInstaller {
             .await
             .map_err(|e| WaxError::InstallError(e.to_string()))??;
 
+            let safe_source = if source.is_absolute() {
+                source.clone()
+            } else {
+                std::path::Path::new(".").join(&source)
+            };
+
             let install_output = tokio::process::Command::new("sudo")
                 .arg("installer")
                 .arg("-pkg")
-                .arg(&source)
+                .arg(&safe_source)
                 .arg("-target")
                 .arg("/")
                 .output()
