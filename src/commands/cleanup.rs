@@ -17,14 +17,18 @@ pub async fn cleanup(dry_run: bool) -> Result<()> {
             continue;
         }
 
-        let mut versions: Vec<String> = match std::fs::read_dir(&pkg_dir) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().is_dir())
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect(),
-            Err(_) => continue,
-        };
+        let mut versions = Vec::new();
+        if let Ok(mut entries) = tokio::fs::read_dir(&pkg_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if let Ok(file_type) = entry.file_type().await {
+                    if file_type.is_dir() {
+                        versions.push(entry.file_name().to_string_lossy().to_string());
+                    }
+                }
+            }
+        } else {
+            continue;
+        }
 
         if versions.len() <= 1 {
             continue;
@@ -45,7 +49,7 @@ pub async fn cleanup(dry_run: bool) -> Result<()> {
                     format_bytes(size)
                 );
             } else {
-                if let Err(e) = std::fs::remove_dir_all(&old_path) {
+                if let Err(e) = tokio::fs::remove_dir_all(&old_path).await {
                     eprintln!(
                         "  {} failed to remove {}@{}: {}",
                         style("✗").red(),

@@ -441,11 +441,6 @@ impl CaskState {
         Ok(casks)
     }
 
-    #[allow(dead_code)]
-    async fn scan_cask_version_dir(&self, cask_path: &Path) -> Result<(String, i64)> {
-        Ok(latest_caskroom_version(cask_path).unwrap_or_else(|| ("unknown".to_string(), 0)))
-    }
-
     pub async fn sync_from_caskrooms(&self) -> Result<HashSet<String>> {
         let _guard = cask_state_write_lock().lock().await;
         let _file_lock =
@@ -458,17 +453,17 @@ impl CaskState {
         }
 
         for root in roots {
-            let entries = match std::fs::read_dir(&root) {
+            let mut entries = match tokio::fs::read_dir(&root).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
 
-            for entry in entries.filter_map(|entry| entry.ok()) {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with('.') {
                     continue;
                 }
-                let Ok(file_type) = entry.file_type() else {
+                let Ok(file_type) = entry.file_type().await else {
                     continue;
                 };
                 if !file_type.is_dir() || file_type.is_symlink() {
@@ -506,11 +501,6 @@ impl CaskState {
                 let _ = std::fs::remove_file(&temp_path);
             })?;
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub async fn add(&self, cask: InstalledCask) -> Result<()> {
-        self.add_with_details(cask, None).await
     }
 
     pub async fn add_with_details(
@@ -886,18 +876,6 @@ impl StagingContext {
         .await
     }
 
-    fn ensure_absolute_path(path: &Path) -> Result<PathBuf> {
-        if path.is_absolute() {
-            Ok(path.to_path_buf())
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path))
-                .map_err(|e| {
-                    WaxError::InstallError(format!("Failed to get current directory: {}", e))
-                })
-        }
-    }
-
     async fn new_internal(
         download_path: &Path,
         artifact_type: &str,
@@ -906,8 +884,13 @@ impl StagingContext {
         temp_dir: Option<tempfile::TempDir>,
         progress: Option<&ProgressBar>,
     ) -> Result<Self> {
-        let abs_download_path = Self::ensure_absolute_path(download_path)?;
         let mut mount_point = None;
+
+        let safe_download_path = if download_path.is_absolute() {
+            download_path.to_path_buf()
+        } else {
+            std::path::Path::new(".").join(download_path)
+        };
 
         match artifact_type {
             "dmg" => {
@@ -923,7 +906,7 @@ impl StagingContext {
                     .arg("-quiet")
                     .arg("-mountpoint")
                     .arg(&mp)
-                    .arg(&abs_download_path)
+                    .arg(download_path)
                     .output()
                     .await?;
 
@@ -938,7 +921,7 @@ impl StagingContext {
                     let unzip_output = tokio::process::Command::new("unzip")
                         .arg("-q")
                         .arg("-o")
-                        .arg(&abs_download_path)
+                        .arg(&safe_download_path)
                         .arg("-d")
                         .arg(&staging_root)
                         .output()
@@ -960,7 +943,7 @@ impl StagingContext {
                 let unzip_output = tokio::process::Command::new("unzip")
                     .arg("-q")
                     .arg("-o")
-                    .arg(&abs_download_path)
+                    .arg(&safe_download_path)
                     .arg("-d")
                     .arg(&staging_root)
                     .output()
@@ -979,7 +962,7 @@ impl StagingContext {
                 }
                 let tar_output = tokio::process::Command::new("tar")
                     .arg("-xf")
-                    .arg(&abs_download_path)
+                    .arg(download_path)
                     .arg("-C")
                     .arg(&staging_root)
                     .output()
@@ -1065,11 +1048,9 @@ impl StagingContext {
 impl Drop for StagingContext {
     fn drop(&mut self) {
         if let Some(ref mp) = self.mount_point {
-            let abs_mp =
-                StagingContext::ensure_absolute_path(mp).unwrap_or_else(|_| mp.to_path_buf());
             let _ = std::process::Command::new("hdiutil")
                 .arg("detach")
-                .arg(&abs_mp)
+                .arg(mp)
                 .arg("-quiet")
                 .status();
         }
@@ -1082,9 +1063,7 @@ pub struct CaskInstaller {
 
 #[cfg(target_os = "macos")]
 fn strip_macos_quarantine(path: &Path) {
-    let abs_path =
-        StagingContext::ensure_absolute_path(path).unwrap_or_else(|_| path.to_path_buf());
-    let path_arg = abs_path.to_string_lossy();
+    let path_arg = path.to_string_lossy();
     match std::process::Command::new("xattr")
         .args(["-dr", "com.apple.quarantine", path_arg.as_ref()])
         .status()
@@ -1468,7 +1447,6 @@ impl CaskInstaller {
         #[cfg(target_os = "macos")]
         {
             let source = self.resolve_source_path(_staging, source_rel);
-            let abs_source = StagingContext::ensure_absolute_path(&source)?;
             info!("Installing PKG: {:?}", source);
 
             if !source.exists() {
@@ -1481,7 +1459,8 @@ impl CaskInstaller {
             // Verify the PKG file signature before executing it with elevated privileges.
             let verify_output = tokio::process::Command::new("pkgutil")
                 .arg("--check-signature")
-                .arg(&abs_source)
+                .arg("--")
+                .arg(&source)
                 .output()
                 .await?;
 
@@ -1520,10 +1499,16 @@ impl CaskInstaller {
             .await
             .map_err(|e| WaxError::InstallError(e.to_string()))??;
 
+            let safe_source = if source.is_absolute() {
+                source.clone()
+            } else {
+                std::path::Path::new(".").join(&source)
+            };
+
             let install_output = tokio::process::Command::new("sudo")
                 .arg("installer")
                 .arg("-pkg")
-                .arg(&abs_source)
+                .arg(&safe_source)
                 .arg("-target")
                 .arg("/")
                 .output()

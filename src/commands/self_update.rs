@@ -439,7 +439,7 @@ async fn update_from_crates(force: bool) -> Result<()> {
     Ok(())
 }
 
-fn cleanup_nightly_artifacts() -> Result<usize> {
+async fn cleanup_nightly_artifacts() -> Result<usize> {
     let home = crate::ui::dirs::home_dir()?;
     let mut removed = 0usize;
 
@@ -447,18 +447,32 @@ fn cleanup_nightly_artifacts() -> Result<usize> {
         home.join(".cargo/git/checkouts"),
         home.join(".cargo/git/db"),
     ];
+
+    let mut join_set = tokio::task::JoinSet::new();
+
     for root in roots {
-        let entries = match std::fs::read_dir(&root) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("wax-") && path.is_dir() && std::fs::remove_dir_all(&path).is_ok() {
-                removed += 1;
+        if let Ok(mut entries) = tokio::fs::read_dir(&root).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+
+                if name.starts_with("wax-") {
+                    join_set.spawn(async move {
+                        if let Ok(file_type) = entry.file_type().await {
+                            if file_type.is_dir() && tokio::fs::remove_dir_all(&path).await.is_ok()
+                            {
+                                return 1usize;
+                            }
+                        }
+                        0usize
+                    });
+                }
             }
         }
+    }
+
+    while let Some(res) = join_set.join_next().await {
+        removed += res.unwrap_or(0);
     }
 
     Ok(removed)
@@ -523,7 +537,7 @@ async fn update_from_source(force: bool, nightly_cleanup: Option<bool>) -> Resul
     }
 
     if should_cleanup_nightly(nightly_cleanup)? {
-        let removed = cleanup_nightly_artifacts()?;
+        let removed = cleanup_nightly_artifacts().await?;
         println!(
             "{} cleaned {} nightly cache entr{}",
             style("✓").green(),
