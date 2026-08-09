@@ -426,4 +426,68 @@ mod tests {
             .to_string();
         assert!(err.contains("already owned by scoop/tool"));
     }
+
+    #[test]
+    fn load_manifest_returns_none_when_missing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let result = load_manifest(Ecosystem::Scoop, "missing-package").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_manifest_returns_error_on_invalid_json() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let path = manifest_path(Ecosystem::Scoop, "corrupt").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ invalid json").unwrap();
+
+        let err = load_manifest(Ecosystem::Scoop, "corrupt").unwrap_err();
+        assert!(matches!(err, WaxError::JsonError(_)));
+    }
+
+    #[test]
+    fn list_manifests_returns_empty_when_dir_missing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let result = list_manifests().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn list_manifests_ignores_non_json_files() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let dir = manifest_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Valid manifest
+        let manifest = WindowsPackageManifest::new(
+            Ecosystem::Scoop,
+            "valid",
+            "1.0.0",
+            "https://example.invalid/valid.zip",
+            wax_windows_root().unwrap().join("scoop-apps/valid/1.0.0"),
+            Vec::new(),
+            Vec::new(),
+        );
+        manifest.save().unwrap();
+
+        // Invalid files that should be ignored
+        std::fs::write(dir.join("ignore.txt"), "not json").unwrap();
+        std::fs::create_dir_all(dir.join("ignore.json")).unwrap();
+
+        let list = list_manifests().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "valid");
+    }
 }
