@@ -456,7 +456,8 @@ async fn stage_binary_release_download(
         tokio::fs::write(&archive_path, bytes).await?;
 
         let tar_output = tokio::process::Command::new("tar")
-            .arg("xf")
+            .arg("-x")
+            .arg("-f")
             .arg(&archive_path)
             .arg("-C")
             .arg(&extract_dir)
