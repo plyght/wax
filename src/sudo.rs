@@ -340,12 +340,11 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use super::is_running_as_root;
-    #[cfg(unix)]
     use super::sudo_copy;
     use super::{
-        acquire_sudo_for, is_file_exists_error, is_permission_error, normalize_path,
-        sudo_password_prompt, MOCK_INTERACTIVE_TERMINAL, SUDO_VALIDATED, SUDO_VALIDATED_AT,
+        acquire_sudo_for, has_sudo_cached, is_file_exists_error, is_permission_error,
+        is_running_as_root, normalize_path, now_unix_secs, sudo_password_prompt,
+        MOCK_INTERACTIVE_TERMINAL, SUDO_CACHE_TTL_SECS, SUDO_VALIDATED, SUDO_VALIDATED_AT,
     };
     use crate::error::WaxError;
     use std::io::{Error, ErrorKind};
@@ -578,12 +577,122 @@ fi
             "failure" => {
                 "#!/bin/sh\nexit 1\n"
             }
+            "cached" => {
+                "#!/bin/sh\nif [ \"$1\" = \"-n\" ] && [ \"$2\" = \"true\" ]; then\n    exit 0\nfi\nexit 1\n"
+            }
             _ => "#!/bin/sh\nexit 1\n",
         };
         std::fs::write(&sudo_path, script).unwrap();
         let mut perms = std::fs::metadata(&sudo_path).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&sudo_path, perms).unwrap();
+    }
+
+    #[test]
+    fn test_is_running_as_root() {
+        // Just verify it doesn't panic and returns a boolean
+        let is_root = is_running_as_root();
+        #[cfg(unix)]
+        {
+            let actual_root = unsafe { libc::geteuid() == 0 };
+            assert_eq!(is_root, actual_root);
+        }
+        #[cfg(not(unix))]
+        {
+            assert_eq!(is_root, false);
+        }
+    }
+
+    #[test]
+    fn test_has_sudo_cached_when_already_validated() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = EnvGuard::new();
+
+        SUDO_VALIDATED.store(true, Ordering::SeqCst);
+        SUDO_VALIDATED_AT.store(now_unix_secs(), Ordering::SeqCst);
+
+        // Since it's validated, it should return true immediately without calling sudo.
+        assert!(has_sudo_cached());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_has_sudo_cached_when_expired() {
+        if is_running_as_root() {
+            return;
+        }
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = EnvGuard::new();
+
+        // Setup a failing fake sudo so if it falls back to checking, it returns false
+        let temp_dir = tempfile::tempdir().unwrap();
+        setup_fake_sudo(temp_dir.path(), "failure");
+        let mut new_path = temp_dir.path().to_path_buf().into_os_string();
+        new_path.push(":");
+        new_path.push(&_env_guard.original_path);
+        std::env::set_var("PATH", new_path);
+
+        SUDO_VALIDATED.store(true, Ordering::SeqCst);
+        // Set timestamp far in the past to simulate expiration
+        SUDO_VALIDATED_AT.store(
+            now_unix_secs().saturating_sub(SUDO_CACHE_TTL_SECS + 10),
+            Ordering::SeqCst,
+        );
+
+        assert!(!has_sudo_cached());
+        assert!(!SUDO_VALIDATED.load(Ordering::SeqCst));
+        assert_eq!(SUDO_VALIDATED_AT.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_has_sudo_cached_when_unset_and_cached() {
+        if is_running_as_root() {
+            return;
+        }
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = EnvGuard::new();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        setup_fake_sudo(temp_dir.path(), "cached");
+        let mut new_path = temp_dir.path().to_path_buf().into_os_string();
+        new_path.push(":");
+        new_path.push(&_env_guard.original_path);
+        std::env::set_var("PATH", new_path);
+
+        SUDO_VALIDATED.store(false, Ordering::SeqCst);
+        SUDO_VALIDATED_AT.store(0, Ordering::SeqCst);
+
+        assert!(has_sudo_cached());
+        assert!(SUDO_VALIDATED.load(Ordering::SeqCst));
+        assert!(SUDO_VALIDATED_AT.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_has_sudo_cached_when_unset_and_failure() {
+        if is_running_as_root() {
+            return;
+        }
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env_guard = EnvGuard::new();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        setup_fake_sudo(temp_dir.path(), "failure");
+        let mut new_path = temp_dir.path().to_path_buf().into_os_string();
+        new_path.push(":");
+        new_path.push(&_env_guard.original_path);
+        std::env::set_var("PATH", new_path);
+
+        SUDO_VALIDATED.store(false, Ordering::SeqCst);
+        SUDO_VALIDATED_AT.store(0, Ordering::SeqCst);
+
+        assert!(!has_sudo_cached());
+        assert!(!SUDO_VALIDATED.load(Ordering::SeqCst));
+        assert_eq!(SUDO_VALIDATED_AT.load(Ordering::SeqCst), 0);
     }
 
     #[test]
