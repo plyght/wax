@@ -459,7 +459,8 @@ async fn cleanup_nightly_artifacts() -> Result<usize> {
                 if name.starts_with("wax-") {
                     join_set.spawn(async move {
                         if let Ok(file_type) = entry.file_type().await {
-                            if file_type.is_dir() && tokio::fs::remove_dir_all(&path).await.is_ok() {
+                            if file_type.is_dir() && tokio::fs::remove_dir_all(&path).await.is_ok()
+                            {
                                 return 1usize;
                             }
                         }
