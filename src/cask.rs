@@ -890,7 +890,11 @@ impl StagingContext {
         if path.is_absolute() {
             Ok(path.to_path_buf())
         } else {
-            std::env::current_dir().map(|cwd| cwd.join(path)).map_err(|e| WaxError::InstallError(format!("Failed to get current directory: {}", e)))
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .map_err(|e| {
+                    WaxError::InstallError(format!("Failed to get current directory: {}", e))
+                })
         }
     }
 
@@ -1061,7 +1065,8 @@ impl StagingContext {
 impl Drop for StagingContext {
     fn drop(&mut self) {
         if let Some(ref mp) = self.mount_point {
-            let abs_mp = StagingContext::ensure_absolute_path(mp).unwrap_or_else(|_| mp.to_path_buf());
+            let abs_mp =
+                StagingContext::ensure_absolute_path(mp).unwrap_or_else(|_| mp.to_path_buf());
             let _ = std::process::Command::new("hdiutil")
                 .arg("detach")
                 .arg(&abs_mp)
@@ -1077,7 +1082,8 @@ pub struct CaskInstaller {
 
 #[cfg(target_os = "macos")]
 fn strip_macos_quarantine(path: &Path) {
-    let abs_path = StagingContext::ensure_absolute_path(path).unwrap_or_else(|_| path.to_path_buf());
+    let abs_path =
+        StagingContext::ensure_absolute_path(path).unwrap_or_else(|_| path.to_path_buf());
     let path_arg = abs_path.to_string_lossy();
     match std::process::Command::new("xattr")
         .args(["-dr", "com.apple.quarantine", path_arg.as_ref()])
