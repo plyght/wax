@@ -320,7 +320,6 @@ fn resolve_cask_match(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn normalize_package_token(value: &str) -> String {
     let value = value
         .replace(".app", "")

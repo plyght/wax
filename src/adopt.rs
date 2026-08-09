@@ -154,7 +154,8 @@ pub async fn sync_installed_state(
         if let Err(e) = state.sync_from_cellar().await {
             tracing::warn!("sync_from_cellar failed: {e}");
         }
-        let formulae = state.load().await?;
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut formulae = state.load().await?;
 
         #[cfg(target_os = "linux")]
         {
