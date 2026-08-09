@@ -508,11 +508,6 @@ impl CaskState {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub async fn add(&self, cask: InstalledCask) -> Result<()> {
-        self.add_with_details(cask, None).await
-    }
-
     pub async fn add_with_details(
         &self,
         cask: InstalledCask,
