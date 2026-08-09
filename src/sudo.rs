@@ -635,7 +635,10 @@ fi
 
         SUDO_VALIDATED.store(true, Ordering::SeqCst);
         // Set timestamp far in the past to simulate expiration
-        SUDO_VALIDATED_AT.store(now_unix_secs().saturating_sub(SUDO_CACHE_TTL_SECS + 10), Ordering::SeqCst);
+        SUDO_VALIDATED_AT.store(
+            now_unix_secs().saturating_sub(SUDO_CACHE_TTL_SECS + 10),
+            Ordering::SeqCst,
+        );
 
         assert!(!has_sudo_cached());
         assert!(!SUDO_VALIDATED.load(Ordering::SeqCst));
