@@ -886,6 +886,12 @@ impl StagingContext {
     ) -> Result<Self> {
         let mut mount_point = None;
 
+        let safe_download_path = if download_path.is_absolute() {
+            download_path.to_path_buf()
+        } else {
+            std::path::Path::new(".").join(download_path)
+        };
+
         match artifact_type {
             "dmg" => {
                 let mp = staging_root.join("mount");
@@ -915,7 +921,7 @@ impl StagingContext {
                     let unzip_output = tokio::process::Command::new("unzip")
                         .arg("-q")
                         .arg("-o")
-                        .arg(download_path)
+                        .arg(&safe_download_path)
                         .arg("-d")
                         .arg(&staging_root)
                         .output()
@@ -937,7 +943,7 @@ impl StagingContext {
                 let unzip_output = tokio::process::Command::new("unzip")
                     .arg("-q")
                     .arg("-o")
-                    .arg(download_path)
+                    .arg(&safe_download_path)
                     .arg("-d")
                     .arg(&staging_root)
                     .output()
