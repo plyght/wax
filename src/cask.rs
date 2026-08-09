@@ -441,11 +441,6 @@ impl CaskState {
         Ok(casks)
     }
 
-    #[allow(dead_code)]
-    async fn scan_cask_version_dir(&self, cask_path: &Path) -> Result<(String, i64)> {
-        Ok(latest_caskroom_version(cask_path).unwrap_or_else(|| ("unknown".to_string(), 0)))
-    }
-
     pub async fn sync_from_caskrooms(&self) -> Result<HashSet<String>> {
         let _guard = cask_state_write_lock().lock().await;
         let _file_lock =
