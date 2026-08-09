@@ -453,17 +453,17 @@ impl CaskState {
         }
 
         for root in roots {
-            let entries = match std::fs::read_dir(&root) {
+            let mut entries = match tokio::fs::read_dir(&root).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
 
-            for entry in entries.filter_map(|entry| entry.ok()) {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with('.') {
                     continue;
                 }
-                let Ok(file_type) = entry.file_type() else {
+                let Ok(file_type) = entry.file_type().await else {
                     continue;
                 };
                 if !file_type.is_dir() || file_type.is_symlink() {
