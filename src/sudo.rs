@@ -324,7 +324,7 @@ pub fn sudo_chown_recursive(path: &Path) -> Result<()> {
     let user = get_current_user();
 
     let status = Command::new("sudo")
-        .args(["chown", "-R", &format!("{}:admin", user), "--"])
+        .args(["chown", "-R", "-h", &format!("{}:admin", user), "--"])
         .arg(&path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
