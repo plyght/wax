@@ -441,7 +441,7 @@ async fn uninstall_cask(
                 for bin_path in paths {
                     let link = Path::new(bin_path);
                     if link.is_symlink() {
-                        if let Ok(target) = std::fs::read_link(link) {
+                        if let Ok(target) = tokio::fs::read_link(link).await {
                             if target.to_string_lossy().contains(cask_name) {
                                 let _ = tokio::fs::remove_file(link).await;
                             }
