@@ -6,9 +6,12 @@
 
 use crate::cache::Cache;
 use crate::cask::{CaskState, InstalledCask};
-use crate::discovery::{
-    discover_linux_system_packages, discover_manually_installed_casks, normalize_package_token,
-};
+#[cfg(target_os = "linux")]
+use crate::discovery::discover_linux_system_packages;
+#[cfg(target_os = "macos")]
+use crate::discovery::discover_manually_installed_casks;
+#[cfg(target_os = "macos")]
+use crate::discovery::normalize_package_token;
 use crate::error::{Result, WaxError};
 use crate::install::{InstallState, InstalledPackage};
 use std::collections::{HashMap, HashSet};
@@ -73,6 +76,7 @@ pub fn short_package_name(name: &str) -> &str {
     name.rsplit('/').next().unwrap_or(name)
 }
 
+#[cfg(target_os = "macos")]
 pub fn merge_discovered_casks(
     installed_casks: &mut HashMap<String, InstalledCask>,
     discovered_casks: HashMap<String, InstalledCask>,
@@ -118,6 +122,7 @@ pub fn merge_discovered_casks(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn manual_app_key(cask: &InstalledCask) -> Option<String> {
     if cask.artifact_type.as_deref() != Some("app") {
         return None;
@@ -151,7 +156,8 @@ pub async fn sync_installed_state(
         }
         let mut formulae = state.load().await?;
 
-        if cfg!(target_os = "linux") {
+        #[cfg(target_os = "linux")]
+        {
             let all_formulae = cache.load_all_formulae().await?;
             for (name, package) in discover_linux_system_packages(&all_formulae).await? {
                 formulae.entry(name).or_insert(package);
@@ -173,9 +179,11 @@ pub async fn sync_installed_state(
                 Default::default()
             }
         };
+        #[allow(unused_mut)]
         let mut casks = cask_state.load().await?;
 
-        if cfg!(target_os = "macos") {
+        #[cfg(target_os = "macos")]
+        {
             let all_casks = cache.load_all_casks().await?;
             let discovered = discover_manually_installed_casks(&all_casks).await?;
             merge_discovered_casks(&mut casks, discovered, &caskroom_synced_names);
@@ -246,6 +254,7 @@ async fn lookup_cask(
         });
     }
 
+    #[cfg(target_os = "macos")]
     if let Some(app_name) = crate::discovery::manually_installed_app_matching(name).await {
         return Err(manual_app_not_installed_error(name, &app_name));
     }
@@ -253,6 +262,7 @@ async fn lookup_cask(
     Err(WaxError::NotInstalled(name.to_string()))
 }
 
+#[cfg(target_os = "macos")]
 fn manual_app_not_installed_error(requested_name: &str, app_name: &str) -> WaxError {
     WaxError::NotInstalled(format!(
         "{requested_name}\n  Found /Applications/{app_name}, but it is not managed by Wax. Wax will not remove it automatically; remove it in Finder or with that app's supported uninstaller."
@@ -261,10 +271,15 @@ fn manual_app_not_installed_error(requested_name: &str, app_name: &str) -> WaxEr
 
 #[cfg(test)]
 mod tests {
-    use super::{manual_app_not_installed_error, merge_discovered_casks, short_package_name};
+    use super::short_package_name;
+    #[cfg(target_os = "macos")]
+    use super::{manual_app_not_installed_error, merge_discovered_casks};
+    #[cfg(target_os = "macos")]
     use crate::cask::InstalledCask;
+    #[allow(unused_imports)]
     use std::collections::{HashMap, HashSet};
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn manual_app_suggestion_keeps_removal_explicit() {
         let error = manual_app_not_installed_error("raycast@beta", "Raycast Beta.app");
@@ -279,6 +294,7 @@ mod tests {
         assert_eq!(short_package_name("vro"), "vro");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn merge_discovered_casks_updates_existing_versions() {
         let mut installed = HashMap::from([(
@@ -315,6 +331,7 @@ mod tests {
         assert_eq!(cask.app_name.as_deref(), Some("Example.app"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn merge_discovered_casks_preserves_caskroom_synced_versions() {
         let mut installed = HashMap::from([(
@@ -353,6 +370,7 @@ mod tests {
         assert_eq!(cask.install_date, 2);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn merge_discovered_casks_replaces_stale_manual_app_token() {
         let mut installed = HashMap::from([(
@@ -386,6 +404,7 @@ mod tests {
         assert_eq!(installed.get("vendor-example").unwrap().version, "2.0.0");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn merge_discovered_casks_keeps_caskroom_synced_same_app_token() {
         let mut installed = HashMap::from([(
