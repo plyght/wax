@@ -886,6 +886,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn parses_tab_inventory_lines() {
         let input = b"vim	2:9.1.0000-1
 chromium:amd64	125.0.6422.141-1
@@ -899,6 +900,7 @@ chromium:amd64	125.0.6422.141-1
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn parses_space_inventory_lines() {
         let input = b"pacman 6.1.0-3
 pacman:amd64 6.1.0-3
@@ -909,6 +911,7 @@ pacman:amd64 6.1.0-3
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn parses_apk_inventory_lines_with_longest_prefix_match() {
         let names = vec![
             "foo".to_string(),
