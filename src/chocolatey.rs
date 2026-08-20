@@ -2,21 +2,30 @@
 //! Only packages that ship portable `.exe` files under `tools/` without requiring
 //! `chocolateyinstall.ps1` downloads are supported for wax-managed install.
 
-use crate::bottle::BottleDownloader;
 use crate::error::{Result, WaxError};
-use crate::package_spec::Ecosystem;
-use crate::scoop;
-use crate::windows_state::{self, WindowsPackageManifest};
-use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+#[cfg(target_os = "windows")]
+use crate::bottle::BottleDownloader;
+#[cfg(target_os = "windows")]
+use crate::package_spec::Ecosystem;
+#[cfg(target_os = "windows")]
+use crate::scoop;
+#[cfg(target_os = "windows")]
+use crate::windows_state::{self, WindowsPackageManifest};
+#[cfg(target_os = "windows")]
+use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(target_os = "windows")]
 use tempfile::TempDir;
+#[cfg(target_os = "windows")]
 use tracing::debug;
 
 static SEARCH_RE: OnceLock<Regex> = OnceLock::new();
 
 /// Search chocolatey.org web UI; returns package ids (lowercase) matching the query.
+#[cfg(target_os = "windows")]
 pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>> {
     if query.trim().is_empty() {
         return Ok(vec![]);
@@ -32,13 +41,20 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
         .await?
         .text()
         .await?;
+    Ok(parse_chocolatey_package_ids(&html, limit))
+}
+
+fn parse_chocolatey_package_ids(html: &str, limit: usize) -> Vec<String> {
     let re = SEARCH_RE.get_or_init(|| {
         Regex::new(r##"href="/packages/([^"#?]+)"##).expect("Invalid regex in chocolatey search")
     });
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for cap in re.captures_iter(&html) {
-        let id = cap[1].to_string();
+    for cap in re.captures_iter(html) {
+        let id = cap[1].to_lowercase();
+        if id.is_empty() || id.contains('/') {
+            continue;
+        }
         if seen.insert(id.clone()) {
             out.push(id);
         }
@@ -46,7 +62,7 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
             break;
         }
     }
-    Ok(out)
+    out
 }
 
 #[cfg(target_os = "windows")]
@@ -60,6 +76,7 @@ pub async fn package_exists(id: &str) -> bool {
 }
 
 /// Install latest `.nupkg` if it contains at least one `tools/*.exe` and no mandatory script-only layout.
+#[cfg(target_os = "windows")]
 pub async fn install_portable_tools(id: &str) -> Result<()> {
     if !cfg!(target_os = "windows") {
         return Err(WaxError::PlatformNotSupported(
@@ -86,6 +103,7 @@ pub async fn install_portable_tools(id: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn stage_and_link_tools(
     id: &str,
     nupkg_url: String,
@@ -143,6 +161,7 @@ fn stage_and_link_tools(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 async fn download_nupkg(id: &str, nupkg_url: &str, nupkg_path: &Path) -> Result<()> {
     let dl = BottleDownloader::new();
     let size = dl.probe_size(nupkg_url).await;
@@ -215,4 +234,107 @@ fn collect_exe_files(dir: &Path, out: &mut Vec<PathBuf>, depth: u32, max_depth: 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn parse_ids_skips_versioned_package_hrefs() {
+        let html = r#"
+            <a href="/packages/git">git</a>
+            <a href="/packages/git/2.43.0">2.43.0</a>
+            <a href="/packages/nodejs">nodejs</a>
+            <a href="/packages?q=git">search</a>
+        "#;
+        assert_eq!(
+            parse_chocolatey_package_ids(html, 10),
+            vec!["git".to_string(), "nodejs".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_ids_does_not_let_versioned_hrefs_consume_limit() {
+        let html = r#"
+            <a href="/packages/git">git</a>
+            <a href="/packages/git/2.43.0">2.43.0</a>
+            <a href="/packages/nodejs">nodejs</a>
+        "#;
+        assert_eq!(
+            parse_chocolatey_package_ids(html, 2),
+            vec!["git".to_string(), "nodejs".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_ids_lowercases_and_dedupes() {
+        let html = r#"
+            <a href="/packages/Git">Git</a>
+            <a href="/packages/git">git</a>
+            <a href="/packages/NODEJS">NODEJS</a>
+        "#;
+        assert_eq!(
+            parse_chocolatey_package_ids(html, 10),
+            vec!["git".to_string(), "nodejs".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_ids_limit_zero_returns_empty() {
+        let html = r#"<a href="/packages/git">git</a>"#;
+        assert!(parse_chocolatey_package_ids(html, 0).is_empty());
+    }
+
+    #[test]
+    fn get_tools_and_exes_requires_tools_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = get_tools_and_exes(tmp.path()).unwrap_err();
+        match err {
+            WaxError::InstallError(msg) => {
+                assert!(msg.contains("no tools/ directory"), "{msg}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn get_tools_and_exes_distinguishes_script_only_packages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tmp.path().join("tools");
+        fs::create_dir(&tools).unwrap();
+        fs::write(tools.join("chocolateyinstall.ps1"), "# install").unwrap();
+
+        let err = get_tools_and_exes(tmp.path()).unwrap_err();
+        match err {
+            WaxError::InstallError(msg) => {
+                assert!(msg.contains("chocolateyinstall.ps1"), "{msg}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn get_tools_and_exes_collects_portable_exes_and_skips_helpers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tmp.path().join("tools");
+        let nested = tools.join("bin");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(tools.join("app.exe"), b"mz").unwrap();
+        fs::write(tools.join("APP.EXE.bak"), b"nope").unwrap();
+        fs::write(tools.join("uninstall.exe"), b"mz").unwrap();
+        fs::write(tools.join("chocolateyInstall.exe"), b"mz").unwrap();
+        fs::write(nested.join("helper.EXE"), b"mz").unwrap();
+
+        let (tools_dir, exes) = get_tools_and_exes(tmp.path()).unwrap();
+        assert_eq!(tools_dir, tools);
+
+        let mut names: Vec<String> = exes
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["app.exe".to_string(), "helper.EXE".to_string()]);
+    }
 }
