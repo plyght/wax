@@ -656,6 +656,39 @@ fn search_no_args_does_not_panic() {
 }
 
 #[test]
+#[cfg(not(windows))]
+fn search_windows_prefix_reports_platform_without_touching_the_network() {
+    for prefix in ["scoop", "winget", "choco", "chocolatey"] {
+        let home = tempfile::tempdir().unwrap();
+        let out = wax_with_home(home.path())
+            .arg("search")
+            .arg(format!("{prefix}/ripgrep"))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "search {prefix}/ failed: {stdout}");
+        assert!(
+            stdout.contains("only available on Windows"),
+            "search {prefix}/ said: {stdout}"
+        );
+    }
+}
+
+#[test]
+#[cfg(not(windows))]
+fn search_empty_query_short_circuits() {
+    let home = tempfile::tempdir().unwrap();
+    let out = wax_with_home(home.path())
+        .arg("search")
+        .arg("   ")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "empty search failed: {stdout}");
+    assert!(stdout.contains("empty search query"), "said: {stdout}");
+}
+
+#[test]
 fn unknown_subcommand_exits_nonzero() {
     let out = wax()
         .arg("definitely-not-a-real-subcommand")

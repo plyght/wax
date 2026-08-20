@@ -2,16 +2,24 @@
 //! Only packages that ship portable `.exe` files under `tools/` without requiring
 //! `chocolateyinstall.ps1` downloads are supported for wax-managed install.
 
-use crate::bottle::BottleDownloader;
 use crate::error::{Result, WaxError};
-use crate::package_spec::Ecosystem;
-use crate::scoop;
-use crate::windows_state::{self, WindowsPackageManifest};
-use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+#[cfg(target_os = "windows")]
+use crate::bottle::BottleDownloader;
+#[cfg(target_os = "windows")]
+use crate::package_spec::Ecosystem;
+#[cfg(target_os = "windows")]
+use crate::scoop;
+#[cfg(target_os = "windows")]
+use crate::windows_state::{self, WindowsPackageManifest};
+#[cfg(target_os = "windows")]
+use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(target_os = "windows")]
 use tempfile::TempDir;
+#[cfg(target_os = "windows")]
 use tracing::debug;
 
 static SEARCH_RE: OnceLock<Regex> = OnceLock::new();
@@ -60,13 +68,16 @@ pub async fn package_exists(id: &str) -> bool {
 }
 
 /// Install latest `.nupkg` if it contains at least one `tools/*.exe` and no mandatory script-only layout.
-pub async fn install_portable_tools(id: &str) -> Result<()> {
-    if !cfg!(target_os = "windows") {
-        return Err(WaxError::PlatformNotSupported(
-            "Chocolatey-backed portable install is only supported on Windows".into(),
-        ));
-    }
+#[cfg(not(target_os = "windows"))]
+pub async fn install_portable_tools(_id: &str) -> Result<()> {
+    Err(WaxError::PlatformNotSupported(
+        "Chocolatey-backed portable install is only supported on Windows".into(),
+    ))
+}
 
+/// Install latest `.nupkg` if it contains at least one `tools/*.exe` and no mandatory script-only layout.
+#[cfg(target_os = "windows")]
+pub async fn install_portable_tools(id: &str) -> Result<()> {
     let nupkg_url = format!("https://community.chocolatey.org/api/v2/package/{}", id);
     debug!("Chocolatey nupkg {}", nupkg_url);
 
@@ -86,6 +97,7 @@ pub async fn install_portable_tools(id: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 fn stage_and_link_tools(
     id: &str,
     nupkg_url: String,
@@ -143,6 +155,7 @@ fn stage_and_link_tools(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 async fn download_nupkg(id: &str, nupkg_url: &str, nupkg_path: &Path) -> Result<()> {
     let dl = BottleDownloader::new();
     let size = dl.probe_size(nupkg_url).await;
@@ -208,11 +221,125 @@ fn collect_exe_files(dir: &Path, out: &mut Vec<PathBuf>, depth: u32, max_depth: 
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
             let nl = name.to_lowercase();
-            if nl.contains("uninstall") || nl.contains("chocolatey") {
+            if nl.contains("uninstall") || nl.contains("chocolatey") || nl.starts_with("unins") {
                 continue;
             }
             out.push(p);
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"").unwrap();
+    }
+
+    #[test]
+    fn missing_tools_dir_is_an_install_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let err = get_tools_and_exes(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("no tools/ directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn script_only_package_reports_the_scoop_winget_hint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        touch(&tmp.path().join("tools").join("chocolateyinstall.ps1"));
+        let err = get_tools_and_exes(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("chocolateyinstall.ps1"), "unexpected: {msg}");
+        assert!(msg.contains("scoop/"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn tools_dir_without_exes_reports_no_portable_exe() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        touch(&tmp.path().join("tools").join("readme.txt"));
+        let err = get_tools_and_exes(tmp.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("No suitable portable .exe"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn portable_exes_are_collected_recursively() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tools = tmp.path().join("tools");
+        touch(&tools.join("app.exe"));
+        touch(&tools.join("nested").join("helper.EXE"));
+        let (dir, mut exes) = get_tools_and_exes(tmp.path()).unwrap();
+        assert_eq!(dir, tools);
+        exes.sort();
+        let names: Vec<String> = exes
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["app.exe", "helper.EXE"]);
+    }
+
+    #[test]
+    fn uninstaller_and_chocolatey_shims_are_skipped() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tools = tmp.path().join("tools");
+        touch(&tools.join("app.exe"));
+        touch(&tools.join("Uninstall.exe"));
+        touch(&tools.join("unins000.exe"));
+        touch(&tools.join("chocolateyProxy.exe"));
+        let (_, mut exes) = get_tools_and_exes(tmp.path()).unwrap();
+        exes.sort();
+        let names: Vec<String> = exes
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["app.exe"]);
+    }
+
+    #[test]
+    fn recursion_stops_past_the_depth_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let deep = tmp.path().join("a").join("b").join("c");
+        touch(&deep.join("too-deep.exe"));
+        let mut out = Vec::new();
+        collect_exe_files(tmp.path(), &mut out, 0, 1).unwrap();
+        assert!(out.is_empty());
+
+        let mut out = Vec::new();
+        collect_exe_files(tmp.path(), &mut out, 0, 4).unwrap();
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn missing_directory_surfaces_an_io_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut out = Vec::new();
+        assert!(collect_exe_files(&tmp.path().join("nope"), &mut out, 0, 4).is_err());
+    }
+
+    #[tokio::test]
+    async fn blank_query_never_hits_the_network() {
+        assert!(search_package_ids("", 10).await.unwrap().is_empty());
+        assert!(search_package_ids("   ", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_os = "windows"))]
+    async fn portable_install_is_windows_only() {
+        let err = install_portable_tools("git").await.unwrap_err();
+        assert!(
+            matches!(err, WaxError::PlatformNotSupported(_)),
+            "unexpected error: {err}"
+        );
+    }
 }

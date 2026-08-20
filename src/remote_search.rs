@@ -601,11 +601,103 @@ mod tests {
     }
 
     #[test]
+    fn winget_manifest_path_handles_multi_segment_ids() {
+        let path = "manifests/m/Microsoft/VisualStudio/2022/Community/17.8.3/Microsoft.VisualStudio.2022.Community.installer.yaml";
+        assert_eq!(
+            package_id_from_winget_manifest_path(path).as_deref(),
+            Some("Microsoft.VisualStudio.2022.Community")
+        );
+    }
+
+    #[test]
+    fn winget_manifest_path_rejects_non_version_directory() {
+        let path = "manifests/j/JesseDuffield/lazygit/nightly/JesseDuffield.lazygit.installer.yaml";
+        assert_eq!(package_id_from_winget_manifest_path(path), None);
+    }
+
+    #[test]
+    fn winget_manifest_path_rejects_paths_without_manifests_root() {
+        assert_eq!(
+            package_id_from_winget_manifest_path("j/Jesse/lazygit/1.0/x.installer.yaml"),
+            None
+        );
+        assert_eq!(package_id_from_winget_manifest_path(""), None);
+        assert_eq!(package_id_from_winget_manifest_path("manifests"), None);
+    }
+
+    #[test]
+    fn winget_manifest_path_rejects_too_shallow_paths() {
+        assert_eq!(
+            package_id_from_winget_manifest_path("manifests/j/1.0/x.installer.yaml"),
+            None
+        );
+    }
+
+    #[test]
+    fn version_folder_detection_requires_leading_digit() {
+        assert!(looks_like_version_folder("1.2.3"));
+        assert!(looks_like_version_folder("2022"));
+        assert!(!looks_like_version_folder("v1.2.3"));
+        assert!(!looks_like_version_folder("latest"));
+        assert!(!looks_like_version_folder(""));
+    }
+
+    #[test]
+    fn dedupe_sorts_by_score_then_speed_then_id() {
+        let hits = vec![
+            hit(Ecosystem::Chocolatey, "b-low", 100),
+            hit(Ecosystem::Winget, "a-high", 900),
+            hit(Ecosystem::Scoop, "b-high", 900),
+        ];
+        let d = dedupe_remote_by_speed(hits);
+        let ids: Vec<&str> = d.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, vec!["b-high", "a-high", "b-low"]);
+    }
+
+    #[test]
+    fn dedupe_keeps_the_first_seen_casing_of_an_id() {
+        let hits = vec![
+            hit(Ecosystem::Scoop, "RipGrep", 900),
+            hit(Ecosystem::Chocolatey, "ripgrep", 1000),
+        ];
+        let d = dedupe_remote_by_speed(hits);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].id, "RipGrep");
+    }
+
+    #[test]
+    fn dedupe_does_not_merge_distinct_ids() {
+        let hits = vec![
+            hit(Ecosystem::Scoop, "ripgrep", 1000),
+            hit(Ecosystem::Scoop, "ripgrep-all", 900),
+        ];
+        assert_eq!(dedupe_remote_by_speed(hits).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn collect_remote_hits_short_circuits_on_blank_query() {
+        let cache = Cache::new().expect("cache");
+        for q in ["", "   "] {
+            let hits = collect_remote_hits(&cache, q, true, true, true)
+                .await
+                .expect("blank query must not error");
+            assert!(hits.is_empty());
+        }
+    }
+
+    #[test]
     fn scoop_tree_path_parses_bucket_json() {
         assert_eq!(
             scoop_name_from_tree_path("bucket/ripgrep.json").as_deref(),
             Some("ripgrep")
         );
         assert_eq!(scoop_name_from_tree_path("bucket/nested/foo.json"), None);
+    }
+
+    #[test]
+    fn scoop_tree_path_rejects_non_bucket_entries() {
+        assert_eq!(scoop_name_from_tree_path("README.md"), None);
+        assert_eq!(scoop_name_from_tree_path("bucket/ripgrep.yaml"), None);
+        assert_eq!(scoop_name_from_tree_path("scripts/bucket/foo.json"), None);
     }
 }
