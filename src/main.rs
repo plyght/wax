@@ -23,19 +23,26 @@ mod version;
 mod xcode;
 
 // Windows package manager support (scoop, winget, chocolatey)
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod chocolatey;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod ecosystem_install;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod package_spec;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod remote_search;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod scoop;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod windows_state;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod winget_install;
 
 use cache::Cache;

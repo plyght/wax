@@ -129,7 +129,7 @@ async fn resolve_winget_package_id(package_id: &str) -> Result<String> {
 }
 
 /// True if `microsoft/winget-pkgs` has a manifest directory for this PackageIdentifier.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub async fn winget_package_exists(package_id: &str) -> bool {
     resolve_winget_package_id(package_id).await.is_ok()
 }

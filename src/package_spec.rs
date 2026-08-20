@@ -46,21 +46,22 @@ pub struct PackageSpec {
 
 /// Parse `chocolatey/foo`, `choco/foo`, `scoop/foo`, `winget/foo`, `brew/foo`, `homebrew/foo`.
 pub fn parse_package_spec(raw: &str) -> PackageSpec {
-    let lower = raw.to_lowercase();
     const PAIRS: &[(&str, Ecosystem)] = &[
-        ("chocolatey/", Ecosystem::Chocolatey),
-        ("choco/", Ecosystem::Chocolatey),
-        ("scoop/", Ecosystem::Scoop),
-        ("winget/", Ecosystem::Winget),
-        ("brew/", Ecosystem::Brew),
-        ("homebrew/", Ecosystem::Brew),
+        ("chocolatey", Ecosystem::Chocolatey),
+        ("choco", Ecosystem::Chocolatey),
+        ("scoop", Ecosystem::Scoop),
+        ("winget", Ecosystem::Winget),
+        ("brew", Ecosystem::Brew),
+        ("homebrew", Ecosystem::Brew),
     ];
-    for (prefix, eco) in PAIRS {
-        if lower.starts_with(prefix) {
-            return PackageSpec {
-                force: Some(*eco),
-                name: raw[prefix.len()..].to_string(),
-            };
+    if let Some((head, rest)) = raw.split_once('/') {
+        for (prefix, eco) in PAIRS {
+            if head.eq_ignore_ascii_case(prefix) {
+                return PackageSpec {
+                    force: Some(*eco),
+                    name: rest.to_string(),
+                };
+            }
         }
     }
     PackageSpec {
@@ -144,6 +145,81 @@ mod tests {
         let (f, q) = parse_search_query("winget/Microsoft.WindowsTerminal");
         assert_eq!(f, Some(Ecosystem::Winget));
         assert_eq!(q, "Microsoft.WindowsTerminal");
+    }
+
+    #[test]
+    fn prefix_match_is_ascii_case_insensitive_only() {
+        for raw in ["SCOOP/ripgrep", "ScOoP/ripgrep", "scoop/ripgrep"] {
+            let spec = parse_package_spec(raw);
+            assert_eq!(spec.force, Some(Ecosystem::Scoop), "{raw}");
+            assert_eq!(spec.name, "ripgrep", "{raw}");
+        }
+    }
+
+    #[test]
+    fn non_ascii_input_does_not_panic_or_match() {
+        for raw in ["İscoop/ripgrep", "ſcoop/ripgrep", "grüße/paket", "Ω"] {
+            let spec = parse_package_spec(raw);
+            assert_eq!(spec.force, None, "{raw}");
+            assert_eq!(spec.name, raw, "{raw}");
+        }
+    }
+
+    #[test]
+    fn name_case_and_dots_are_preserved() {
+        let spec = parse_package_spec("WINGET/JesseDuffield.lazygit");
+        assert_eq!(spec.force, Some(Ecosystem::Winget));
+        assert_eq!(spec.name, "JesseDuffield.lazygit");
+    }
+
+    #[test]
+    fn only_the_first_segment_is_treated_as_a_prefix() {
+        let spec = parse_package_spec("scoop/extras/foo");
+        assert_eq!(spec.force, Some(Ecosystem::Scoop));
+        assert_eq!(spec.name, "extras/foo");
+
+        let spec = parse_package_spec("user/scoop/foo");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "user/scoop/foo");
+    }
+
+    #[test]
+    fn homebrew_tap_style_names_stay_unqualified() {
+        let spec = parse_package_spec("homebrew-core/git");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "homebrew-core/git");
+    }
+
+    #[test]
+    fn empty_input_is_a_plain_empty_name() {
+        let spec = parse_package_spec("");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "");
+
+        let spec = parse_package_spec("/foo");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "/foo");
+    }
+
+    #[test]
+    fn parse_search_query_leaves_unqualified_queries_alone() {
+        let (f, q) = parse_search_query("lazygit");
+        assert_eq!(f, None);
+        assert_eq!(q, "lazygit");
+    }
+
+    #[test]
+    fn labels_round_trip_through_parsing() {
+        for eco in [
+            Ecosystem::Brew,
+            Ecosystem::Scoop,
+            Ecosystem::Winget,
+            Ecosystem::Chocolatey,
+        ] {
+            let spec = parse_package_spec(&format!("{}/pkg", eco.label()));
+            assert_eq!(spec.force, Some(eco), "{}", eco.label());
+            assert_eq!(spec.name, "pkg");
+        }
     }
 
     #[test]
