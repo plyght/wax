@@ -23,7 +23,7 @@ mod version;
 mod xcode;
 
 // Windows package manager support (scoop, winget, chocolatey)
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 mod chocolatey;
 #[cfg(target_os = "windows")]
 mod ecosystem_install;
