@@ -147,6 +147,71 @@ mod tests {
     }
 
     #[test]
+    fn uppercase_prefixes_are_recognised() {
+        for raw in ["SCOOP/foo", "Choco/foo", "WINGET/foo", "HomeBrew/foo"] {
+            assert!(
+                parse_package_spec(raw).force.is_some(),
+                "prefix not matched: {raw}"
+            );
+            assert_eq!(parse_package_spec(raw).name, "foo");
+        }
+    }
+
+    #[test]
+    fn name_case_is_preserved_for_winget_ids() {
+        let spec = parse_package_spec("winget/JesseDuffield.lazygit");
+        assert_eq!(spec.force, Some(Ecosystem::Winget));
+        assert_eq!(spec.name, "JesseDuffield.lazygit");
+    }
+
+    #[test]
+    fn chocolatey_prefix_wins_over_choco_prefix() {
+        let spec = parse_package_spec("chocolatey/git");
+        assert_eq!(spec.force, Some(Ecosystem::Chocolatey));
+        assert_eq!(spec.name, "git");
+    }
+
+    #[test]
+    fn extra_slashes_stay_in_the_name() {
+        let spec = parse_package_spec("scoop/extras/foo");
+        assert_eq!(spec.force, Some(Ecosystem::Scoop));
+        assert_eq!(spec.name, "extras/foo");
+    }
+
+    #[test]
+    fn homebrew_tap_names_are_not_treated_as_prefixes() {
+        let spec = parse_package_spec("homebrew/cask/firefox");
+        assert_eq!(spec.force, Some(Ecosystem::Brew));
+        assert_eq!(spec.name, "cask/firefox");
+
+        let spec = parse_package_spec("plyght/tap/wax");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "plyght/tap/wax");
+    }
+
+    #[test]
+    fn label_round_trips_through_the_parser() {
+        for eco in [
+            Ecosystem::Brew,
+            Ecosystem::Scoop,
+            Ecosystem::Winget,
+            Ecosystem::Chocolatey,
+        ] {
+            let raw = format!("{}/pkg", eco.label());
+            let spec = parse_package_spec(&raw);
+            assert_eq!(spec.force, Some(eco), "round trip failed for {raw}");
+            assert_eq!(spec.name, "pkg");
+        }
+    }
+
+    #[test]
+    fn parse_search_query_leaves_plain_queries_untouched() {
+        let (f, q) = parse_search_query("ripgrep");
+        assert_eq!(f, None);
+        assert_eq!(q, "ripgrep");
+    }
+
+    #[test]
     fn speed_rank_orders_fastest_first() {
         assert!(Ecosystem::Brew.speed_rank() < Ecosystem::Scoop.speed_rank());
         assert!(Ecosystem::Scoop.speed_rank() < Ecosystem::Winget.speed_rank());
