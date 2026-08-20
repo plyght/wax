@@ -45,19 +45,20 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
 }
 
 fn parse_chocolatey_package_ids(html: &str, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
     let re = SEARCH_RE.get_or_init(|| {
-        Regex::new(r##"href="/packages/([^"#?]+)"##).expect("Invalid regex in chocolatey search")
+        Regex::new(r##"href="/packages/([^"/#?]+)"##).expect("Invalid regex in chocolatey search")
     });
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for cap in re.captures_iter(html) {
         let id = cap[1].to_lowercase();
-        if id.is_empty() || id.contains('/') {
+        if !seen.insert(id.clone()) {
             continue;
         }
-        if seen.insert(id.clone()) {
-            out.push(id);
-        }
+        out.push(id);
         if out.len() >= limit {
             break;
         }
