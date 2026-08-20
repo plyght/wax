@@ -256,10 +256,9 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
-    use std::sync::Mutex;
     use tempfile::tempdir;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::install::HOME_MUTEX as ENV_LOCK;
 
     #[test]
     fn test_create_spinner() {
