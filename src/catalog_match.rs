@@ -58,6 +58,99 @@ mod tests {
     }
 
     #[test]
+    fn exact_beats_prefix_beats_substring() {
+        assert_eq!(catalog_match_score("ripgrep", "ripgrep"), Some(1000));
+        assert_eq!(catalog_match_score("ripgrep", "rip"), Some(900));
+        assert_eq!(catalog_match_score("libripgrep", "ripgrep"), Some(850));
+        let exact = catalog_match_score("ripgrep", "ripgrep").unwrap();
+        let prefix = catalog_match_score("ripgrep-bin", "ripgrep").unwrap();
+        let substring = catalog_match_score("my-ripgrep-fork", "ripgrep").unwrap();
+        assert!(exact > prefix && prefix > substring);
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_both_ways() {
+        assert_eq!(
+            catalog_match_score("JesseDuffield.lazygit", "jesseduffield.lazygit"),
+            Some(1000)
+        );
+        assert_eq!(
+            catalog_match_score("Microsoft.WindowsTerminal", "WINDOWSTERMINAL"),
+            Some(850)
+        );
+    }
+
+    #[test]
+    fn word_boundary_hit_scores_as_substring() {
+        // A word-exact or word-prefix hit is always also a substring hit, so the
+        // 800/700 tiers are only reachable when the substring check already fired.
+        assert_eq!(catalog_match_score("gnu-tar", "tar"), Some(850));
+        assert_eq!(catalog_match_score("gnu.tarball", "tar"), Some(850));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        assert!(catalog_match_score("ripgrep", "lazygit").is_none());
+        assert!(catalog_match_score("git", "gitgit").is_none());
+        assert!(catalog_match_score("", "git").is_none());
+    }
+
+    #[test]
+    fn empty_query_matches_everything_as_prefix() {
+        assert_eq!(catalog_match_score("anything", ""), Some(900));
+        assert_eq!(catalog_match_score("", ""), Some(1000));
+    }
+
+    #[test]
+    fn dotted_winget_ids_match_on_either_half() {
+        assert_eq!(
+            catalog_match_score("JesseDuffield.lazygit", "lazygit"),
+            Some(850)
+        );
+        assert_eq!(
+            catalog_match_score("JesseDuffield.lazygit", "JesseDuffield"),
+            Some(900)
+        );
+    }
+
+    #[test]
+    fn non_ascii_names_do_not_panic() {
+        assert!(catalog_match_score("Grüße", "grüße").is_some());
+        assert!(catalog_match_score("İstanbul", "istanbul").is_none());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn desc_never_outranks_a_name_hit() {
+        // Name hits start at 700; description hits cap at 300.
+        assert_eq!(
+            match_score("ripgrep", Some("ripgrep is a grep"), "ripgrep"),
+            Some(1000)
+        );
+        assert_eq!(match_score("foo", Some("nothing here"), "ripgrep"), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn hyphenated_query_matches_spaced_description() {
+        assert_eq!(
+            match_score("foo", Some("an agent browser tool"), "agent-browser"),
+            Some(250)
+        );
+        assert_eq!(
+            match_score("foo", Some("an agent-browser tool"), "agent-browser"),
+            Some(300)
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn missing_desc_falls_back_to_name_score() {
+        assert_eq!(match_score("ripgrep", None, "rip"), Some(900));
+        assert_eq!(match_score("ripgrep", None, "lazygit"), None);
+    }
+
+    #[test]
     #[cfg(not(target_os = "windows"))]
     fn desc_boosts_score() {
         assert_eq!(
