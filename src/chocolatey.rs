@@ -32,13 +32,24 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
         .await?
         .text()
         .await?;
+    Ok(parse_search_ids(&html, limit))
+}
+
+fn parse_search_ids(html: &str, limit: usize) -> Vec<String> {
     let re = SEARCH_RE.get_or_init(|| {
         Regex::new(r##"href="/packages/([^"#?]+)"##).expect("Invalid regex in chocolatey search")
     });
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for cap in re.captures_iter(&html) {
-        let id = cap[1].to_string();
+    if limit == 0 {
+        return out;
+    }
+    for cap in re.captures_iter(html) {
+        let raw = &cap[1];
+        let id = raw.split('/').next().unwrap_or_default().to_lowercase();
+        if id.is_empty() {
+            continue;
+        }
         if seen.insert(id.clone()) {
             out.push(id);
         }
@@ -46,10 +57,10 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
             break;
         }
     }
-    Ok(out)
+    out
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub async fn package_exists(id: &str) -> bool {
     let url = format!("https://community.chocolatey.org/api/v2/package/{}", id);
     // Chocolatey v2 feed returns 501 for HEAD; GET redirects to the .nupkg on success.
@@ -215,4 +226,52 @@ fn collect_exe_files(dir: &Path, out: &mut Vec<PathBuf>, depth: u32, max_depth: 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_package_ids_in_document_order() {
+        let html = r#"<a href="/packages/git">git</a><a href="/packages/ripgrep">rg</a>"#;
+        assert_eq!(parse_search_ids(html, 10), vec!["git", "ripgrep"]);
+    }
+
+    #[test]
+    fn version_links_collapse_to_the_bare_package_id() {
+        let html = r#"<a href="/packages/git">git</a><a href="/packages/git/2.43.0">2.43.0</a>"#;
+        assert_eq!(parse_search_ids(html, 10), vec!["git"]);
+    }
+
+    #[test]
+    fn ids_are_lowercased_and_deduped_case_insensitively() {
+        let html =
+            r#"<a href="/packages/GitExtensions">a</a><a href="/packages/gitextensions">b</a>"#;
+        assert_eq!(parse_search_ids(html, 10), vec!["gitextensions"]);
+    }
+
+    #[test]
+    fn limit_caps_the_result_count() {
+        let html = r#"<a href="/packages/a"><a href="/packages/b"><a href="/packages/c">"#;
+        assert_eq!(parse_search_ids(html, 2), vec!["a", "b"]);
+        assert!(parse_search_ids(html, 0).is_empty());
+    }
+
+    #[test]
+    fn non_package_links_and_empty_ids_are_ignored() {
+        let html = r#"<a href="/about"><a href="/packages/"><a href="/packages//1.0"><a href="/packages/ok">"#;
+        assert_eq!(parse_search_ids(html, 10), vec!["ok"]);
+    }
+
+    #[test]
+    fn query_and_fragment_suffixes_are_not_part_of_the_id() {
+        let html = r#"<a href="/packages/git?page=2"><a href="/packages/rg#files">"#;
+        assert_eq!(parse_search_ids(html, 10), vec!["git", "rg"]);
+    }
+
+    #[test]
+    fn empty_html_yields_no_ids() {
+        assert!(parse_search_ids("", 10).is_empty());
+    }
 }
