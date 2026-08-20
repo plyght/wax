@@ -157,11 +157,13 @@ pub fn validate_head_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub const BREW_UNAVAILABLE_MSG: &str =
     "Homebrew formulae and casks are not supported on Windows; use scoop/, winget/, or choco/ prefixes";
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn homebrew_unavailable() -> WaxError {
     WaxError::PlatformNotSupported(BREW_UNAVAILABLE_MSG.into())
 }
@@ -173,7 +175,8 @@ pub fn reject_homebrew_cli(command: &str) -> Result<()> {
     )))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn reject_brew_ecosystem(force: Option<crate::package_spec::Ecosystem>) -> Result<()> {
     if force == Some(crate::package_spec::Ecosystem::Brew) {
         return Err(homebrew_unavailable());
