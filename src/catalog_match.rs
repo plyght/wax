@@ -92,7 +92,31 @@ mod tests {
     }
 
     #[test]
-    fn dotted_winget_ids_match_on_segment() {
+    fn word_boundary_hit_scores_as_substring() {
+        // A word-exact or word-prefix hit is always also a substring hit, so the
+        // 800/700 tiers are only reachable when the substring check already fired.
+        assert_eq!(catalog_match_score("gnu-tar", "tar"), Some(850));
+        assert_eq!(catalog_match_score("gnu.tarball", "tar"), Some(850));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        assert!(catalog_match_score("ripgrep", "lazygit").is_none());
+        assert!(catalog_match_score("git", "gitgit").is_none());
+        assert!(catalog_match_score("", "git").is_none());
+    }
+
+    #[test]
+    fn empty_query_matches_nothing() {
+        assert_eq!(catalog_match_score("anything", ""), None);
+        assert_eq!(catalog_match_score("anything", "   "), None);
+        assert_eq!(catalog_match_score("", ""), None);
+        assert_eq!(catalog_match_score("ripgrep", ""), None);
+        assert_eq!(catalog_match_score("ripgrep", "   "), None);
+    }
+
+    #[test]
+    fn dotted_winget_ids_match_on_either_half() {
         assert_eq!(
             catalog_match_score("JesseDuffield.lazygit", "lazygit"),
             Some(850)
@@ -101,13 +125,6 @@ mod tests {
             catalog_match_score("Microsoft.VisualStudioCode", "visualstudio"),
             Some(850)
         );
-    }
-
-    #[test]
-    fn empty_query_matches_nothing() {
-        assert_eq!(catalog_match_score("ripgrep", ""), None);
-        assert_eq!(catalog_match_score("ripgrep", "   "), None);
-        assert_eq!(catalog_match_score("", ""), None);
     }
 
     #[test]
@@ -142,6 +159,13 @@ mod tests {
             match_score("rg", Some("recursive search"), "no-match"),
             None
         );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn missing_desc_falls_back_to_name_score() {
+        assert_eq!(match_score("ripgrep", None, "rip"), Some(900));
+        assert_eq!(match_score("ripgrep", None, "lazygit"), None);
     }
 
     #[test]

@@ -66,6 +66,11 @@ fn validate_qualified_inner(spec: &PackageSpec) -> Result<()> {
             "names with '/' after a scoop/choco/winget/brew prefix are not supported".into(),
         ));
     }
+    if n.chars().all(|c| c == '.') {
+        return Err(WaxError::InvalidInput(format!(
+            "unsupported package id: {n}"
+        )));
+    }
     if !n.chars().all(|c| c.is_alphanumeric() || "-_.+".contains(c)) {
         return Err(WaxError::InvalidInput(format!(
             "unsupported characters in package id: {n}"
@@ -90,7 +95,7 @@ fn with_alternatives(msg: String, alts: &[String]) -> String {
     format!("{msg}\nTry: {}", alts.join(", "))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 async fn package_in_catalog(eco: Ecosystem, name: &str) -> bool {
     match eco {
         Ecosystem::Scoop => scoop::scoop_manifest_exists(scoop::DEFAULT_BUCKET_BASE, name).await,
@@ -106,7 +111,7 @@ async fn package_in_catalog(eco: Ecosystem, name: &str) -> bool {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 async fn catalog_alternatives(cache: &Cache, name: &str, skip: Option<Ecosystem>) -> Vec<String> {
     let mut out = Vec::new();
     for eco in [Ecosystem::Scoop, Ecosystem::Winget, Ecosystem::Chocolatey] {
@@ -150,7 +155,7 @@ async fn catalog_alternatives(cache: &Cache, name: &str, skip: Option<Ecosystem>
     out
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 async fn install_forced_prefixed(
     cache: &Cache,
     eco: Ecosystem,
@@ -202,7 +207,7 @@ async fn install_forced(eco: Ecosystem, name: &str, dry_run: bool) -> Result<()>
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 async fn auto_pick_ecosystem(_cache: &Cache, name: &str) -> Result<Option<Ecosystem>> {
     let scoop_f = scoop::scoop_manifest_exists(scoop::DEFAULT_BUCKET_BASE, name);
     let choco_f = chocolatey::package_exists(name);
@@ -229,4 +234,98 @@ async fn auto_pick_ecosystem(_cache: &Cache, name: &str) -> Result<Option<Ecosys
 
     opts.sort_by_key(|(_, r)| *r);
     Ok(opts.first().map(|(e, _)| *e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package_spec::parse_package_spec;
+
+    fn validate(raw: &str) -> Result<()> {
+        validate_qualified_inner(&parse_package_spec(raw))
+    }
+
+    fn err(raw: &str) -> String {
+        validate(raw).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn accepts_plain_and_qualified_ids() {
+        for raw in [
+            "ripgrep",
+            "scoop/ripgrep",
+            "winget/JesseDuffield.lazygit",
+            "choco/git",
+            "chocolatey/nodejs-lts",
+            "scoop/7zip",
+            "scoop/gcc_libs",
+            "scoop/notepad++",
+        ] {
+            assert!(validate(raw).is_ok(), "{raw} should validate");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_name_after_prefix() {
+        assert!(err("scoop/").contains("empty package name"));
+        assert!(err("scoop/   ").contains("empty package name"));
+        assert!(err("").contains("empty package name"));
+    }
+
+    #[test]
+    fn rejects_slashes_after_a_prefix() {
+        let msg = err("scoop/extras/foo");
+        assert!(msg.contains("not supported"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_shell_metacharacters_and_traversal() {
+        for raw in [
+            "scoop/rip;rm -rf /",
+            "scoop/rip grep",
+            "choco/$(whoami)",
+            "winget/..",
+            "scoop/rip\\grep",
+            "choco/pkg&calc",
+        ] {
+            assert!(validate(raw).is_err(), "{raw} should be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_dot_only_ids_that_would_escape_the_staging_dir() {
+        for raw in ["choco/..", "scoop/.", "winget/..."] {
+            assert!(validate(raw).is_err(), "{raw} should be rejected");
+        }
+    }
+
+    #[test]
+    fn unsupported_character_error_names_the_id() {
+        let msg = err("scoop/rip grep");
+        assert!(msg.contains("unsupported characters"), "{msg}");
+        assert!(msg.contains("rip grep"), "{msg}");
+    }
+
+    #[test]
+    fn unqualified_names_with_slashes_are_rejected_as_bad_characters() {
+        let msg = err("apt/foo");
+        assert!(msg.contains("unsupported characters"), "{msg}");
+    }
+
+    #[test]
+    fn with_alternatives_appends_only_when_present() {
+        assert_eq!(with_alternatives("nope".into(), &[]), "nope");
+        assert_eq!(
+            with_alternatives("nope".into(), &["scoop/git".into(), "choco/git".into()]),
+            "nope\nTry: scoop/git, choco/git"
+        );
+    }
+
+    #[test]
+    fn catalog_repo_names_are_human_readable() {
+        assert_eq!(catalog_repo_name(Ecosystem::Scoop), "Scoop Main");
+        assert_eq!(catalog_repo_name(Ecosystem::Winget), "winget-pkgs");
+        assert_eq!(catalog_repo_name(Ecosystem::Chocolatey), "Chocolatey");
+        assert_eq!(catalog_repo_name(Ecosystem::Brew), "Homebrew");
+    }
 }

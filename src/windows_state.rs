@@ -247,9 +247,8 @@ pub fn remove_manifest(manifest: &WindowsPackageManifest, dry_run: bool) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::install::HOME_MUTEX as ENV_LOCK;
 
     #[test]
     fn collect_files_recurses_and_sorts() {

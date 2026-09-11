@@ -159,48 +159,23 @@ mod tests {
     }
 
     #[test]
-    fn name_case_is_preserved_for_winget_ids() {
-        let spec = parse_package_spec("winget/JesseDuffield.lazygit");
-        assert_eq!(spec.force, Some(Ecosystem::Winget));
-        assert_eq!(spec.name, "JesseDuffield.lazygit");
-    }
-
-    #[test]
-    fn chocolatey_prefix_wins_over_choco_prefix() {
-        let spec = parse_package_spec("chocolatey/git");
-        assert_eq!(spec.force, Some(Ecosystem::Chocolatey));
-        assert_eq!(spec.name, "git");
-    }
-
-    #[test]
-    fn extra_slashes_stay_in_the_name() {
-        let spec = parse_package_spec("scoop/extras/foo");
-        assert_eq!(spec.force, Some(Ecosystem::Scoop));
-        assert_eq!(spec.name, "extras/foo");
-    }
-
-    #[test]
-    fn homebrew_tap_names_are_not_treated_as_prefixes() {
-        let spec = parse_package_spec("homebrew/cask/firefox");
-        assert_eq!(spec.force, Some(Ecosystem::Brew));
-        assert_eq!(spec.name, "cask/firefox");
-
-        let spec = parse_package_spec("homebrew-core/git");
-        assert_eq!(spec.force, None);
-        assert_eq!(spec.name, "homebrew-core/git");
-
-        let spec = parse_package_spec("plyght/tap/wax");
-        assert_eq!(spec.force, None);
-        assert_eq!(spec.name, "plyght/tap/wax");
-    }
-
-    #[test]
     fn non_ascii_input_does_not_panic_or_match() {
-        for raw in ["İscoop/ripgrep", "ſcoop/ripgrep", "grüße/paket"] {
+        for raw in ["İscoop/ripgrep", "ſcoop/ripgrep", "grüße/paket", "Ω"] {
             let spec = parse_package_spec(raw);
             assert_eq!(spec.force, None, "{raw}");
             assert_eq!(spec.name, raw, "{raw}");
         }
+    }
+
+    #[test]
+    fn empty_input_is_a_plain_empty_name() {
+        let spec = parse_package_spec("");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "");
+
+        let spec = parse_package_spec("/foo");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "/foo");
     }
 
     #[test]

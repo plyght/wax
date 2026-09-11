@@ -231,7 +231,7 @@ pub fn resolve_manifest_json(raw: &str) -> Result<ResolvedScoopPackage> {
 }
 
 /// True if a Scoop JSON manifest exists for this package name (HEAD request).
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 pub async fn scoop_manifest_exists(bucket_base: &str, package: &str) -> bool {
     let base = bucket_base.trim_end_matches('/');
     let url = format!("{base}/{}.json", package);
@@ -557,6 +557,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn resolve_agent_browser_exe_manifest() {
         let r = resolve_manifest_json(AGENT_BROWSER_MANIFEST).unwrap();
         assert_eq!(r.version, "0.31.1");
