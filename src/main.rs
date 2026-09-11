@@ -23,13 +23,12 @@ mod version;
 mod xcode;
 
 // Windows package manager support (scoop, winget, chocolatey)
-#[cfg(target_os = "windows")]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod chocolatey;
 #[cfg(target_os = "windows")]
 mod ecosystem_install;
-#[cfg(target_os = "windows")]
 mod package_spec;
-#[cfg(target_os = "windows")]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod remote_search;
 #[cfg(target_os = "windows")]
 mod scoop;

@@ -1,7 +1,10 @@
 //! Shared catalogue search scoring (Homebrew names, Scoop/winget/choco ids).
 
 pub fn catalog_match_score(name: &str, query: &str) -> Option<i32> {
-    let q = query.to_lowercase();
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return None;
+    }
     let n = name.to_lowercase();
     if n == q {
         return Some(1000);
@@ -30,7 +33,10 @@ pub fn catalog_match_score(name: &str, query: &str) -> Option<i32> {
 pub fn match_score(name: &str, desc: Option<&str>, query: &str) -> Option<i32> {
     let mut best = catalog_match_score(name, query);
     if let Some(desc) = desc {
-        let q = query.to_lowercase();
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return best;
+        }
         let desc_lower = desc.to_lowercase();
         if desc_lower.contains(&q) {
             best = Some(best.map_or(300, |s| s.max(300)));
@@ -54,6 +60,87 @@ mod tests {
         assert_eq!(
             catalog_match_score("agent-browser", "agent-browser"),
             Some(1000)
+        );
+    }
+
+    #[test]
+    fn score_ladder_is_ordered_by_match_quality() {
+        assert_eq!(catalog_match_score("ripgrep", "ripgrep"), Some(1000));
+        assert_eq!(catalog_match_score("ripgrep-all", "ripgrep"), Some(900));
+        assert_eq!(catalog_match_score("go-ripgrep", "ripgrep"), Some(850));
+        assert_eq!(catalog_match_score("nothing", "ripgrep"), None);
+    }
+
+    #[test]
+    fn substring_tier_absorbs_word_tiers() {
+        // Any whole-word or word-prefix hit is also a substring hit, so the 800/700
+        // tiers below `contains` are never reached.
+        assert_eq!(catalog_match_score("go ripgrep tool", "ripgrep"), Some(850));
+        assert_eq!(catalog_match_score("go ripgrepall", "ripgrep"), Some(850));
+    }
+
+    #[test]
+    fn scoring_is_case_insensitive_both_ways() {
+        assert_eq!(
+            catalog_match_score("JesseDuffield.lazygit", "jesseduffield.lazygit"),
+            Some(1000)
+        );
+        assert_eq!(
+            catalog_match_score("microsoft.windowsterminal", "Microsoft.WindowsTerminal"),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn dotted_winget_ids_match_on_segment() {
+        assert_eq!(
+            catalog_match_score("JesseDuffield.lazygit", "lazygit"),
+            Some(850)
+        );
+        assert_eq!(
+            catalog_match_score("Microsoft.VisualStudioCode", "visualstudio"),
+            Some(850)
+        );
+    }
+
+    #[test]
+    fn empty_query_matches_nothing() {
+        assert_eq!(catalog_match_score("ripgrep", ""), None);
+        assert_eq!(catalog_match_score("ripgrep", "   "), None);
+        assert_eq!(catalog_match_score("", ""), None);
+    }
+
+    #[test]
+    fn query_is_trimmed_before_matching() {
+        assert_eq!(catalog_match_score("ripgrep", "  ripgrep "), Some(1000));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn empty_query_does_not_match_via_description() {
+        assert_eq!(match_score("ripgrep", Some("search tool"), ""), None);
+        assert_eq!(match_score("ripgrep", Some("search tool"), "  "), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn name_match_outranks_description_match() {
+        assert_eq!(
+            match_score("ripgrep", Some("ripgrep is a search tool"), "ripgrep"),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn hyphenated_query_falls_back_to_spaced_description() {
+        assert_eq!(
+            match_score("rg", Some("recursive search tool"), "recursive-search"),
+            Some(250)
+        );
+        assert_eq!(
+            match_score("rg", Some("recursive search"), "no-match"),
+            None
         );
     }
 

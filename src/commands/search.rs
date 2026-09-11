@@ -86,6 +86,14 @@ struct UnixSearchResults<'a> {
 }
 
 #[cfg(not(target_os = "windows"))]
+fn best_of(a: Option<i32>, b: Option<i32>) -> Option<i32> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn find_unix_matches<'a>(
     formulae: &'a [crate::api::Formula],
     casks: &'a [crate::api::Cask],
@@ -115,7 +123,7 @@ fn find_unix_matches<'a>(
             let name_score = crate::catalog_match::match_score(&f.name, f.desc.as_deref(), query);
             let full_name_score =
                 crate::catalog_match::match_score(&f.full_name, f.desc.as_deref(), query);
-            name_score.or(full_name_score).map(|score| (*f, score))
+            best_of(name_score, full_name_score).map(|score| (*f, score))
         })
         .collect();
 
@@ -128,7 +136,7 @@ fn find_unix_matches<'a>(
                 .iter()
                 .filter_map(|n| crate::catalog_match::match_score(n, c.desc.as_deref(), query))
                 .max();
-            token_score.or(name_score).map(|score| (c, score))
+            best_of(token_score, name_score).map(|score| (c, score))
         })
         .collect();
 
@@ -220,7 +228,27 @@ fn print_unix_results(
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn search_unix(cache: &Cache, query: &str) -> Result<()> {
+async fn search_unix(cache: &Cache, raw_query: &str) -> Result<()> {
+    let (eco_filter, parsed) = crate::package_spec::parse_search_query(raw_query);
+    let query = parsed.trim();
+    if query.is_empty() {
+        println!("empty search query");
+        return Ok(());
+    }
+    if let Some(eco) = eco_filter {
+        if eco != crate::package_spec::Ecosystem::Brew {
+            println!(
+                "{}",
+                style(format!(
+                    "{}/ packages are only available on Windows; searching Homebrew instead is not possible for this prefix",
+                    eco.label()
+                ))
+                .dim()
+            );
+            return Ok(());
+        }
+    }
+
     cache.ensure_fresh().await?;
 
     let formulae = cache.load_all_formulae().await?;
@@ -281,5 +309,129 @@ fn print_cask(cask: &crate::api::Cask, is_installed: bool) {
     );
     if !desc.is_empty() {
         println!("  {}", desc);
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+    use crate::api::{Cask, Formula};
+
+    fn formula(name: &str, full_name: &str, desc: Option<&str>) -> Formula {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "full_name": full_name,
+            "desc": desc,
+            "homepage": "https://example.invalid",
+            "versions": {"stable": "1.0.0", "bottle": true},
+            "installed": null,
+            "dependencies": null,
+            "build_dependencies": null,
+            "bottle": null,
+            "keg_only": null,
+            "keg_only_reason": null,
+            "deprecation_reason": null,
+            "disable_reason": null,
+        }))
+        .expect("formula fixture")
+    }
+
+    fn cask(token: &str, names: &[&str], desc: Option<&str>) -> Cask {
+        Cask {
+            token: token.to_string(),
+            full_token: format!("homebrew/cask/{token}"),
+            name: names.iter().map(|n| n.to_string()).collect(),
+            desc: desc.map(|d| d.to_string()),
+            homepage: "https://example.invalid".to_string(),
+            version: "1.0.0".to_string(),
+            deprecated: false,
+            disabled: false,
+            rb_path: None,
+        }
+    }
+
+    #[test]
+    fn best_of_takes_the_higher_of_two_scores() {
+        assert_eq!(best_of(Some(850), Some(1000)), Some(1000));
+        assert_eq!(best_of(Some(1000), Some(850)), Some(1000));
+        assert_eq!(best_of(None, Some(700)), Some(700));
+        assert_eq!(best_of(Some(700), None), Some(700));
+        assert_eq!(best_of(None, None), None);
+    }
+
+    #[test]
+    fn cask_display_name_can_outrank_the_token() {
+        // "anaconda" merely contains "conda" (850) while the display name "conda"
+        // is an exact hit (1000); the exact hit must win the ordering.
+        let casks = vec![
+            cask("anaconda", &["Anaconda"], None),
+            cask("zzz-conda-tool", &["conda"], None),
+        ];
+        let results = find_unix_matches(&[], &casks, "conda");
+        assert_eq!(results.cask_matches.len(), 2);
+        assert_eq!(results.cask_matches[0].token, "zzz-conda-tool");
+    }
+
+    #[test]
+    fn exact_formula_name_sorts_above_substring_match() {
+        let formulae = vec![
+            formula("aaa-ripgrep-all", "aaa-ripgrep-all", None),
+            formula("ripgrep", "ripgrep", None),
+        ];
+        let results = find_unix_matches(&formulae, &[], "ripgrep");
+        assert_eq!(results.formula_matches[0].name, "ripgrep");
+    }
+
+    #[test]
+    fn tap_formulae_are_separated_from_core_formulae() {
+        let formulae = vec![
+            formula("ripgrep", "ripgrep", None),
+            formula("ripgrep", "plyght/tap/ripgrep", None),
+        ];
+        let results = find_unix_matches(&formulae, &[], "ripgrep");
+        assert_eq!(results.formula_matches.len(), 1);
+        assert_eq!(results.formula_matches[0].full_name, "ripgrep");
+        assert_eq!(results.tap_matches.len(), 1);
+        assert_eq!(results.tap_matches[0].full_name, "plyght/tap/ripgrep");
+    }
+
+    #[test]
+    fn tap_formula_matches_on_full_name_only() {
+        let formulae = vec![formula("wax", "plyght/tap/wax", None)];
+        let results = find_unix_matches(&formulae, &[], "plyght/tap");
+        assert_eq!(results.tap_matches.len(), 1);
+    }
+
+    #[test]
+    fn empty_query_matches_nothing_at_all() {
+        let formulae = vec![formula("ripgrep", "ripgrep", Some("search tool"))];
+        let casks = vec![cask("firefox", &["Firefox"], Some("browser"))];
+        let results = find_unix_matches(&formulae, &casks, "");
+        assert!(results.formula_matches.is_empty());
+        assert!(results.cask_matches.is_empty());
+        assert!(results.tap_matches.is_empty());
+    }
+
+    #[test]
+    fn description_only_matches_are_ranked_below_name_matches() {
+        let formulae = vec![
+            formula("unrelated", "unrelated", Some("a ripgrep clone")),
+            formula("ripgrep", "ripgrep", None),
+        ];
+        let results = find_unix_matches(&formulae, &[], "ripgrep");
+        assert_eq!(results.formula_matches.len(), 2);
+        assert_eq!(results.formula_matches[0].name, "ripgrep");
+    }
+
+    #[test]
+    fn formula_results_are_capped_at_twenty() {
+        let formulae: Vec<_> = (0..30)
+            .map(|i| {
+                let name = format!("ripgrep-{i:02}");
+                formula(&name, &name, None)
+            })
+            .collect();
+        let results = find_unix_matches(&formulae, &[], "ripgrep");
+        assert_eq!(results.formula_matches.len(), 20);
     }
 }
