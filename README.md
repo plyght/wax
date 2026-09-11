@@ -4,7 +4,27 @@
 
 # Wax
 
+**Fast, Homebrew-compatible package manager — instant search, parallel installs.**
+
 A fast, modern package manager that leverages Homebrew's ecosystem without the overhead. Built in Rust for speed and reliability, wax provides 16-20x faster search operations and parallel installation workflows while maintaining full compatibility with Homebrew formulae and bottles.
+
+## Quick Start
+
+**Install (Linux and macOS):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/plyght/wax/master/install.sh | bash
+```
+
+**Then run:**
+
+```bash
+wax update            # fetch the formula/cask index
+wax search nginx      # search formulae and casks
+wax install tree      # install a package
+```
+
+Windows one-liner, Cargo, and source builds are covered in [Installation](#installation).
 
 ## Overview
 
