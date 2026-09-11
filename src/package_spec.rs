@@ -46,21 +46,22 @@ pub struct PackageSpec {
 
 /// Parse `chocolatey/foo`, `choco/foo`, `scoop/foo`, `winget/foo`, `brew/foo`, `homebrew/foo`.
 pub fn parse_package_spec(raw: &str) -> PackageSpec {
-    let lower = raw.to_lowercase();
     const PAIRS: &[(&str, Ecosystem)] = &[
-        ("chocolatey/", Ecosystem::Chocolatey),
-        ("choco/", Ecosystem::Chocolatey),
-        ("scoop/", Ecosystem::Scoop),
-        ("winget/", Ecosystem::Winget),
-        ("brew/", Ecosystem::Brew),
-        ("homebrew/", Ecosystem::Brew),
+        ("chocolatey", Ecosystem::Chocolatey),
+        ("choco", Ecosystem::Chocolatey),
+        ("scoop", Ecosystem::Scoop),
+        ("winget", Ecosystem::Winget),
+        ("brew", Ecosystem::Brew),
+        ("homebrew", Ecosystem::Brew),
     ];
-    for (prefix, eco) in PAIRS {
-        if lower.starts_with(prefix) {
-            return PackageSpec {
-                force: Some(*eco),
-                name: raw[prefix.len()..].to_string(),
-            };
+    if let Some((head, rest)) = raw.split_once('/') {
+        for (prefix, eco) in PAIRS {
+            if head.eq_ignore_ascii_case(prefix) {
+                return PackageSpec {
+                    force: Some(*eco),
+                    name: rest.to_string(),
+                };
+            }
         }
     }
     PackageSpec {
@@ -184,9 +185,22 @@ mod tests {
         assert_eq!(spec.force, Some(Ecosystem::Brew));
         assert_eq!(spec.name, "cask/firefox");
 
+        let spec = parse_package_spec("homebrew-core/git");
+        assert_eq!(spec.force, None);
+        assert_eq!(spec.name, "homebrew-core/git");
+
         let spec = parse_package_spec("plyght/tap/wax");
         assert_eq!(spec.force, None);
         assert_eq!(spec.name, "plyght/tap/wax");
+    }
+
+    #[test]
+    fn non_ascii_input_does_not_panic_or_match() {
+        for raw in ["İscoop/ripgrep", "ſcoop/ripgrep", "grüße/paket"] {
+            let spec = parse_package_spec(raw);
+            assert_eq!(spec.force, None, "{raw}");
+            assert_eq!(spec.name, raw, "{raw}");
+        }
     }
 
     #[test]

@@ -40,13 +40,23 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
         .await?
         .text()
         .await?;
+    Ok(parse_search_ids(&html, limit))
+}
+
+fn parse_search_ids(html: &str, limit: usize) -> Vec<String> {
     let re = SEARCH_RE.get_or_init(|| {
         Regex::new(r##"href="/packages/([^"#?]+)"##).expect("Invalid regex in chocolatey search")
     });
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for cap in re.captures_iter(&html) {
-        let id = cap[1].to_string();
+    if limit == 0 {
+        return out;
+    }
+    for cap in re.captures_iter(html) {
+        let id = cap[1].split('/').next().unwrap_or_default().to_lowercase();
+        if id.is_empty() {
+            continue;
+        }
         if seen.insert(id.clone()) {
             out.push(id);
         }
@@ -54,7 +64,7 @@ pub async fn search_package_ids(query: &str, limit: usize) -> Result<Vec<String>
             break;
         }
     }
-    Ok(out)
+    out
 }
 
 #[cfg(target_os = "windows")]
@@ -325,6 +335,26 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut out = Vec::new();
         assert!(collect_exe_files(&tmp.path().join("nope"), &mut out, 0, 4).is_err());
+    }
+
+    #[test]
+    fn version_links_collapse_to_the_bare_package_id() {
+        let html = r#"<a href="/packages/git">git</a><a href="/packages/git/2.43.0">2.43.0</a>"#;
+        assert_eq!(parse_search_ids(html, 10), vec!["git"]);
+    }
+
+    #[test]
+    fn ids_are_lowercased_and_deduped_case_insensitively() {
+        let html =
+            r#"<a href="/packages/GitExtensions">a</a><a href="/packages/gitextensions">b</a>"#;
+        assert_eq!(parse_search_ids(html, 10), vec!["gitextensions"]);
+    }
+
+    #[test]
+    fn versioned_hrefs_do_not_consume_the_result_limit() {
+        let html = r#"<a href="/packages/git">git</a><a href="/packages/git/2.43.0">2.43.0</a><a href="/packages/nodejs">n</a>"#;
+        assert_eq!(parse_search_ids(html, 2), vec!["git", "nodejs"]);
+        assert!(parse_search_ids(html, 0).is_empty());
     }
 
     #[tokio::test]
