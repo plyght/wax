@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Provision a Wax (plyght/wax) orb: Rust toolchain + crate deps.
+set -euo pipefail
+
+log() { printf '[setup] %s\n' "$*"; }
+time_step() {
+  local label="$1"
+  shift
+  local start
+  start="$(date +%s)"
+  log "start: ${label}"
+  "$@"
+  log "done: ${label} ($(( $(date +%s) - start ))s)"
+}
+
+need_pkg() { dpkg -s "$1" >/dev/null 2>&1; }
+
+install_apt_deps() {
+  local pkgs=()
+  local pkg
+  for pkg in build-essential pkg-config libssl-dev ca-certificates curl git; do
+    if ! need_pkg "$pkg"; then
+      pkgs+=("$pkg")
+    fi
+  done
+  if ((${#pkgs[@]})); then
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}"
+  else
+    log "apt packages already present"
+  fi
+}
+
+ensure_rustup() {
+  export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+  # shellcheck disable=SC1091
+  if [[ -f "$CARGO_HOME/env" ]]; then
+    source "$CARGO_HOME/env"
+  fi
+  if ! command -v rustup >/dev/null 2>&1; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable --profile minimal
+    # shellcheck disable=SC1091
+    source "$CARGO_HOME/env"
+  fi
+  rustup toolchain install stable --profile minimal --component rustfmt,clippy
+  rustup default stable
+}
+
+fetch_crates() {
+  export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+  # shellcheck disable=SC1091
+  source "$CARGO_HOME/env"
+  if [[ -f Cargo.lock ]]; then
+    cargo fetch --locked
+  else
+    cargo fetch
+  fi
+}
+
+time_step "apt build deps" install_apt_deps
+time_step "rustup + rustfmt/clippy" ensure_rustup
+time_step "cargo fetch" fetch_crates
+
+# shellcheck disable=SC1091
+source "${CARGO_HOME:-$HOME/.cargo}/env"
+log "rustc $(rustc --version)"
+log "cargo $(cargo --version)"
+log "wax orb setup complete"
