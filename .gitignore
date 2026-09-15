@@ -19,3 +19,6 @@
 piolium/
 /build/
 .antigravitycli/
+
+# Amp orb portals
+.amp/portals/

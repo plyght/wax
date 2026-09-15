@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Fast Wax orb wake: ensure rustup env is on PATH.
+set -euo pipefail
+
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+
+if [[ -f "$CARGO_HOME/env" ]]; then
+  # shellcheck disable=SC1091
+  source "$CARGO_HOME/env"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "[resume] cargo not found; run .agents/setup" >&2
+  exit 1
+fi
+
+rustup default stable >/dev/null 2>&1 || true
+echo "[resume] rustc $(rustc --version)"
