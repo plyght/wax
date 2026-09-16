@@ -961,8 +961,9 @@ impl StagingContext {
                     pb.set_message("extracting…");
                 }
                 let tar_output = tokio::process::Command::new("tar")
-                    .arg("-xf")
-                    .arg(download_path)
+                    .arg("-x")
+                    .arg("-f")
+                    .arg(&safe_download_path)
                     .arg("-C")
                     .arg(&staging_root)
                     .output()
