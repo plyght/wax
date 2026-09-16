@@ -5,7 +5,13 @@ use std::path::Path;
 use tracing::{debug, warn};
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 pub fn sha256_digest_hex(data: impl AsRef<[u8]>) -> String {
