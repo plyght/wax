@@ -27,7 +27,9 @@ pub async fn tap(
         Some(crate::TapAction::Add { tap }) => {
             manager.add_tap(&tap).await?;
             if let Some(cache) = cache {
-                cache.invalidate_all_tap_caches().await?;
+                cache
+                    .invalidate_tap_cache(&manager.get_tap(&tap)?.full_name)
+                    .await?;
             }
             println!("{} tap {}", style("+").green(), style(&tap).magenta());
         }
@@ -41,7 +43,9 @@ pub async fn tap(
             }
             manager.add_tap(&tap).await?;
             if let Some(cache) = cache {
-                cache.invalidate_all_tap_caches().await?;
+                cache
+                    .invalidate_tap_cache(&manager.get_tap(&tap)?.full_name)
+                    .await?;
             }
             println!("{} tap {}", style("+").green(), style(&tap).magenta());
         }
@@ -55,15 +59,16 @@ pub async fn tap(
             println!("{} tap {}", style("-").red(), style(&tap).magenta());
         }
         Some(crate::TapAction::Update { tap }) => {
-            let tap_spec = crate::tap::Tap::from_spec(&tap)?;
+            let tap_spec = manager.get_tap(&tap)?;
             let is_local = matches!(
                 tap_spec.kind,
                 TapKind::LocalDir { .. } | TapKind::LocalFile { .. }
             );
 
-            manager.update_tap(&tap).await?;
             if let Some(cache) = cache {
-                cache.invalidate_tap_cache(&tap_spec.full_name).await?;
+                cache.update_tap(&mut manager, &tap).await?;
+            } else {
+                manager.update_tap(&tap).await?;
             }
             if is_local {
                 println!(

@@ -114,11 +114,9 @@ async fn update_taps(cache: &Cache) -> Result<usize> {
     let tap_count = taps.len();
 
     if tap_count > 0 {
-        cache.invalidate_all_tap_caches().await?;
-
         for tap_name in &taps {
             check_cancelled()?;
-            if let Err(e) = tap_manager.update_tap(tap_name).await {
+            if let Err(e) = cache.update_tap(&mut tap_manager, tap_name).await {
                 eprintln!(
                     "  {} failed to update tap {}: {}",
                     style("!").yellow(),

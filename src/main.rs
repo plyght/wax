@@ -18,6 +18,7 @@ mod signal;
 mod sudo;
 mod system_pm;
 mod tap;
+mod tap_index;
 mod ui;
 mod version;
 mod xcode;

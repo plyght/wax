@@ -882,7 +882,7 @@ pub(crate) async fn install_impl(
                     println!("adding tap {}", style(&tap_name).cyan());
                 }
                 tap_manager.ensure_tap(&tap_name).await?;
-                cache.invalidate_all_tap_caches().await?;
+                cache.invalidate_tap_cache(&tap_name).await?;
                 true
             } else {
                 false
@@ -891,8 +891,7 @@ pub(crate) async fn install_impl(
                 if !quiet {
                     println!("updating tap {}", style(&tap_name).cyan());
                 }
-                tap_manager.update_tap(&tap_name).await?;
-                cache.invalidate_tap_cache(&tap_name).await?;
+                cache.update_tap(&mut tap_manager, &tap_name).await?;
             }
             updated_taps.insert(tap_name);
         }

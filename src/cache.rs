@@ -1,6 +1,7 @@
 use crate::api::{Cask, CaskDetails, FetchResult, Formula, CASK_API_URL, FORMULA_API_URL};
 use crate::error::{Result, WaxError};
-use crate::tap::TapManager;
+use crate::tap::{Tap, TapManager};
+use crate::tap_index::{TapIndex, TapIndexStore};
 use crate::ui::dirs;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::fs;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 /// Magic prefix for the bincode index sidecars so format/version mismatches
 /// (e.g. from an older wax writing a different struct layout) fall back to JSON.
@@ -59,42 +60,27 @@ fn clear_casks_index_cache() {
     }
 }
 
-async fn formulae_index_signature(cache: &Cache, tap_names: &[String]) -> Result<u64> {
+async fn index_signature(
+    cache: &Cache,
+    core_path: &Path,
+    tap_indexes: &[(Tap, Option<TapIndex>)],
+) -> Result<Option<u64>> {
     let mut hasher = DefaultHasher::new();
-    if let Ok(meta) = fs::metadata(cache.formulae_path()).await {
+    if let Ok(meta) = fs::metadata(core_path).await {
         if let Ok(mtime) = meta.modified() {
             mtime.hash(&mut hasher);
         }
     }
-    for tap_name in tap_names {
-        tap_name.hash(&mut hasher);
-        let path = cache.tap_cache_path(tap_name);
-        if let Ok(meta) = fs::metadata(&path).await {
-            if let Ok(mtime) = meta.modified() {
-                mtime.hash(&mut hasher);
-            }
-        }
+    cache.cache_dir.hash(&mut hasher);
+    for (_, index) in tap_indexes {
+        let Some(index) = index else {
+            // A filesystem fallback has no stable snapshot signature. Never
+            // memoize it, so repaired inputs are visible on the next lookup.
+            return Ok(None);
+        };
+        index.signature()?.hash(&mut hasher);
     }
-    Ok(hasher.finish())
-}
-
-async fn casks_index_signature(cache: &Cache, tap_names: &[String]) -> Result<u64> {
-    let mut hasher = DefaultHasher::new();
-    if let Ok(meta) = fs::metadata(cache.casks_path()).await {
-        if let Ok(mtime) = meta.modified() {
-            mtime.hash(&mut hasher);
-        }
-    }
-    for tap_name in tap_names {
-        tap_name.hash(&mut hasher);
-        let path = cache.tap_casks_cache_path(tap_name);
-        if let Ok(meta) = fs::metadata(&path).await {
-            if let Ok(mtime) = meta.modified() {
-                mtime.hash(&mut hasher);
-            }
-        }
-    }
-    Ok(hasher.finish())
+    Ok(Some(hasher.finish()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +103,11 @@ impl Cache {
     pub fn new() -> Result<Self> {
         let cache_dir = dirs::wax_cache_dir()?;
         Ok(Self { cache_dir })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(cache_dir: PathBuf) -> Self {
+        Self { cache_dir }
     }
 
     pub async fn ensure_cache_dir(&self) -> Result<()> {
@@ -405,30 +396,62 @@ impl Cache {
     }
 
     pub async fn invalidate_tap_cache(&self, tap_name: &str) -> Result<()> {
-        let path = self.tap_cache_path(tap_name);
-        if path.exists() {
-            fs::remove_file(&path).await?;
-            debug!("Invalidated tap cache for {}", tap_name);
-        }
-        let casks_path = self.tap_casks_cache_path(tap_name);
-        if casks_path.exists() {
-            fs::remove_file(&casks_path).await?;
-            debug!("Invalidated tap casks cache for {}", tap_name);
+        TapIndexStore::new(&self.cache_dir, tap_name)
+            .invalidate()
+            .await?;
+        for path in [
+            self.tap_cache_path(tap_name),
+            self.tap_casks_cache_path(tap_name),
+        ] {
+            match fs::remove_file(path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
         clear_formulae_index_cache();
         clear_casks_index_cache();
         Ok(())
     }
 
-    pub async fn invalidate_all_tap_caches(&self) -> Result<()> {
-        let taps_dir = self.taps_cache_dir();
-        if taps_dir.exists() {
-            fs::remove_dir_all(&taps_dir).await?;
-            debug!("Invalidated all tap caches");
-        }
+    /// Keep the previous snapshot on fetch/index failure. Serialize git mutation
+    /// and snapshot publication with readers and other updates of this tap.
+    pub async fn update_tap(&self, manager: &mut TapManager, spec: &str) -> Result<()> {
+        let tap = manager.get_tap(spec)?;
+        let store = TapIndexStore::new(&self.cache_dir, &tap.full_name);
+        let _lock = store.lock().await?;
+        manager.update_tap(&tap.full_name).await?;
+        store.refresh(&tap).await?;
         clear_formulae_index_cache();
         clear_casks_index_cache();
         Ok(())
+    }
+
+    async fn load_tap_indexes(&self, manager: &TapManager) -> Result<Vec<(Tap, Option<TapIndex>)>> {
+        let mut taps = manager.list_taps();
+        taps.sort_by(|a, b| a.full_name.cmp(&b.full_name));
+        let mut indexes = Vec::with_capacity(taps.len());
+        for tap in taps {
+            let store = TapIndexStore::new(&self.cache_dir, &tap.full_name);
+            let _lock = store.lock().await?;
+            let index = match store.refresh(tap).await {
+                Ok(index) => Some(index),
+                Err(error) => {
+                    let previous = store.load(tap).await?;
+                    if previous.is_some() {
+                        warn!("Using stale tap snapshot for {}: {}", tap.full_name, error);
+                    } else {
+                        debug!(
+                            "Loading tap {} directly after index failure: {}",
+                            tap.full_name, error
+                        );
+                    }
+                    previous
+                }
+            };
+            indexes.push((tap.clone(), index));
+        }
+        Ok(indexes)
     }
 
     #[instrument(skip(self))]
@@ -620,126 +643,68 @@ impl Cache {
     }
 
     pub async fn load_all_casks(&self) -> Result<Vec<Cask>> {
-        let mut tap_manager = TapManager::new()?;
-        tap_manager.load().await?;
+        let mut manager = TapManager::new()?;
+        manager.load().await?;
+        self.load_all_casks_with_taps(&manager).await
+    }
 
-        let tap_names: Vec<String> = tap_manager
-            .list_taps()
-            .into_iter()
-            .map(|tap| tap.full_name.clone())
-            .collect();
-        let signature = casks_index_signature(self, &tap_names).await?;
+    async fn load_all_casks_with_taps(&self, manager: &TapManager) -> Result<Vec<Cask>> {
+        let tap_indexes = self.load_tap_indexes(manager).await?;
+        let signature = index_signature(self, &self.casks_path(), &tap_indexes).await?;
         if let Ok(guard) = CASKS_INDEX_CACHE.lock() {
             if let Some(cached) = guard.as_ref() {
-                if cached.signature == signature {
+                if Some(cached.signature) == signature {
                     debug!("Using in-process casks index cache");
                     return Ok((*cached.casks).clone());
                 }
             }
         }
-
         let mut all = self.load_casks().await?;
-
-        for tap in tap_manager.list_taps() {
-            let tap_cache_path = self.tap_casks_cache_path(&tap.full_name);
-
-            let tap_casks = if tap_cache_path.exists() {
-                debug!("Loading tap casks from cache: {}", tap_cache_path.display());
-                let cask_dir = tap.cask_dir();
-                let json = fs::read_to_string(&tap_cache_path).await?;
-                let mut casks: Vec<Cask> = serde_json::from_str(&json)?;
-                for c in &mut casks {
-                    let rb_file = cask_dir.join(format!("{}.rb", c.token));
-                    if rb_file.exists() {
-                        c.rb_path = Some(rb_file);
-                    }
-                }
-                casks
-            } else {
-                debug!("Loading tap casks from filesystem: {}", tap.full_name);
-                let casks = tap_manager.load_casks_from_tap(tap).await?;
-
-                fs::create_dir_all(self.taps_cache_dir()).await?;
-                let json = serde_json::to_string_pretty(&casks)?;
-                fs::write(&tap_cache_path, json).await?;
-
-                casks
-            };
-
-            all.extend(tap_casks);
+        for (tap, index) in tap_indexes {
+            all.extend(match index {
+                Some(index) => index.casks(),
+                None => manager.load_casks_from_tap(&tap).await?,
+            });
         }
-
-        if let Ok(mut guard) = CASKS_INDEX_CACHE.lock() {
+        if let (Some(signature), Ok(mut guard)) = (signature, CASKS_INDEX_CACHE.lock()) {
             *guard = Some(CasksIndexCache {
                 signature,
                 casks: Arc::new(all.clone()),
             });
         }
-
         Ok(all)
     }
 
     pub async fn load_all_formulae(&self) -> Result<Vec<Formula>> {
-        let mut tap_manager = TapManager::new()?;
-        tap_manager.load().await?;
+        let mut manager = TapManager::new()?;
+        manager.load().await?;
+        self.load_all_formulae_with_taps(&manager).await
+    }
 
-        let tap_names: Vec<String> = tap_manager
-            .list_taps()
-            .into_iter()
-            .map(|tap| tap.full_name.clone())
-            .collect();
-        let signature = formulae_index_signature(self, &tap_names).await?;
+    async fn load_all_formulae_with_taps(&self, manager: &TapManager) -> Result<Vec<Formula>> {
+        let tap_indexes = self.load_tap_indexes(manager).await?;
+        let signature = index_signature(self, &self.formulae_path(), &tap_indexes).await?;
         if let Ok(guard) = FORMULAE_INDEX_CACHE.lock() {
             if let Some(cached) = guard.as_ref() {
-                if cached.signature == signature {
+                if Some(cached.signature) == signature {
                     debug!("Using in-process formulae index cache");
                     return Ok((*cached.formulae).clone());
                 }
             }
         }
-
         let mut all = self.load_formulae().await?;
-
-        for tap in tap_manager.list_taps() {
-            let tap_cache_path = self.tap_cache_path(&tap.full_name);
-
-            let tap_formulae = if tap_cache_path.exists() {
-                debug!(
-                    "Loading tap formulae from cache: {}",
-                    tap_cache_path.display()
-                );
-                let formula_dir = tap.formula_dir();
-                let json = fs::read_to_string(&tap_cache_path).await?;
-                let mut formulae: Vec<Formula> = serde_json::from_str(&json)?;
-                // rb_path is skipped during serialisation — restore it from the filesystem.
-                for f in &mut formulae {
-                    let rb_file = formula_dir.join(format!("{}.rb", f.name));
-                    if rb_file.exists() {
-                        f.rb_path = Some(rb_file);
-                    }
-                }
-                formulae
-            } else {
-                debug!("Loading tap formulae from filesystem: {}", tap.full_name);
-                let formulae = tap_manager.load_formulae_from_tap(tap).await?;
-
-                fs::create_dir_all(self.taps_cache_dir()).await?;
-                let json = serde_json::to_string_pretty(&formulae)?;
-                fs::write(&tap_cache_path, json).await?;
-
-                formulae
-            };
-
-            all.extend(tap_formulae);
+        for (tap, index) in tap_indexes {
+            all.extend(match index {
+                Some(index) => index.formulae(),
+                None => manager.load_formulae_from_tap(&tap).await?,
+            });
         }
-
-        if let Ok(mut guard) = FORMULAE_INDEX_CACHE.lock() {
+        if let (Some(signature), Ok(mut guard)) = (signature, FORMULAE_INDEX_CACHE.lock()) {
             *guard = Some(FormulaeIndexCache {
                 signature,
                 formulae: Arc::new(all.clone()),
             });
         }
-
         Ok(all)
     }
 }
@@ -747,6 +712,146 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tap_fixture() -> (tempfile::TempDir, Cache, TapManager, Tap) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("source");
+        std::fs::create_dir_all(path.join("Formula")).unwrap();
+        std::fs::create_dir_all(path.join("Casks")).unwrap();
+        let tap = Tap {
+            full_name: "fixture/availability".into(),
+            kind: crate::tap::TapKind::LocalDir { path: path.clone() },
+            path,
+        };
+        let cache = Cache::for_test(tmp.path().join("cache"));
+        std::fs::create_dir_all(&cache.cache_dir).unwrap();
+        std::fs::write(cache.formulae_path(), "[]").unwrap();
+        std::fs::write(cache.casks_path(), "[]").unwrap();
+        let manager = TapManager::for_test(tap.clone(), tmp.path().join("taps.json"));
+        (tmp, cache, manager, tap)
+    }
+
+    const TAP_FORMULA: &str = r#"class Example < Formula
+  url "https://example.invalid/example-1.0.tar.gz"
+  version "1.0"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  def install
+    bin.install "example"
+  end
+end
+"#;
+    const TAP_CASK: &str = r#"cask "example" do
+  version "1.0"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  url "https://example.invalid/example.zip"
+  app "Example.app"
+end
+"#;
+
+    #[tokio::test]
+    async fn unreadable_inputs_serve_previous_valid_snapshot_without_publication() {
+        let (_tmp, cache, manager, tap) = tap_fixture();
+        fs::write(tap.path.join("Formula/example.rb"), TAP_FORMULA)
+            .await
+            .unwrap();
+        fs::write(tap.path.join("Casks/example.rb"), TAP_CASK)
+            .await
+            .unwrap();
+        assert_eq!(
+            cache
+                .load_all_formulae_with_taps(&manager)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let mut entries = fs::read_dir(cache.cache_dir.join("taps/index-v1"))
+            .await
+            .unwrap();
+        let snapshot = entries.next_entry().await.unwrap().unwrap().path();
+        let before = fs::read(&snapshot).await.unwrap();
+        fs::write(tap.path.join("Formula/example.rb"), [0xff, 0xfe])
+            .await
+            .unwrap();
+        assert_eq!(
+            cache.load_all_formulae_with_taps(&manager).await.unwrap()[0]
+                .versions
+                .stable,
+            "1.0"
+        );
+        assert_eq!(
+            cache
+                .load_all_casks_with_taps(&manager)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(fs::read(snapshot).await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn first_index_failure_uses_existing_loader_for_requested_kind() {
+        let (_tmp, cache, manager, tap) = tap_fixture();
+        fs::write(tap.path.join("Formula/example.rb"), TAP_FORMULA)
+            .await
+            .unwrap();
+        fs::write(tap.path.join("Formula/unreadable.rb"), [0xff, 0xfe])
+            .await
+            .unwrap();
+        fs::write(tap.path.join("Casks/example.rb"), TAP_CASK)
+            .await
+            .unwrap();
+        assert_eq!(
+            cache
+                .load_all_formulae_with_taps(&manager)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            cache
+                .load_all_casks_with_taps(&manager)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!cache.cache_dir.join("taps/index-v1").exists());
+        fs::remove_file(tap.path.join("Formula/unreadable.rb"))
+            .await
+            .unwrap();
+        fs::write(tap.path.join("Casks/unreadable.rb"), [0xff, 0xfe])
+            .await
+            .unwrap();
+        fs::write(
+            tap.path.join("Formula/example.rb"),
+            TAP_FORMULA.replace("1.0", "2.0"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cache.load_all_formulae_with_taps(&manager).await.unwrap()[0]
+                .versions
+                .stable,
+            "2.0"
+        );
+        assert!(cache.load_all_casks_with_taps(&manager).await.is_err());
+        assert!(!cache.cache_dir.join("taps/index-v1").exists());
+        fs::remove_file(tap.path.join("Casks/unreadable.rb"))
+            .await
+            .unwrap();
+        assert_eq!(
+            cache
+                .load_all_casks_with_taps(&manager)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(cache.cache_dir.join("taps/index-v1").exists());
+    }
 
     #[test]
     fn index_bin_roundtrip() {

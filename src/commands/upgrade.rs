@@ -164,8 +164,7 @@ async fn refresh_taps(cache: &Cache) -> Result<()> {
         set.spawn(async move {
             let mut tm = TapManager::new()?;
             tm.load().await?;
-            tm.update_tap(&tap).await?;
-            cache.invalidate_tap_cache(&tap).await?;
+            cache.update_tap(&mut tm, &tap).await?;
             Ok::<_, WaxError>(())
         });
     }

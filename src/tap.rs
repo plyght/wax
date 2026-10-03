@@ -187,6 +187,14 @@ impl TapManager {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(tap: Tap, state_path: PathBuf) -> Self {
+        Self {
+            taps: HashMap::from([(tap.full_name.clone(), tap)]),
+            state_path,
+        }
+    }
+
     pub async fn load(&mut self) -> Result<()> {
         if !self.state_path.exists() {
             return Ok(());
@@ -437,6 +445,9 @@ impl TapManager {
     }
 
     pub fn get_tap(&self, spec: &str) -> Result<Tap> {
+        if let Some(tap) = self.taps.get(spec) {
+            return Ok(tap.clone());
+        }
         let tap = Tap::from_spec(spec)?;
         self.taps
             .get(&tap.full_name)
@@ -486,13 +497,7 @@ impl TapManager {
     pub async fn update_tap(&mut self, spec: &str) -> Result<()> {
         info!("Updating tap: {}", spec);
 
-        let tap_to_update = Tap::from_spec(spec)?;
-        let full_name = &tap_to_update.full_name;
-
-        let tap = self
-            .taps
-            .get(full_name)
-            .ok_or_else(|| WaxError::TapError(format!("Tap {} not found", full_name)))?;
+        let tap = self.get_tap(spec)?;
 
         match &tap.kind {
             TapKind::GitHub { .. } | TapKind::Git { .. } => {
@@ -593,15 +598,22 @@ impl TapManager {
     }
 
     async fn parse_formula_file(path: &Path, tap_full_name: &str) -> Result<Formula> {
+        let content = fs::read_to_string(path).await?;
+        Self::parse_formula_content(path, tap_full_name, &content)
+    }
+
+    pub(crate) fn parse_formula_content(
+        path: &Path,
+        tap_full_name: &str,
+        content: &str,
+    ) -> Result<Formula> {
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_string();
 
-        let content = fs::read_to_string(path).await?;
-
-        match FormulaParser::parse_ruby_formula(&name, &content) {
+        match FormulaParser::parse_ruby_formula(&name, content) {
             Ok(parsed) => Ok(Formula {
                 name: parsed.name.clone(),
                 full_name: format!("{}/{}", tap_full_name, parsed.name),
@@ -687,6 +699,144 @@ impl Default for TapManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    async fn snapshot_bytes(cache: &crate::cache::Cache) -> Vec<u8> {
+        let mut entries = fs::read_dir(cache.cache_dir_path().join("taps/index-v1"))
+            .await
+            .unwrap();
+        fs::read(entries.next_entry().await.unwrap().unwrap().path())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn git_update_preserves_unchanged_and_failed_fetch_snapshots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote");
+        fs::create_dir_all(remote.join("Formula")).await.unwrap();
+        git(&remote, &["init", "-b", "main"]);
+        let source = r#"class Example < Formula
+  url "https://example.invalid/example-1.0.tar.gz"
+  version "1.0"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  def install
+    bin.install "example"
+  end
+end
+"#;
+        fs::write(remote.join("Formula/example.rb"), source)
+            .await
+            .unwrap();
+        git(&remote, &["add", "."]);
+        git(
+            &remote,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+        let checkout = tmp.path().join("checkout");
+        git(
+            tmp.path(),
+            &[
+                "clone",
+                remote.to_str().unwrap(),
+                checkout.to_str().unwrap(),
+            ],
+        );
+        let tap = Tap {
+            full_name: "custom/fixture.git-name".into(),
+            kind: TapKind::Git {
+                url: format!("file://{}", remote.display()),
+            },
+            path: checkout.clone(),
+        };
+        let mut manager = TapManager {
+            taps: HashMap::from([(tap.full_name.clone(), tap.clone())]),
+            state_path: tmp.path().join("taps.json"),
+        };
+        let cache = crate::cache::Cache::for_test(tmp.path().join("cache"));
+        cache
+            .update_tap(&mut manager, &tap.full_name)
+            .await
+            .unwrap();
+        let before = snapshot_bytes(&cache).await;
+        cache
+            .update_tap(&mut manager, &tap.full_name)
+            .await
+            .unwrap();
+        assert_eq!(snapshot_bytes(&cache).await, before);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&before).unwrap()["indexed_commit"],
+            git(&checkout, &["rev-parse", "HEAD"])
+        );
+        fs::write(
+            remote.join("Formula/example.rb"),
+            source.replace("1.0", "2.0"),
+        )
+        .await
+        .unwrap();
+        git(&remote, &["add", "."]);
+        git(
+            &remote,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-m",
+                "changed",
+            ],
+        );
+        cache
+            .update_tap(&mut manager, &tap.full_name)
+            .await
+            .unwrap();
+        let changed = snapshot_bytes(&cache).await;
+        assert_ne!(changed, before);
+        assert_eq!(
+            manager.load_formulae_from_tap(&tap).await.unwrap()[0]
+                .versions
+                .stable,
+            "2.0"
+        );
+        git(
+            &checkout,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                tmp.path().join("missing").to_str().unwrap(),
+            ],
+        );
+        let head = git(&checkout, &["rev-parse", "HEAD"]);
+        assert!(cache
+            .update_tap(&mut manager, &tap.full_name)
+            .await
+            .is_err());
+        assert_eq!(snapshot_bytes(&cache).await, changed);
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), head);
+    }
 
     // ── Tap::from_spec ────────────────────────────────────────────────────────
 
