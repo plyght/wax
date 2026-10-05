@@ -116,10 +116,13 @@ async fn reinstall_package(
     if is_installed {
         set_current_op(format!("removing {}", name));
         spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
-        if !is_cask {
-            backup = KegBackup::take(name).await;
-        }
-        let removed = uninstall::uninstall_quiet(cache, name, is_cask).await;
+        let removed = if is_cask {
+            uninstall::uninstall_quiet(cache, name, is_cask).await
+        } else {
+            let (taken, removed) = KegBackup::remove_package(cache, name).await;
+            backup = taken;
+            removed
+        };
         if removed.is_err() {
             spinner.finish_and_clear();
             KegBackup::settle(backup, &removed).await;

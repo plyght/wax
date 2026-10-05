@@ -1,8 +1,8 @@
 use crate::adopt::{self, AdoptOptions};
 use crate::bottle::{detect_platform, homebrew_prefix, BottleDownloader, DownloadTotals};
 use crate::cache::Cache;
+use crate::commands::install;
 use crate::commands::self_update::{self_update, Channel};
-use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{is_writable, InstallMode, InstallState};
 use crate::signal::{
@@ -231,8 +231,7 @@ async fn apply_one_formula_package_upgrade(
         style(&pkg.name).magenta()
     ));
 
-    let backup = KegBackup::take(&pkg.name).await;
-    let uninstall_result = uninstall::uninstall_quiet(cache, &pkg.name, false).await;
+    let (backup, uninstall_result) = KegBackup::remove_package(cache, &pkg.name).await;
     spinner.finish_and_clear();
 
     let old_version = pkg.installed_version.clone();
@@ -1166,8 +1165,7 @@ async fn upgrade_formula_internal(
 ) -> Result<()> {
     let _critical = CriticalSection::new();
 
-    let backup = KegBackup::take(installed_name).await;
-    let removed = uninstall::uninstall_quiet(cache, installed_name, false).await;
+    let (backup, removed) = KegBackup::remove_package(cache, installed_name).await;
     if removed.is_err() {
         KegBackup::settle(backup, &removed).await;
         return removed;

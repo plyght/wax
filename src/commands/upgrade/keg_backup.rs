@@ -74,6 +74,26 @@ impl KegBackup {
         }
         Ok(())
     }
+    pub(crate) async fn remove_package(
+        cache: &crate::cache::Cache,
+        name: &str,
+    ) -> (Option<Self>, Result<()>) {
+        let Some(backup) = Self::take(name).await else {
+            let removed = crate::commands::uninstall::uninstall_quiet(cache, name, false).await;
+            return (None, removed);
+        };
+        let removed = backup.forget().await;
+        (Some(backup), removed)
+    }
+
+    async fn forget(&self) -> Result<()> {
+        let rack = self.cellar.join(&self.name);
+        if fs::symlink_metadata(&rack).await.is_ok() {
+            fs::remove_dir_all(&rack).await?;
+        }
+        InstallState::new()?.remove(&self.name).await
+    }
+
     pub(crate) async fn restore(self) -> Result<()> {
         if fs::symlink_metadata(&self.keg).await.is_ok() {
             fs::remove_dir_all(&self.keg).await?;
@@ -164,13 +184,13 @@ mod tests {
             .await
             .unwrap();
 
-        let backup = KegBackup::take("tool").await.unwrap();
+        let cache = crate::cache::Cache::for_test(home_path.join("cache"));
+        let (backup, removed) = KegBackup::remove_package(&cache, "tool").await;
+        removed.unwrap();
+        let backup = backup.unwrap();
         assert!(!keg.exists());
         assert!(fs::symlink_metadata(prefix.join("bin/tool")).await.is_err());
-        state.remove("tool").await.unwrap();
-        fs::remove_dir_all(prefix.join("Cellar/tool"))
-            .await
-            .unwrap();
+        assert!(!state.load().await.unwrap().contains_key("tool"));
 
         let failed: Result<()> = Err(crate::error::WaxError::InstallError("boom".into()));
         assert!(KegBackup::settle(Some(backup), &failed).await);
