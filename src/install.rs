@@ -461,14 +461,41 @@ pub async fn create_symlinks(
         .await?;
     }
 
-    let opt_dir = prefix.join("opt");
-    if !dry_run {
-        fs::create_dir_all(&opt_dir)
-            .await
-            .or_else(|_| sudo::sudo_mkdir(&opt_dir))?;
+    if let Some(opt_link) = link_opt(formula_name, &formula_path, &prefix, dry_run).await? {
+        created_links.push(opt_link);
     }
+
+    debug!("Created {} symlinks", created_links.len());
+    Ok(created_links)
+}
+
+pub async fn create_opt_link(
+    formula_name: &str,
+    version: &str,
+    cellar_path: &Path,
+    install_mode: InstallMode,
+) -> Result<Option<PathBuf>> {
+    let formula_path = cellar_path.join(formula_name).join(version);
+    let formula_path = dunce::canonicalize(&formula_path).unwrap_or(formula_path);
+    link_opt(formula_name, &formula_path, &install_mode.prefix()?, false).await
+}
+
+#[cfg_attr(not(unix), allow(unused_variables))]
+async fn link_opt(
+    formula_name: &str,
+    formula_path: &Path,
+    prefix: &Path,
+    dry_run: bool,
+) -> Result<Option<PathBuf>> {
+    if dry_run {
+        return Ok(None);
+    }
+    let opt_dir = prefix.join("opt");
+    fs::create_dir_all(&opt_dir)
+        .await
+        .or_else(|_| sudo::sudo_mkdir(&opt_dir))?;
     let opt_link = opt_dir.join(formula_name);
-    if !dry_run && opt_link.symlink_metadata().is_ok() {
+    if opt_link.symlink_metadata().is_ok() {
         if opt_link.is_dir() && !opt_link.is_symlink() {
             fs::remove_dir_all(&opt_link)
                 .await
@@ -479,19 +506,14 @@ pub async fn create_symlinks(
                 .or_else(|_| sudo::sudo_remove(&opt_link).map(|_| ()))?;
         }
     }
-    if !dry_run {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-            let link_target = relative_path(&opt_dir, &formula_path);
-            symlink(&link_target, &opt_link)
-                .or_else(|_| sudo::sudo_symlink(&link_target, &opt_link).map(|_| ()))?;
-        }
-        created_links.push(opt_link);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        let link_target = relative_path(&opt_dir, formula_path);
+        symlink(&link_target, &opt_link)
+            .or_else(|_| sudo::sudo_symlink(&link_target, &opt_link).map(|_| ()))?;
     }
-
-    debug!("Created {} symlinks", created_links.len());
-    Ok(created_links)
+    Ok(Some(opt_link))
 }
 
 fn link_directory_recursive<'a>(
