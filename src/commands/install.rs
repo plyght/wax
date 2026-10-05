@@ -29,6 +29,16 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, info, instrument};
 
+fn formula_belongs_to_tap(formula: &Formula, tap: &str) -> bool {
+    if tap == "homebrew/core" {
+        return !formula.full_name.contains('/');
+    }
+    formula
+        .full_name
+        .strip_prefix(tap)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
 async fn install_from_source_task(
     formula: Formula,
     cellar: &Path,
@@ -961,7 +971,11 @@ pub(crate) async fn install_impl(
                 .or_else(|| {
                     let parts: Vec<&str> = package_name.split('/').collect();
                     if parts.len() >= 3 {
-                        by_name.get(parts[parts.len() - 1])
+                        let tap =
+                            format!("{}/{}", parts[0], parts[1].trim_start_matches("homebrew-"));
+                        by_name
+                            .get(parts[parts.len() - 1])
+                            .filter(|f| formula_belongs_to_tap(f, &tap))
                     } else {
                         None
                     }
@@ -1047,7 +1061,25 @@ pub(crate) async fn install_impl(
 
     if !already_installed.is_empty() && !quiet {
         for pkg in &already_installed {
-            println!("{} is already installed", style(pkg).magenta());
+            let short = pkg.rsplit('/').next().unwrap_or(pkg);
+            let newer = installed_packages.get(short).and_then(|installed| {
+                by_full_name
+                    .get(pkg.as_str())
+                    .or_else(|| by_name.get(short))
+                    .map(|f| f.full_version())
+                    .filter(|latest| *latest != installed.version)
+                    .map(|latest| (installed.version.clone(), latest))
+            });
+            match newer {
+                Some((current, latest)) => println!(
+                    "{} is already installed ({} → {} available, run {})",
+                    style(pkg).magenta(),
+                    style(&current).dim(),
+                    style(latest).green(),
+                    style(format!("wax upgrade {short}")).cyan()
+                ),
+                None => println!("{} is already installed", style(pkg).magenta()),
+            }
         }
     }
 
@@ -2898,12 +2930,49 @@ async fn install_from_downloaded(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_already_installed_formula_linkages_with_cellar, is_github_tap_spec, is_tap_only_spec,
-        should_update_tap, stage_binary_release_download, tap_name_from_qualified_package,
-        tap_spec_from_install_name,
+        check_already_installed_formula_linkages_with_cellar, formula_belongs_to_tap,
+        is_github_tap_spec, is_tap_only_spec, should_update_tap, stage_binary_release_download,
+        tap_name_from_qualified_package, tap_spec_from_install_name,
     };
     use crate::install::{InstallMode, InstalledPackage};
     use std::collections::HashMap;
+
+    fn formula_named(full_name: &str) -> crate::api::Formula {
+        crate::api::Formula {
+            name: full_name.rsplit('/').next().unwrap().into(),
+            full_name: full_name.into(),
+            desc: None,
+            homepage: String::new(),
+            versions: crate::api::Versions {
+                stable: "1.0".into(),
+                bottle: false,
+            },
+            revision: 0,
+            installed: None,
+            dependencies: None,
+            build_dependencies: None,
+            bottle: None,
+            deprecated: false,
+            disabled: false,
+            deprecation_reason: None,
+            disable_reason: None,
+            keg_only: None,
+            keg_only_reason: None,
+            post_install_defined: false,
+            rb_path: None,
+        }
+    }
+
+    #[test]
+    fn qualified_install_never_falls_back_to_another_taps_formula() {
+        let core = formula_named("ripgrep");
+        let tapped = formula_named("ampcode/tap/ampcode");
+        assert!(formula_belongs_to_tap(&core, "homebrew/core"));
+        assert!(!formula_belongs_to_tap(&core, "someone/tools"));
+        assert!(formula_belongs_to_tap(&tapped, "ampcode/tap"));
+        assert!(!formula_belongs_to_tap(&tapped, "ampcode/ta"));
+        assert!(!formula_belongs_to_tap(&tapped, "homebrew/core"));
+    }
 
     #[test]
     fn tap_name_from_qualified_package_uses_first_two_segments() {
