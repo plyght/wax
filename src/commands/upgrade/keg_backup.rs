@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use tracing::{debug, warn};
 
-pub(super) struct KegBackup {
+pub(crate) struct KegBackup {
     name: String,
     record: InstalledPackage,
     cellar: PathBuf,
@@ -13,7 +13,7 @@ pub(super) struct KegBackup {
 }
 
 impl KegBackup {
-    pub(super) async fn take(name: &str) -> Option<Self> {
+    pub(crate) async fn take(name: &str) -> Option<Self> {
         let record = InstallState::new()
             .ok()?
             .load()
@@ -74,7 +74,7 @@ impl KegBackup {
         }
         Ok(())
     }
-    pub(super) async fn restore(self) -> Result<()> {
+    pub(crate) async fn restore(self) -> Result<()> {
         if fs::symlink_metadata(&self.keg).await.is_ok() {
             fs::remove_dir_all(&self.keg).await?;
         }
@@ -92,7 +92,7 @@ impl KegBackup {
         Ok(())
     }
 
-    pub(super) async fn discard(self) {
+    pub(crate) async fn discard(self) {
         if let Err(e) = fs::remove_dir_all(&self.backup).await {
             warn!(
                 "could not remove upgrade backup {}: {}",
@@ -104,7 +104,7 @@ impl KegBackup {
             let _ = fs::remove_dir(parent).await;
         }
     }
-    pub(super) async fn settle<T>(backup: Option<Self>, result: &Result<T>) -> bool {
+    pub(crate) async fn settle<T>(backup: Option<Self>, result: &Result<T>) -> bool {
         let Some(backup) = backup else {
             return false;
         };

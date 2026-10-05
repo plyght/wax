@@ -1,6 +1,7 @@
 use crate::adopt::{self, AdoptOptions};
 use crate::cache::Cache;
 use crate::cask::InstalledCask;
+use crate::commands::upgrade::keg_backup::KegBackup;
 use crate::commands::{install, uninstall};
 use crate::error::{Result, WaxError};
 use crate::install::{InstallMode, InstalledPackage};
@@ -111,10 +112,19 @@ async fn reinstall_package(
     let is_installed =
         installed.contains_key(name.as_str()) || installed_casks.contains_key(name.as_str());
 
+    let mut backup = None;
     if is_installed {
         set_current_op(format!("removing {}", name));
         spinner.set_message(format!("{}removing {}...", prefix, style(name).magenta()));
-        uninstall::uninstall_quiet(cache, name, is_cask).await?;
+        if !is_cask {
+            backup = KegBackup::take(name).await;
+        }
+        let removed = uninstall::uninstall_quiet(cache, name, is_cask).await;
+        if removed.is_err() {
+            spinner.finish_and_clear();
+            KegBackup::settle(backup, &removed).await;
+            return removed;
+        }
         spinner.finish_and_clear();
     } else {
         spinner.set_message(format!("{}installing {}...", prefix, style(name).magenta()));
@@ -155,7 +165,7 @@ async fn reinstall_package(
         pb.set_message(style(name).magenta().to_string());
 
         set_current_op(format!("downloading {}", name));
-        install::install_impl(
+        let result = install::install_impl(
             cache,
             std::slice::from_ref(name),
             install::InstallArgs {
@@ -172,8 +182,18 @@ async fn reinstall_package(
                 external_pb: Some(&pb),
             },
         )
-        .await?;
+        .await;
         pb.finish_and_clear();
+        if KegBackup::settle(backup, &result).await {
+            multi.suspend(|| {
+                eprintln!(
+                    "{} reinstall of {} failed; kept the existing install",
+                    style("warning:").yellow().bold(),
+                    style(name).magenta()
+                )
+            });
+        }
+        result?;
     }
     println!(
         "{} {}{}@{}{}",

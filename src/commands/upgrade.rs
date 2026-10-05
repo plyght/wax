@@ -26,7 +26,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::instrument;
 
-mod keg_backup;
+pub(crate) mod keg_backup;
 use keg_backup::KegBackup;
 
 #[derive(Debug, Clone)]
