@@ -19,7 +19,8 @@ const INDEX_BIN_MAGIC: &[u8] = b"WAXBIN1\0";
 
 fn encode_index<T: Serialize>(items: &[T]) -> Result<Vec<u8>> {
     let mut payload = INDEX_BIN_MAGIC.to_vec();
-    bincode::serialize_into(&mut payload, items)
+    // The legacy config preserves the bincode 1 wire format and WAXBIN1 caches.
+    bincode::serde::encode_into_std_write(items, &mut payload, bincode::config::legacy())
         .map_err(|e| WaxError::CacheError(format!("bincode encode: {e}")))?;
     Ok(payload)
 }
@@ -30,7 +31,9 @@ fn decode_index<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T> {
             "index cache format mismatch".to_string(),
         ));
     }
-    bincode::deserialize(&payload[INDEX_BIN_MAGIC.len()..])
+    bincode::serde::decode_from_slice(&payload[INDEX_BIN_MAGIC.len()..], bincode::config::legacy())
+        // bincode 1's deserialize allowed trailing bytes; retain that behavior.
+        .map(|(items, _consumed)| items)
         .map_err(|e| WaxError::CacheError(format!("bincode decode: {e}")))
 }
 
@@ -863,6 +866,39 @@ end
         assert_eq!(decoded, items);
         assert!(decode_index::<Vec<String>>(b"nope").is_err());
         assert!(decode_index::<Vec<String>>(b"WAXBIN1\0garbage").is_err());
+    }
+
+    #[test]
+    fn index_bin_preserves_bincode_one_wire_format() {
+        // bincode 1.3.3's default encoding: little endian, fixed u64 lengths.
+        let legacy = b"WAXBIN1\0\x02\0\0\0\0\0\0\0\x01\0\0\0\0\0\0\0a\x01\0\0\0\0\0\0\0b";
+        let items = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(encode_index(&items).unwrap(), legacy);
+        assert_eq!(decode_index::<Vec<String>>(legacy).unwrap(), items);
+        let mut with_trailing = legacy.to_vec();
+        with_trailing.extend_from_slice(b"trailing");
+        assert_eq!(decode_index::<Vec<String>>(&with_trailing).unwrap(), items);
+    }
+
+    #[tokio::test]
+    async fn corrupt_binary_index_still_falls_back_to_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = Cache::for_test(tmp.path().to_path_buf());
+        let json_path = tmp.path().join("fixture.json");
+        let bin_path = tmp.path().join("fixture.bin");
+        let items = vec!["a".to_string(), "b".to_string()];
+        fs::write(&json_path, serde_json::to_vec(&items).unwrap())
+            .await
+            .unwrap();
+        // Write after JSON so load_index attempts the newer corrupt sidecar.
+        fs::write(&bin_path, b"WAXBIN1\0garbage").await.unwrap();
+        assert_eq!(
+            cache
+                .load_index::<String>(&json_path, &bin_path)
+                .await
+                .unwrap(),
+            items
+        );
     }
 
     #[test]
