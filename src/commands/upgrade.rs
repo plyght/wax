@@ -1330,9 +1330,13 @@ pub async fn get_outdated_packages_scoped(
         state.load().await?
     };
 
-    let installed_casks = adopt::sync_installed_state(cache, AdoptOptions::casks_only())
-        .await?
-        .casks;
+    let installed_casks = if scope == Some(InstallMode::User) {
+        HashMap::new()
+    } else {
+        adopt::sync_installed_state(cache, AdoptOptions::casks_only())
+            .await?
+            .casks
+    };
 
     let formulae = cache.load_all_formulae().await?;
     let casks = cache.load_all_casks().await?;
