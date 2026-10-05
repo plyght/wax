@@ -292,9 +292,7 @@ async fn formula_install_reports_unsupported_api_and_patches() {
 class Odd < Formula
   url "https://example.invalid/odd-1.0.tar.gz"
   sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  patch do
-    url "https://example.invalid/fix.patch"
-  end
+  patch :p1, :UNKNOWN_SOURCE
   def install
     some_future_helper "x"
   end
@@ -320,4 +318,59 @@ end
     .unwrap_err()
     .to_string();
     assert!(err.contains("some_future_helper"), "{err}");
+}
+
+#[tokio::test]
+async fn formula_install_applies_data_patches_before_install() {
+    let Some(ruby) = find_ruby() else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let rb = tmp.path().join("patched.rb");
+    std::fs::write(
+        &rb,
+        r##"
+class Patched < Formula
+  url "https://example.invalid/patched-1.0.tar.gz"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  patch :DATA
+
+  def install
+    bin.install "hello.sh"
+  end
+end
+
+__END__
+--- a/hello.sh
++++ b/hello.sh
+@@ -1,2 +1,2 @@
+ #!/bin/sh
+-echo broken
++echo patched
+"##,
+    )
+    .unwrap();
+    assert!(!eval_formula_meta(&ruby, &rb).await.unwrap().patches);
+    let build = tmp.path().join("build");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::write(build.join("hello.sh"), "#!/bin/sh\necho broken\n").unwrap();
+    let keg = tmp.path().join("keg");
+    std::fs::create_dir_all(&keg).unwrap();
+    run_formula_install(
+        &ruby,
+        &rb,
+        FormulaInstall {
+            name: "patched",
+            version: "1.0",
+            buildpath: &build,
+            prefix: &keg,
+            path_prefix: tmp.path(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(keg.join("bin/hello.sh")).unwrap(),
+        "#!/bin/sh\necho patched\n"
+    );
 }
