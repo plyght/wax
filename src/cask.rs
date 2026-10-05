@@ -1053,7 +1053,7 @@ impl Drop for StagingContext {
                 .arg("detach")
                 .arg(mp)
                 .arg("-quiet")
-                .status();
+                .output();
         }
     }
 }
@@ -1067,13 +1067,14 @@ fn strip_macos_quarantine(path: &Path) {
     let path_arg = path.to_string_lossy();
     match std::process::Command::new("xattr")
         .args(["-dr", "com.apple.quarantine", path_arg.as_ref()])
-        .status()
+        .output()
     {
-        Ok(status) if status.success() => debug!("cleared quarantine on {:?}", path),
-        Ok(status) => debug!(
-            "xattr clear quarantine exited {:?} for {:?}",
-            status.code(),
-            path
+        Ok(output) if output.status.success() => debug!("cleared quarantine on {:?}", path),
+        Ok(output) => debug!(
+            "xattr clear quarantine exited {:?} for {:?}: {}",
+            output.status.code(),
+            path,
+            String::from_utf8_lossy(&output.stderr).trim()
         ),
         Err(e) => debug!("xattr not run for {:?}: {}", path, e),
     }
