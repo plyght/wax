@@ -1365,7 +1365,7 @@ fn macos_codename() -> &'static str {
     }
 }
 
-fn macos_version() -> String {
+pub(crate) fn macos_version() -> String {
     #[cfg(target_os = "macos")]
     {
         if let Some(version) =
