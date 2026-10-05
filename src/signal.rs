@@ -54,10 +54,11 @@ where
 /// (e.g. cask preflight notes). Falls back to `println!` otherwise.
 pub fn println_through_active_multi(msg: impl Into<String>) {
     let s = msg.into();
-    if let Some(m) = clone_active_multi() {
-        let _ = m.println(s);
-    } else {
-        println!("{s}");
+    match clone_active_multi() {
+        Some(m) if !m.is_hidden() => {
+            let _ = m.println(s);
+        }
+        _ => println!("{s}"),
     }
 }
 
@@ -66,7 +67,12 @@ fn print_interrupt(msg: &str) {
     let used_multi = active_multi_mutex()
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().map(|m| m.println(msg).is_ok()))
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|m| !m.is_hidden())
+                .map(|m| m.println(msg).is_ok())
+        })
         .unwrap_or(false);
     if !used_multi {
         eprintln!("{}", msg);
