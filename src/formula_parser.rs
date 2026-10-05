@@ -1123,6 +1123,7 @@ impl FormulaParser {
             } else {
                 Some(artifacts)
             },
+            rb_path: None,
         })
     }
 

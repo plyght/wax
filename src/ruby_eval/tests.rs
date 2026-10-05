@@ -101,3 +101,61 @@ fn marker_line_is_found_after_noise() {
     );
     assert_eq!(parse_output("nothing here"), None);
 }
+
+#[tokio::test]
+async fn runs_postflight_with_homebrew_helpers() {
+    let Some(ruby) = find_ruby() else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let staged = tmp.path().join("staged");
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::write(staged.join("tool"), "#!/bin/sh\n").unwrap();
+    let rb = tmp.path().join("hooked.rb");
+    std::fs::write(
+        &rb,
+        r##"
+cask "hooked" do
+  version "1.0"
+  sha256 :no_check
+  url "https://example.invalid/hooked.zip"
+  app "Hooked.app"
+  postflight do
+    result = system_command "/bin/echo", args: ["hello", token]
+    File.write(staged_path.join("marker"), "#{result.stdout.strip} #{version}")
+    set_permissions staged_path.join("tool"), "0755"
+    ohai "postflight done"
+  end
+  preflight do
+    system_command "/usr/bin/false", must_succeed: true
+  end
+end
+"##,
+    )
+    .unwrap();
+
+    let log = run_hook(&ruby, &rb, "postflight", &staged).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(staged.join("marker")).unwrap(),
+        "hello hooked 1.0"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(staged.join("tool"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+    assert!(log.contains("postflight done"));
+
+    let err = run_hook(&ruby, &rb, "preflight", &staged)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("preflight failed"), "{err}");
+    assert!(run_hook(&ruby, &rb, "uninstall_postflight", &staged)
+        .await
+        .is_err());
+}

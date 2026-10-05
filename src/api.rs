@@ -120,6 +120,8 @@ pub struct CaskDetails {
     pub url: String,
     pub sha256: String,
     pub artifacts: Option<Vec<CaskArtifact>>,
+    #[serde(default, skip_serializing)]
+    pub rb_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
