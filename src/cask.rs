@@ -1546,6 +1546,15 @@ impl CaskInstaller {
         });
 
         Self::reject_traversal(Path::new(name))?;
+        if !matches!(
+            Path::new(name).components().collect::<Vec<_>>().as_slice(),
+            [std::path::Component::Normal(_)]
+        ) {
+            return Err(WaxError::InstallError(format!(
+                "Unsafe binary target: {}",
+                name
+            )));
+        }
 
         info!("Installing binary: {} from {:?}", name, source);
 

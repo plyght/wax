@@ -738,6 +738,31 @@ impl BottleDownloader {
         Ok(())
     }
 
+    /// Path checks above are textual; symlinks laid down by earlier entries can
+    /// still redirect a later entry. Resolve the deepest existing ancestor on
+    /// disk before creating anything, and never write through a symlink.
+    fn ensure_on_disk_inside(full_path: &Path, canonical_dest: &Path) -> Result<()> {
+        let mut ancestor = full_path.parent();
+        while let Some(dir) = ancestor {
+            if std::fs::symlink_metadata(dir).is_ok() {
+                if !dunce::canonicalize(dir)?.starts_with(canonical_dest) {
+                    return Err(WaxError::InstallError(format!(
+                        "Tar entry escapes destination via symlink: {}",
+                        full_path.display()
+                    )));
+                }
+                break;
+            }
+            ancestor = dir.parent();
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(full_path) {
+            if meta.file_type().is_symlink() {
+                std::fs::remove_file(full_path)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn extract(tarball_path: &Path, dest_dir: &Path) -> Result<()> {
         debug!("Extracting {:?} to {:?}", tarball_path, dest_dir);
 
@@ -776,6 +801,8 @@ impl BottleDownloader {
                     path.display()
                 )));
             }
+
+            Self::ensure_on_disk_inside(&full_path, &canonical_dest)?;
 
             let entry_size = entry.header().size()?;
             extracted_bytes = extracted_bytes.saturating_add(entry_size);
@@ -1773,6 +1800,37 @@ mod tests {
             std::fs::read_link(link).unwrap(),
             PathBuf::from("../lib/tool")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_rejects_entries_written_through_chained_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let tarball = temp.path().join("archive.tar.gz");
+        let file = std::fs::File::create(&tarball).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for (link, target) in [("a/b/l", "../.."), ("a/b/l/c/m", "../..")] {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_mode(0o777);
+            header.set_size(0);
+            header.set_cksum();
+            builder.append_link(&mut header, link, target).unwrap();
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_mode(0o644);
+        header.set_size(1);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "a/b/l/c/m/escaped", &b"x"[..])
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("dest");
+        assert!(BottleDownloader::extract(&tarball, &dest).is_err());
+        assert!(!root.path().join("escaped").exists());
     }
 
     #[cfg(unix)]

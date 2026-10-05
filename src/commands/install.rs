@@ -2444,8 +2444,12 @@ async fn install_from_downloaded(
                         installer
                             .install_app(&staging, &mut rollback, source)
                             .await?;
-                        installed_app_name = Some(source.to_string());
-                        let app_dest = CaskInstaller::applications_dir()?.join(source);
+                        let app_name = std::path::Path::new(source)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(source);
+                        installed_app_name = Some(app_name.to_string());
+                        let app_dest = CaskInstaller::applications_dir()?.join(app_name);
                         installed_paths.push(app_dest.display().to_string());
                     }
                 }

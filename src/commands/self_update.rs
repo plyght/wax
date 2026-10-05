@@ -248,6 +248,21 @@ async fn download_asset(client: &reqwest::Client, asset: &Asset) -> Result<Vec<u
     Ok(bytes.to_vec())
 }
 
+fn verify_checksum(bytes: &[u8], sidecar: &[u8]) -> Result<()> {
+    let expected = String::from_utf8_lossy(sidecar)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let actual = crate::digest::sha256_digest_hex(bytes);
+    if expected != actual {
+        return Err(WaxError::SelfUpdateError(format!(
+            "Checksum mismatch: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
+}
+
 fn install_binary(bytes: &[u8]) -> Result<()> {
     let current_exe = std::env::current_exe().map_err(|e| {
         WaxError::SelfUpdateError(format!("Failed to resolve current exe path: {e}"))
@@ -257,19 +272,23 @@ fn install_binary(bytes: &[u8]) -> Result<()> {
         WaxError::SelfUpdateError("Current exe has no parent directory".to_string())
     })?;
 
-    let temp_exe = exe_dir.join(".wax-update-tmp");
-
-    std::fs::write(&temp_exe, bytes)
-        .map_err(|e| WaxError::SelfUpdateError(format!("Failed to write temporary binary: {e}")))?;
+    let write_err = |e: std::io::Error| {
+        WaxError::SelfUpdateError(format!("Failed to write temporary binary: {e}"))
+    };
+    let mut temp_exe = tempfile::NamedTempFile::new_in(exe_dir).map_err(write_err)?;
+    std::io::Write::write_all(&mut temp_exe, bytes).map_err(write_err)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temp_exe, std::fs::Permissions::from_mode(0o755))
+        temp_exe
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o755))
             .map_err(|e| WaxError::SelfUpdateError(format!("Failed to set permissions: {e}")))?;
     }
 
-    std::fs::rename(&temp_exe, &current_exe)
+    temp_exe
+        .persist(&current_exe)
         .map_err(|e| WaxError::SelfUpdateError(format!("Failed to overwrite executable: {e}")))?;
 
     Ok(())
@@ -307,7 +326,10 @@ async fn update_from_releases(force: bool) -> Result<()> {
     let arch = std::env::consts::ARCH;
 
     let target_asset_name = match os {
-        "macos" => "wax-macos-x64",
+        "macos" => match arch {
+            "aarch64" => "wax-macos-arm64",
+            _ => "wax-macos-x64",
+        },
         "linux" => match arch {
             "aarch64" => "wax-linux-arm64",
             _ => "wax-linux-x64",
@@ -330,7 +352,18 @@ async fn update_from_releases(force: bool) -> Result<()> {
             ))
         })?;
 
+    let checksum_name = format!("{target_asset_name}.sha256");
+    let checksum_asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == checksum_name)
+        .ok_or_else(|| {
+            WaxError::SelfUpdateError(format!("Release is missing checksum '{checksum_name}'"))
+        })?;
+
     let bytes = download_asset(client, asset).await?;
+    let checksum = download_asset(client, checksum_asset).await?;
+    verify_checksum(&bytes, &checksum)?;
     install_binary(&bytes)?;
 
     println!(
@@ -553,6 +586,14 @@ async fn update_from_source(force: bool, nightly_cleanup: Option<bool>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verify_checksum_accepts_sidecar_and_rejects_mismatch() {
+        let digest = crate::digest::sha256_digest_hex(b"wax");
+        assert!(verify_checksum(b"wax", format!("{digest}  wax-macos-arm64\n").as_bytes()).is_ok());
+        assert!(verify_checksum(b"tampered", digest.as_bytes()).is_err());
+        assert!(verify_checksum(b"wax", b"").is_err());
+    }
 
     #[test]
     fn parse_version_with_v_prefix() {
