@@ -453,3 +453,20 @@ mod formula_tests {
         assert_eq!(f.bottle_rebuild(), 42);
     }
 }
+
+#[cfg(test)]
+mod cask_artifact_tests {
+    use super::CaskArtifact;
+
+    fn parse(json: &str) -> CaskArtifact {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn hook_variants_only_match_their_own_key() {
+        assert_eq!(parse(r#"{"preflight": null}"#).as_str(), "preflight");
+        assert_eq!(parse(r#"{"postflight": "x.rb:3"}"#).as_str(), "postflight");
+        assert_eq!(parse(r#"{"uninstall_postflight": null}"#).as_str(), "other");
+        assert_eq!(parse(r#"{"stage_only": [true]}"#).as_str(), "other");
+    }
+}
