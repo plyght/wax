@@ -208,6 +208,68 @@ module Utils
   end
 end
 
+class WaxPatch
+  attr_accessor :data
+
+  def initialize(strip)
+    @strip = strip.to_s
+  end
+
+  def url(value = nil, **_options)
+    return @url if value.nil?
+    @url = value.to_s
+  end
+
+  def sha256(value = nil)
+    return @sha256 if value.nil?
+    @sha256 = value.to_s
+  end
+
+  def apply(*files)
+    @files = files.flatten.map(&:to_s)
+  end
+
+  def directory(value)
+    @directory = value.to_s
+  end
+
+  def method_missing(*); nil; end
+  def respond_to_missing?(*); true; end
+
+  def apply!(buildpath)
+    patches = patch_files
+    Dir.chdir(@directory ? File.join(buildpath.to_s, @directory) : buildpath.to_s) do
+      patches.each do |file|
+        ok = Kernel.system("patch", "-g", "0", "-f", "-#{@strip}", "-i", file)
+        raise "failed to apply patch #{@url || "inline"}" unless ok
+      end
+    end
+  end
+
+  private
+
+  def patch_files
+    dir = Dir.mktmpdir("wax-patch-")
+    if data
+      path = File.join(dir, "inline.patch")
+      File.write(path, data)
+      return [path]
+    end
+    raise "patch without url" unless @url
+    file = File.join(dir, File.basename(@url.split("?").first))
+    raise "could not download patch #{@url}" unless Kernel.system("curl", "-fsSL", "--retry", "3", "-o", file, @url)
+    if @sha256 && Digest::SHA256.file(file).hexdigest != @sha256
+      raise "patch #{@url} checksum mismatch"
+    end
+    return [file] unless @files
+    unpacked = File.join(dir, "unpacked")
+    FileUtils.mkdir_p(unpacked)
+    WaxArchive.extract(Pathname.new(file), Pathname.new(unpacked))
+    root = WaxArchive.single_root(Pathname.new(unpacked))
+    @files.map { |f| (root / f).to_s }
+  end
+end
+
 class WaxBuildOptions
   def with?(*); false; end
   def without?(*); true; end
@@ -304,8 +366,21 @@ class Formula
 
     def build; WaxBuildOptions.new; end
 
-    def patch(*_args, **_options, &_block)
-      wax[:patches] = true unless @wax_in_head
+    def patch(strip = :p1, source = nil, &block)
+      return if @wax_in_head
+      strip, source = :p1, strip unless strip.is_a?(Symbol) && strip.to_s.match?(/\Ap\d\z/)
+      spec = WaxPatch.new(strip)
+      if block
+        spec.instance_eval(&block)
+      elsif source == :DATA
+        spec.data = File.read($wax_formula_path).split(/^__END__$/, 2)[1].to_s.sub(/\A\n/, "")
+      elsif source.is_a?(String)
+        spec.data = source
+      else
+        wax[:unsupported_patch] = true
+        return
+      end
+      (wax[:patches] ||= []) << spec
     end
 
     %i[bottle livecheck test service fails_with option conflicts_with deprecate! disable!
@@ -492,6 +567,6 @@ def wax_formula_meta(klass)
     "dependencies" => spec[:dependencies].uniq,
     "build_dependencies" => spec[:build_dependencies].uniq,
     "keg_only" => spec[:keg_only] ? true : false,
-    "patches" => spec[:patches] ? true : false
+    "patches" => spec[:unsupported_patch] ? true : false
   }
 end

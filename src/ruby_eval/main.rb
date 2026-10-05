@@ -4,6 +4,7 @@ abort("usage: shim.rb cask <file> | hook <file> <name> | formula <file> meta|ins
 $wax_formula_mode = kind == "formula" ? $wax_hook : nil
 $wax_hook = nil unless kind == "hook"
 
+$wax_formula_path = File.expand_path(path)
 begin
   load File.expand_path(path)
   if $wax_formula_mode
@@ -14,6 +15,7 @@ begin
       $wax_real_stdout.puts("__WAX_JSON__#{JSON.generate(wax_formula_meta(klass))}")
     when "install"
       formula = klass.new
+      Array(klass.wax[:patches]).each { |patch| patch.apply!(formula.buildpath) }
       Dir.chdir(formula.buildpath.to_s) { formula.install }
       formula.prefix.mkpath
       $wax_real_stdout.puts("__WAX_HOOK_OK__")
