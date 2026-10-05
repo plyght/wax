@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use tracing::{debug, instrument};
 
+mod platform;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BuildSystem {
@@ -693,6 +695,9 @@ impl FormulaParser {
     /// extract the (url, sha256) pair appropriate for the current platform.
     /// Returns `None` if no matching block is found.
     pub fn extract_platform_source(content: &str) -> Option<(String, String)> {
+        if let Some(pair) = platform::select_url_sha(content, platform::Target::host()) {
+            return Some(pair);
+        }
         let is_arm = std::env::consts::ARCH == "aarch64";
         let os_block_key = if std::env::consts::OS == "macos" {
             "on_macos do"
