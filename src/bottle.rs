@@ -1346,6 +1346,7 @@ pub fn detect_platform() -> String {
 fn macos_codename() -> &'static str {
     let version = macos_version();
     match version.as_str() {
+        "27" => "golden_gate",
         "16" | "26" => "tahoe",
         "15" => "sequoia",
         "14" => "sonoma",
@@ -1353,7 +1354,9 @@ fn macos_codename() -> &'static str {
         "12" => "monterey",
         v => {
             if let Ok(major) = v.parse::<u32>() {
-                if major > 26 {
+                if major > 27 {
+                    "golden_gate"
+                } else if major > 26 {
                     "tahoe"
                 } else {
                     "sequoia"

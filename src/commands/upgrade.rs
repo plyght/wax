@@ -1372,7 +1372,14 @@ pub async fn get_outdated_packages_scoped(
                     .bottle
                     .as_ref()
                     .and_then(|b| b.stable.as_ref())
-                    .and_then(|s| s.file_for_platform(&platform))
+                    .and_then(|s| {
+                        let tag = if installed.platform.is_empty() {
+                            platform.as_str()
+                        } else {
+                            installed.platform.as_str()
+                        };
+                        s.files.get(tag)
+                    })
                     .map(|f| Some(&f.sha256) != installed.bottle_sha256.as_ref())
                     .unwrap_or(false);
 
