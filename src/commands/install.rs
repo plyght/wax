@@ -913,6 +913,41 @@ fn hint_user_prefix_path_if_needed(install_mode: InstallMode, quiet: bool) {
 }
 
 #[cfg_attr(target_os = "windows", allow(unreachable_code, unused_variables))]
+async fn ensure_install_taps(
+    cache: &Cache,
+    tap_manager: &mut TapManager,
+    package_names: &[String],
+    quiet: bool,
+) -> Result<()> {
+    let mut updated_taps = HashSet::new();
+    for package_name in package_names {
+        let Some(tap_name) = tap_spec_from_install_name(package_name) else {
+            continue;
+        };
+        if updated_taps.contains(&tap_name) {
+            continue;
+        }
+        let added_during_install = if !tap_manager.has_tap(&tap_name).await {
+            if !quiet {
+                println!("adding tap {}", style(&tap_name).cyan());
+            }
+            tap_manager.ensure_tap(&tap_name).await?;
+            cache.invalidate_tap_cache(&tap_name).await?;
+            true
+        } else {
+            false
+        };
+        if should_update_tap(updated_taps.contains(&tap_name), added_during_install) {
+            if !quiet {
+                println!("updating tap {}", style(&tap_name).cyan());
+            }
+            cache.update_tap(tap_manager, &tap_name).await?;
+        }
+        updated_taps.insert(tap_name);
+    }
+    Ok(())
+}
+
 pub(crate) async fn install_impl(
     cache: &Cache,
     package_names: &[String],
@@ -951,6 +986,11 @@ pub(crate) async fn install_impl(
     cache.ensure_fresh().await?;
 
     if cask {
+        if !dry_run {
+            let mut tap_manager = TapManager::new()?;
+            tap_manager.load().await?;
+            ensure_install_taps(cache, &mut tap_manager, package_names, quiet).await?;
+        }
         return install_casks(cache, package_names, dry_run, ask, quiet, force_reinstall).await;
     }
 
@@ -963,34 +1003,8 @@ pub(crate) async fn install_impl(
 
     let mut tap_manager = TapManager::new()?;
     tap_manager.load().await?;
-
     if !dry_run {
-        let mut updated_taps = HashSet::new();
-        for package_name in package_names {
-            let Some(tap_name) = tap_spec_from_install_name(package_name) else {
-                continue;
-            };
-            if updated_taps.contains(&tap_name) {
-                continue;
-            }
-            let added_during_install = if !tap_manager.has_tap(&tap_name).await {
-                if !quiet {
-                    println!("adding tap {}", style(&tap_name).cyan());
-                }
-                tap_manager.ensure_tap(&tap_name).await?;
-                cache.invalidate_tap_cache(&tap_name).await?;
-                true
-            } else {
-                false
-            };
-            if should_update_tap(updated_taps.contains(&tap_name), added_during_install) {
-                if !quiet {
-                    println!("updating tap {}", style(&tap_name).cyan());
-                }
-                cache.update_tap(&mut tap_manager, &tap_name).await?;
-            }
-            updated_taps.insert(tap_name);
-        }
+        ensure_install_taps(cache, &mut tap_manager, package_names, quiet).await?;
     }
 
     let mut formulae = cache.load_all_formulae().await?;
@@ -2295,10 +2309,11 @@ async fn install_casks(
                 name: name.clone(),
                 err: e.into(),
             })?;
-            let download_path =
-                temp_dir
-                    .path()
-                    .join(format!("{}.{}", name, artifact_type.as_str()));
+            let download_path = temp_dir.path().join(format!(
+                "{}.{}",
+                name.rsplit('/').next().unwrap_or(&name),
+                artifact_type.as_str()
+            ));
             let pb = multi.insert_from_back(1, ProgressBar::new(0));
             pb.set_style(
                 ProgressStyle::default_bar()
