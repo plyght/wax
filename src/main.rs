@@ -4,6 +4,7 @@ mod bottle;
 mod builder;
 mod cache;
 mod cask;
+mod cask_uninstall;
 mod catalog_match;
 mod commands;
 mod deps;
