@@ -30,6 +30,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, instrument};
 
 mod libexec;
+mod ruby_formula;
 mod taps;
 
 fn formula_belongs_to_tap(formula: &Formula, tap: &str) -> bool {
@@ -43,6 +44,57 @@ fn formula_belongs_to_tap(formula: &Formula, tap: &str) -> bool {
 }
 
 async fn install_from_source_task(
+    formula: Formula,
+    cellar: &Path,
+    install_mode: InstallMode,
+    state: &InstallState,
+    platform: &str,
+    external_pb: Option<ProgressBar>,
+) -> Result<()> {
+    let ruby_error = if crate::ruby_eval::find_ruby().is_some() {
+        if let Some(pb) = &external_pb {
+            pb.set_message(format!("installing {} with Ruby…", formula.name));
+        }
+        let content = match &formula.rb_path {
+            Some(path) => tokio::fs::read_to_string(path).await.map_err(Into::into),
+            None => FormulaParser::fetch_formula_rb(&formula.name).await,
+        };
+        let result = match content {
+            Ok(content) => {
+                ruby_formula::install(&formula, &content, cellar, install_mode, state, platform)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(installed) => {
+                if let Some(pb) = &external_pb {
+                    pb.finish_and_clear();
+                }
+                crate::signal::println_through_active_multi(format!(
+                    "+ {}@{}",
+                    style(&formula.name).magenta(),
+                    style(&installed.version).dim()
+                ));
+                return Ok(());
+            }
+            Err(e) => {
+                debug!("Ruby install of {} failed: {}", formula.name, e);
+                Some(e)
+            }
+        }
+    } else {
+        None
+    };
+    install_from_source_static(formula, cellar, install_mode, state, platform, external_pb)
+        .await
+        .map_err(|e| match ruby_error {
+            Some(ruby) => WaxError::BuildError(format!("{e} (Ruby installer: {ruby})")),
+            None => e,
+        })
+}
+
+async fn install_from_source_static(
     formula: Formula,
     cellar: &Path,
     install_mode: InstallMode,
@@ -1985,20 +2037,30 @@ pub async fn install_extracted_bottle(
         )?;
     }
 
-    step!("symlinking...");
-    create_symlinks(name, &cellar_version, cellar, false, install_mode).await?;
+    let cached_formula = state
+        .load_formulae_from_cache()
+        .await
+        .ok()
+        .and_then(|formulae| {
+            formulae
+                .into_iter()
+                .find(|f| f.name == name || f.full_name == name)
+        });
+    if cached_formula.as_ref().and_then(|f| f.keg_only) == Some(true) {
+        step!("linking opt (keg-only)...");
+        crate::install::create_opt_link(name, &cellar_version, cellar, install_mode).await?;
+    } else {
+        step!("symlinking...");
+        create_symlinks(name, &cellar_version, cellar, false, install_mode).await?;
+    }
 
     if run_scripts && state.load().await?.contains_key(name) {
         // Auto-run postinstall if possible
-        if let Ok(formulae) = state.load_formulae_from_cache().await {
-            if let Some(f) = formulae
-                .iter()
-                .find(|f| f.name == name || f.full_name == name)
-            {
-                if f.post_install_defined {
-                    let _ = postinstall_impl(name, install_mode, true).await;
-                }
-            }
+        if cached_formula
+            .as_ref()
+            .is_some_and(|f| f.post_install_defined)
+        {
+            let _ = postinstall_impl(name, install_mode, true).await;
         }
     }
 
@@ -2553,6 +2615,35 @@ pub async fn postinstall(
     Ok(())
 }
 
+async fn ruby_post_install(ruby: &Path, name: &str, install_mode: InstallMode) -> Result<()> {
+    let installed = InstallState::new()?
+        .load()
+        .await?
+        .remove(name)
+        .ok_or_else(|| WaxError::NotInstalled(name.to_string()))?;
+    let keg = install_mode
+        .cellar_path()?
+        .join(name)
+        .join(&installed.version);
+    let tmp = TempDir::new()?;
+    let rb_path = tmp.path().join(format!("{name}.rb"));
+    tokio::fs::write(&rb_path, FormulaParser::fetch_formula_rb(name).await?).await?;
+    let log = crate::ruby_eval::run_formula_post_install(
+        ruby,
+        &rb_path,
+        crate::ruby_eval::FormulaInstall {
+            name,
+            version: &installed.version,
+            buildpath: &keg,
+            prefix: &keg,
+            path_prefix: &install_mode.prefix()?,
+        },
+    )
+    .await?;
+    debug!("post_install log for {}:\n{}", name, log);
+    Ok(())
+}
+
 async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -> Result<()> {
     if !quiet {
         println!(
@@ -2587,6 +2678,13 @@ async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -
         }
     }
 
+    if let Some(ruby) = crate::ruby_eval::find_ruby() {
+        match ruby_post_install(&ruby, name, _install_mode).await {
+            Ok(()) => return Ok(()),
+            Err(e) => debug!("Ruby post_install for {} failed: {}", name, e),
+        }
+    }
+
     // Fallback: Acknowledge that native post-install is a gap in parity
     if !quiet {
         debug!("Postinstall for {} is defined but native execution is not yet supported in wax without Homebrew.", name);
@@ -2595,8 +2693,6 @@ async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -
     Ok(())
 }
 
-/// Install a cask from an already-downloaded file (skips download).
-/// `line` must already be switched to an install spinner (see `reuse_download_bar_as_install_spinner`).
 fn cask_has_hook(cask: &crate::api::CaskDetails, hook: &str) -> bool {
     cask.artifacts
         .iter()
@@ -2637,6 +2733,8 @@ async fn run_cask_hook(
     Ok(())
 }
 
+/// Install a cask from an already-downloaded file (skips download).
+/// `line` must already be switched to an install spinner (see `reuse_download_bar_as_install_spinner`).
 async fn install_from_downloaded(
     cask: &crate::api::CaskDetails,
     artifact_type: &str,

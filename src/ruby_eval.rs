@@ -4,11 +4,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::debug;
 
-const SHIM: &str = include_str!("ruby_eval/shim.rb");
+const SHIM: &str = concat!(
+    include_str!("ruby_eval/common.rb"),
+    include_str!("ruby_eval/cask.rb"),
+    include_str!("ruby_eval/formula.rb"),
+    include_str!("ruby_eval/main.rb"),
+);
 const MARKER: &str = "__WAX_JSON__";
 const ERROR_MARKER: &str = "__WAX_ERROR__";
 const HOOK_OK: &str = "__WAX_HOOK_OK__";
 const HOOK_TIMEOUT: Duration = Duration::from_secs(600);
+const BUILD_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn candidates() -> Vec<PathBuf> {
@@ -141,6 +147,112 @@ pub async fn run_hook(
     if !stdout.lines().any(|l| l == HOOK_OK) {
         return Err(WaxError::InstallError(format!(
             "{hook} did not complete: {}",
+            log.lines().last().unwrap_or("no output")
+        )));
+    }
+    Ok(log)
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct FormulaMeta {
+    pub url: Option<String>,
+    pub sha256: Option<String>,
+    pub version: Option<String>,
+    pub using: Option<String>,
+    #[serde(default)]
+    pub keg_only: bool,
+    #[serde(default)]
+    pub patches: bool,
+}
+
+pub async fn eval_formula_meta(ruby: &Path, rb_path: &Path) -> Result<FormulaMeta> {
+    let mut cmd = shim_command(
+        ruby,
+        &["formula".as_ref(), rb_path.as_os_str(), "meta".as_ref()],
+    )?;
+    let output = tokio::time::timeout(TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| {
+            WaxError::ParseError(format!(
+                "Ruby evaluation of {} timed out",
+                rb_path.display()
+            ))
+        })??;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Some(message) = error_message(&stdout) {
+        return Err(WaxError::ParseError(format!(
+            "Ruby could not evaluate {}: {}",
+            rb_path.display(),
+            message
+        )));
+    }
+    let json = parse_output(&stdout).ok_or_else(|| {
+        WaxError::ParseError(format!(
+            "Ruby produced no formula for {}",
+            rb_path.display()
+        ))
+    })?;
+    Ok(serde_json::from_str(json)?)
+}
+
+pub struct FormulaInstall<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+    pub buildpath: &'a Path,
+    pub prefix: &'a Path,
+    pub path_prefix: &'a Path,
+}
+
+pub async fn run_formula_install(
+    ruby: &Path,
+    rb_path: &Path,
+    job: FormulaInstall<'_>,
+) -> Result<String> {
+    run_formula_mode(ruby, rb_path, "install", job).await
+}
+
+pub async fn run_formula_post_install(
+    ruby: &Path,
+    rb_path: &Path,
+    job: FormulaInstall<'_>,
+) -> Result<String> {
+    run_formula_mode(ruby, rb_path, "post_install", job).await
+}
+
+async fn run_formula_mode(
+    ruby: &Path,
+    rb_path: &Path,
+    mode: &str,
+    job: FormulaInstall<'_>,
+) -> Result<String> {
+    let mut cmd = shim_command(
+        ruby,
+        &["formula".as_ref(), rb_path.as_os_str(), mode.as_ref()],
+    )?;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![job.path_prefix.join("bin"), job.path_prefix.join("sbin")];
+    paths.extend(std::env::split_paths(&path));
+    cmd.env("WAX_FORMULA_NAME", job.name)
+        .env("WAX_FORMULA_VERSION", job.version)
+        .env("WAX_BUILDPATH", job.buildpath)
+        .env("WAX_PREFIX", job.prefix)
+        .env("PATH", std::env::join_paths(paths).unwrap_or(path))
+        .current_dir(job.buildpath);
+    let output = tokio::time::timeout(BUILD_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| WaxError::BuildError(format!("{} install timed out", job.name)))??;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let log = String::from_utf8_lossy(&output.stderr).into_owned();
+    if let Some(message) = error_message(&stdout) {
+        return Err(WaxError::BuildError(format!(
+            "{} {} failed: {}",
+            job.name, mode, message
+        )));
+    }
+    if !stdout.lines().any(|l| l == HOOK_OK) {
+        return Err(WaxError::BuildError(format!(
+            "{} install did not complete: {}",
+            job.name,
             log.lines().last().unwrap_or("no output")
         )));
     }
