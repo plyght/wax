@@ -26,6 +26,9 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::instrument;
 
+mod keg_backup;
+use keg_backup::KegBackup;
+
 #[derive(Debug, Clone)]
 pub struct OutdatedPackage {
     pub name: String,
@@ -228,6 +231,7 @@ async fn apply_one_formula_package_upgrade(
         style(&pkg.name).magenta()
     ));
 
+    let backup = KegBackup::take(&pkg.name).await;
     let uninstall_result = uninstall::uninstall_quiet(cache, &pkg.name, false).await;
     spinner.finish_and_clear();
 
@@ -270,16 +274,6 @@ async fn apply_one_formula_package_upgrade(
                 )
                 .await;
                 install_pb.finish_and_clear();
-                if r.is_err() {
-                    multi.suspend(|| {
-                        eprintln!(
-                            "{} upgrade of {} failed. Old version was removed but new version could not be installed.",
-                            style("warning:").yellow().bold(),
-                            style(&pkg.name).magenta()
-                        );
-                        eprintln!("Try: wax install {}@{}", pkg.name, old_version);
-                    });
-                }
                 r
             } else {
                 let (user_flag, global_flag) = match pkg.install_mode {
@@ -323,8 +317,31 @@ async fn apply_one_formula_package_upgrade(
         Err(e) => Err(e),
     };
 
+    let restored = KegBackup::settle(backup, &result).await;
+    if result.is_err() {
+        multi.suspend(|| report_failed_upgrade(&pkg.name, &old_version, restored));
+    }
+
     clear_current_op();
     result
+}
+
+fn report_failed_upgrade(name: &str, old_version: &str, restored: bool) {
+    if restored {
+        eprintln!(
+            "{} upgrade of {} failed; kept {}",
+            style("warning:").yellow().bold(),
+            style(name).magenta(),
+            style(old_version).dim()
+        );
+    } else {
+        eprintln!(
+            "{} upgrade of {} failed. Old version was removed but new version could not be installed.",
+            style("warning:").yellow().bold(),
+            style(name).magenta()
+        );
+        eprintln!("Try: wax install {}@{}", name, old_version);
+    }
 }
 
 async fn upgrade_all(
@@ -1149,7 +1166,12 @@ async fn upgrade_formula_internal(
 ) -> Result<()> {
     let _critical = CriticalSection::new();
 
-    uninstall::uninstall_quiet(cache, installed_name, false).await?;
+    let backup = KegBackup::take(installed_name).await;
+    let removed = uninstall::uninstall_quiet(cache, installed_name, false).await;
+    if removed.is_err() {
+        KegBackup::settle(backup, &removed).await;
+        return removed;
+    }
 
     let (user_flag, global_flag) = match install_mode {
         Some(InstallMode::User) => (true, false),
@@ -1177,6 +1199,10 @@ async fn upgrade_formula_internal(
     )
     .await;
 
+    if KegBackup::settle(backup, &install_result).await {
+        report_failed_upgrade(installed_name, old_version, true);
+        return install_result;
+    }
     if let Err(e) = install_result {
         eprintln!(
             "{} upgrade of {} failed, attempting recovery…",
@@ -1207,13 +1233,7 @@ async fn upgrade_formula_internal(
                 style("✗").red(),
                 recovery_err
             );
-            eprintln!(
-                "{} upgrade of {} failed. Old version was removed but new version could not be installed.",
-                style("warning:").yellow().bold(),
-                style(installed_name).magenta()
-            );
-            eprintln!("Try: wax install {}@{}", installed_name, old_version);
-            return Err(e);
+            report_failed_upgrade(installed_name, old_version, false);
         }
         return Err(e);
     }
