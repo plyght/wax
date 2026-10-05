@@ -53,6 +53,16 @@ impl BottleStable {
     pub fn file_for_platform(&self, platform: &str) -> Option<&BottleFile> {
         self.files
             .get(platform)
+            .or_else(|| {
+                let (arch, codename) = platform
+                    .strip_prefix("arm64_")
+                    .map_or(("", platform), |rest| ("arm64_", rest));
+                let newest = MACOS_CODENAMES.iter().position(|c| *c == codename)?;
+                MACOS_CODENAMES[..newest]
+                    .iter()
+                    .rev()
+                    .find_map(|older| self.files.get(&format!("{arch}{older}")))
+            })
             .or_else(|| self.files.get("all"))
             .or_else(|| match platform {
                 "arm64_linux" => self.files.get("aarch64_linux"),
@@ -75,6 +85,16 @@ impl BottleStable {
         }
     }
 }
+
+pub(crate) const MACOS_CODENAMES: &[&str] = &[
+    "big_sur",
+    "monterey",
+    "ventura",
+    "sonoma",
+    "sequoia",
+    "tahoe",
+    "golden_gate",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BottleFile {
@@ -293,6 +313,31 @@ mod bottle_stable_tests {
             .file_for_platform("aarch64_linux")
             .expect("arm64_linux alias");
         assert_eq!(f.sha256, "deadbeef");
+    }
+
+    #[test]
+    fn file_for_platform_falls_back_to_newest_older_macos_bottle() {
+        let mut files = HashMap::new();
+        for tag in ["arm64_sonoma", "arm64_tahoe", "sequoia"] {
+            files.insert(
+                tag.into(),
+                BottleFile {
+                    url: tag.into(),
+                    sha256: tag.into(),
+                },
+            );
+        }
+        let stable = BottleStable {
+            rebuild: 0,
+            cellar: None,
+            files,
+        };
+        let pick = |p: &str| stable.file_for_platform(p).map(|f| f.url.as_str());
+        assert_eq!(pick("arm64_golden_gate"), Some("arm64_tahoe"));
+        assert_eq!(pick("arm64_sequoia"), Some("arm64_sonoma"));
+        assert_eq!(pick("arm64_ventura"), None);
+        assert_eq!(pick("golden_gate"), Some("sequoia"));
+        assert_eq!(pick("x86_64_linux"), None);
     }
 
     #[test]

@@ -57,7 +57,7 @@ class WaxMacOSVersion
   SYMBOLS = {
     el_capitan: "10.11", sierra: "10.12", high_sierra: "10.13", mojave: "10.14",
     catalina: "10.15", big_sur: "11", monterey: "12", ventura: "13", sonoma: "14",
-    sequoia: "15", tahoe: "26"
+    sequoia: "15", tahoe: "26", golden_gate: "27"
   }.freeze
 
   def self.from(value)
