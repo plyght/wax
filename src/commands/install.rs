@@ -29,6 +29,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{debug, info, instrument};
 
+mod libexec;
+
 fn formula_belongs_to_tap(formula: &Formula, tap: &str) -> bool {
     if tap == "homebrew/core" {
         return !formula.full_name.contains('/');
@@ -89,11 +91,24 @@ async fn install_from_source_task(
 
     // Binary-release formula: `bin.install` entries with no build system.
     // Download the platform-appropriate pre-built tarball and copy the named files.
-    if !parsed_formula.bin_installs.is_empty()
+    let libexec_steps = libexec::parse(
+        &FormulaParser::resolve_install_block(&ruby_content).unwrap_or_default(),
+        &parsed_formula.source.version,
+    );
+    if (!parsed_formula.bin_installs.is_empty() || !libexec_steps.is_empty())
         && parsed_formula.build_system == BuildSystem::Unknown
     {
-        let (dl_url, dl_sha) =
-            FormulaParser::extract_platform_source(&ruby_content).ok_or_else(|| {
+        let top_level_source = (!parsed_formula.source.url.is_empty()
+            && !parsed_formula.source.sha256.is_empty())
+        .then(|| {
+            (
+                parsed_formula.source.url.clone(),
+                parsed_formula.source.sha256.clone(),
+            )
+        });
+        let (dl_url, dl_sha) = FormulaParser::extract_platform_source(&ruby_content)
+            .or(top_level_source)
+            .ok_or_else(|| {
                 WaxError::BuildError(format!(
                     "Formula '{}' has no pre-built binary for this platform (os={}, arch={})",
                     formula.name,
@@ -193,6 +208,10 @@ async fn install_from_source_task(
                 missing_bins.join(", ")
             )));
         }
+        let version = &parsed_formula.source.version;
+        crate::error::validate_version(version)?;
+        let formula_cellar = cellar.join(&formula.name).join(version);
+        copied_bins += libexec::apply(&libexec_steps, &src_dir, &install_prefix, &formula_cellar)?;
         if copied_bins == 0 {
             return Err(WaxError::BuildError(format!(
                 "Formula '{}' is broken: no bin.install targets were installed",
@@ -201,9 +220,6 @@ async fn install_from_source_task(
         }
 
         spinner.set_message("Installing to Cellar...");
-        let version = &parsed_formula.source.version;
-        crate::error::validate_version(version)?;
-        let formula_cellar = cellar.join(&formula.name).join(version);
         tokio::fs::create_dir_all(&formula_cellar).await?;
         copy_dir_all(&install_prefix, &formula_cellar)?;
         create_symlinks(&formula.name, version, cellar, false, install_mode).await?;

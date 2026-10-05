@@ -105,7 +105,10 @@ impl FormulaParser {
         let license = Self::extract_field(ruby_content, "license").ok();
 
         let version = Self::resolve_version(ruby_content, &url, &head_url, &platform_source);
-        let (url, sha256) = Self::resolve_url_and_sha(url, sha256, &platform_source);
+        let (url, sha256) = match platform::select_url_sha(ruby_content, platform::Target::host()) {
+            Some(selected) => selected,
+            None => Self::resolve_url_and_sha(url, sha256, &platform_source),
+        };
 
         let runtime_dependencies = Self::extract_dependencies(ruby_content, false);
         let build_dependencies = Self::extract_dependencies(ruby_content, true);
@@ -206,7 +209,7 @@ impl FormulaParser {
         }
     }
 
-    fn resolve_install_block(content: &str) -> Result<String> {
+    pub(crate) fn resolve_install_block(content: &str) -> Result<String> {
         Self::extract_install_block(content)
             .or_else(|_| Self::extract_define_method_install_block(content))
             .or_else(|_| {
