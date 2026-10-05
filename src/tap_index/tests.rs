@@ -190,8 +190,12 @@ async fn corrupt_cache_recovers_and_failed_read_preserves_last_snapshot() {
     assert_eq!(store.refresh(&tap).await.unwrap().formulae().len(), 1);
     let bytes = fs::read(&store.index_path).await.unwrap();
     fs::write(&path, [0xff, 0xfe]).await.unwrap();
-    assert!(store.refresh(&tap).await.is_err());
+    assert_eq!(store.refresh(&tap).await.unwrap().formulae().len(), 1);
     assert_eq!(fs::read(&store.index_path).await.unwrap(), bytes);
+    fs::write(tap.path.join("Formula/latin1.rb"), [0xff, 0xfe])
+        .await
+        .unwrap();
+    assert_eq!(store.refresh(&tap).await.unwrap().formulae().len(), 1);
     fs::remove_dir_all(&tap.path).await.unwrap();
     assert!(store.refresh(&tap).await.is_err());
     assert_eq!(fs::read(&store.index_path).await.unwrap(), bytes);

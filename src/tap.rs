@@ -374,14 +374,8 @@ impl TapManager {
     pub async fn remove_tap(&mut self, spec: &str) -> Result<()> {
         info!("Removing tap: {}", spec);
 
-        let tap_to_remove = Tap::from_spec(spec)?;
-        let full_name = &tap_to_remove.full_name;
-
-        let tap = self
-            .taps
-            .get(full_name)
-            .ok_or_else(|| WaxError::TapError(format!("Tap {} not found", full_name)))?
-            .clone();
+        let tap = self.get_tap(spec)?;
+        let full_name = &tap.full_name;
 
         match &tap.kind {
             TapKind::GitHub { .. } | TapKind::Git { .. } => {

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use tracing::debug;
 
 // Bump whenever the Ruby parser or serialized index contract changes.
 const INDEX_VERSION: u32 = 1;
@@ -76,6 +77,27 @@ impl TapIndexStore {
         .map_err(|e| WaxError::CacheError(format!("tap lock task: {e}")))?
     }
 
+    /// Non-blocking variant for readers, so lookups never wait on a fetch.
+    pub(crate) async fn try_lock(&self) -> Result<Option<std::fs::File>> {
+        let path = self.lock_path.clone();
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)?;
+            match file.try_lock() {
+                Ok(()) => Ok(Some(file)),
+                Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+                Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+            }
+        })
+        .await
+        .map_err(|e| WaxError::CacheError(format!("tap lock task: {e}")))?
+    }
+
     pub(crate) async fn invalidate(&self) -> Result<()> {
         let _lock = self.lock().await?;
         match fs::remove_file(&self.index_path).await {
@@ -110,6 +132,15 @@ impl TapIndexStore {
             let inputs = read_inputs(tap).await?;
             let mut entries = BTreeMap::new();
             let mut changed = previous.is_none();
+            // Files that became unreadable keep their last good entry; new
+            // unreadable files are skipped like the direct loaders do.
+            if let Some(previous) = &previous {
+                for (path, entry) in &previous.entries {
+                    if !inputs.contains_key(path) && path.exists() {
+                        entries.insert(path.clone(), entry.clone());
+                    }
+                }
+            }
             for (path, input) in &inputs {
                 let old = previous.as_ref().and_then(|index| index.entries.get(path));
                 let entry = match old {
@@ -158,7 +189,16 @@ impl TapIndexStore {
             let mut staged = tempfile::NamedTempFile::new_in(parent)?;
             staged.write_all(&bytes)?;
             staged.as_file().sync_all()?;
-            staged.persist(path).map_err(|e| e.error)?;
+            staged.persist(&path).map_err(|e| e.error)?;
+            // Drop pre-index taps/<name>.json caches; nothing reads them now.
+            if let Some(legacy) = parent.parent() {
+                for entry in std::fs::read_dir(legacy)?.flatten() {
+                    let legacy_path = entry.path();
+                    if legacy_path.extension().is_some_and(|ext| ext == "json") {
+                        let _ = std::fs::remove_file(legacy_path);
+                    }
+                }
+            }
             Ok(())
         })
         .await
@@ -249,7 +289,10 @@ async fn read_inputs(tap: &Tap) -> Result<BTreeMap<PathBuf, Input>> {
     }
     let mut inputs = BTreeMap::new();
     for (path, kind) in paths {
-        let content = fs::read_to_string(&path).await?;
+        let Ok(content) = fs::read_to_string(&path).await else {
+            debug!("Skipping unreadable tap file {}", path.display());
+            continue;
+        };
         let sha256 = sha256_digest_hex(&content);
         inputs.insert(
             path,

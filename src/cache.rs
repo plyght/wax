@@ -433,7 +433,11 @@ impl Cache {
         let mut indexes = Vec::with_capacity(taps.len());
         for tap in taps {
             let store = TapIndexStore::new(&self.cache_dir, &tap.full_name);
-            let _lock = store.lock().await?;
+            let Some(_lock) = store.try_lock().await? else {
+                debug!("Tap {} is updating; using last snapshot", tap.full_name);
+                indexes.push((tap.clone(), store.load(tap).await?));
+                continue;
+            };
             let index = match store.refresh(tap).await {
                 Ok(index) => Some(index),
                 Err(error) => {
@@ -791,7 +795,7 @@ end
     }
 
     #[tokio::test]
-    async fn first_index_failure_uses_existing_loader_for_requested_kind() {
+    async fn unreadable_tap_files_are_skipped_and_index_is_published() {
         let (_tmp, cache, manager, tap) = tap_fixture();
         fs::write(tap.path.join("Formula/example.rb"), TAP_FORMULA)
             .await
@@ -802,6 +806,12 @@ end
         fs::write(tap.path.join("Casks/example.rb"), TAP_CASK)
             .await
             .unwrap();
+        fs::write(tap.path.join("Casks/unreadable.rb"), [0xff, 0xfe])
+            .await
+            .unwrap();
+        fs::create_dir_all(cache.taps_cache_dir()).await.unwrap();
+        let legacy = cache.tap_cache_path(&tap.full_name);
+        fs::write(&legacy, "[]").await.unwrap();
         assert_eq!(
             cache
                 .load_all_formulae_with_taps(&manager)
@@ -818,13 +828,19 @@ end
                 .len(),
             1
         );
-        assert!(!cache.cache_dir.join("taps/index-v1").exists());
-        fs::remove_file(tap.path.join("Formula/unreadable.rb"))
+        assert!(cache.cache_dir.join("taps/index-v1").exists());
+        assert!(!legacy.exists());
+    }
+
+    #[tokio::test]
+    async fn readers_use_last_snapshot_while_tap_is_locked() {
+        let (_tmp, cache, manager, tap) = tap_fixture();
+        fs::write(tap.path.join("Formula/example.rb"), TAP_FORMULA)
             .await
             .unwrap();
-        fs::write(tap.path.join("Casks/unreadable.rb"), [0xff, 0xfe])
-            .await
-            .unwrap();
+        cache.load_all_formulae_with_taps(&manager).await.unwrap();
+        let store = TapIndexStore::new(&cache.cache_dir, &tap.full_name);
+        let _held = store.lock().await.unwrap();
         fs::write(
             tap.path.join("Formula/example.rb"),
             TAP_FORMULA.replace("1.0", "2.0"),
@@ -835,22 +851,8 @@ end
             cache.load_all_formulae_with_taps(&manager).await.unwrap()[0]
                 .versions
                 .stable,
-            "2.0"
+            "1.0"
         );
-        assert!(cache.load_all_casks_with_taps(&manager).await.is_err());
-        assert!(!cache.cache_dir.join("taps/index-v1").exists());
-        fs::remove_file(tap.path.join("Casks/unreadable.rb"))
-            .await
-            .unwrap();
-        assert_eq!(
-            cache
-                .load_all_casks_with_taps(&manager)
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(cache.cache_dir.join("taps/index-v1").exists());
     }
 
     #[test]

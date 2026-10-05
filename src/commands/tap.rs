@@ -50,9 +50,8 @@ pub async fn tap(
             println!("{} tap {}", style("+").green(), style(&tap).magenta());
         }
         Some(crate::TapAction::Remove { tap }) => {
-            let tap_spec = crate::tap::Tap::from_spec(&tap)?;
-            let full_name = tap_spec.full_name.clone();
-            manager.remove_tap(&tap).await?;
+            let full_name = manager.get_tap(&tap)?.full_name;
+            manager.remove_tap(&full_name).await?;
             if let Some(cache) = cache {
                 cache.invalidate_tap_cache(&full_name).await?;
             }
