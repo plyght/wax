@@ -461,7 +461,25 @@ async fn stage_binary_release_download(
     let extract_dir = temp_dir.join("extracted");
     tokio::fs::create_dir_all(&extract_dir).await?;
 
-    if binary_release_url_is_archive(dl_url) {
+    if binary_release_url_is_zip(dl_url) {
+        let archive_path = temp_dir.join(binary_release_download_filename(dl_url, formula_name));
+        tokio::fs::write(&archive_path, bytes).await?;
+
+        let unzip_output = tokio::process::Command::new("unzip")
+            .arg("-q")
+            .arg("-o")
+            .arg(&archive_path)
+            .arg("-d")
+            .arg(&extract_dir)
+            .output()
+            .await?;
+        if !unzip_output.status.success() {
+            return Err(WaxError::BuildError(format!(
+                "Failed to extract zip: {}",
+                String::from_utf8_lossy(&unzip_output.stderr)
+            )));
+        }
+    } else if binary_release_url_is_archive(dl_url) {
         let archive_path = temp_dir.join(binary_release_download_filename(dl_url, formula_name));
         tokio::fs::write(&archive_path, bytes).await?;
 
@@ -488,6 +506,14 @@ async fn stage_binary_release_download(
     }
 
     Ok(extract_dir)
+}
+
+fn binary_release_url_is_zip(url: &str) -> bool {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase()
+        .ends_with(".zip")
 }
 
 fn binary_release_url_is_archive(url: &str) -> bool {
@@ -3056,6 +3082,34 @@ mod tests {
         .unwrap();
 
         assert_eq!(checked, vec![version_dir]);
+    }
+
+    #[tokio::test]
+    async fn binary_release_staging_extracts_zip_downloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut zip = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip));
+            writer
+                .start_file::<_, ()>("bun-darwin-aarch64/bun", Default::default())
+                .unwrap();
+            std::io::Write::write_all(&mut writer, b"bin").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let src_dir = stage_binary_release_download(
+            &zip,
+            "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-darwin-aarch64.zip",
+            "bun",
+            tmp.path(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(src_dir.join("bun-darwin-aarch64/bun")).unwrap(),
+            b"bin"
+        );
     }
 
     #[tokio::test]
