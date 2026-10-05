@@ -527,10 +527,22 @@ async fn uninstall_cask(
         }
     }
 
-    let caskroom = CaskState::caskroom_dir();
-    let version_dir = caskroom.join(cask_name).join(&cask.version);
-    if version_dir.exists() {
-        let _ = tokio::fs::remove_dir_all(&version_dir).await;
+    let mut caskrooms = vec![CaskState::global_caskroom_dir()];
+    caskrooms.extend(CaskState::user_caskroom_dir().ok());
+    for caskroom in caskrooms {
+        let rack = caskroom.join(short_name);
+        let version_dir = rack.join(&cask.version);
+        if version_dir.exists() {
+            let _ = tokio::fs::remove_dir_all(&version_dir).await;
+        }
+        let only_metadata = std::fs::read_dir(&rack).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .all(|e| e.file_name().to_string_lossy() == ".metadata")
+        });
+        if only_metadata {
+            let _ = tokio::fs::remove_dir_all(&rack).await;
+        }
     }
 
     state.remove(cask_name).await?;

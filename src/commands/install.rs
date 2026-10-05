@@ -1035,6 +1035,10 @@ pub(crate) async fn install_impl(
         external_pb,
     } = args;
 
+    if user {
+        crate::cask::set_user_scope(true);
+    }
+
     cache.ensure_fresh().await?;
 
     if cask {
