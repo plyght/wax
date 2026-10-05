@@ -159,3 +159,165 @@ end
         .await
         .is_err());
 }
+
+const FORMULA: &str = r##"
+class Fixture < Formula
+  desc "Fixture formula"
+  homepage "https://example.invalid/"
+  version "2.1.0"
+  license "MIT"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://example.invalid/fixture-#{version}-darwin-arm64.tar.gz"
+      sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    else
+      url "https://example.invalid/fixture-#{version}-darwin-x64.tar.gz"
+      sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    end
+  end
+  on_linux do
+    url "https://example.invalid/fixture-#{version}-linux.tar.gz"
+    sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  end
+
+  head do
+    url "https://example.invalid/fixture.git", branch: "main"
+  end
+
+  depends_on "go" => :build
+  depends_on "ripgrep"
+
+  def install
+    inreplace "fixture.sh", "@VERSION@", version.to_s
+    libexec.install "fixture.sh", "data"
+    bin.write_exec_script libexec/"fixture.sh"
+    bin.install_symlink libexec/"fixture.sh" => "fx"
+    (share/"doc").install "README" if File.exist?("README")
+    generate_completions_from_executable(libexec/"fixture.sh", "completion")
+    (etc/"never").mkpath if build.with?("never")
+  end
+end
+"##;
+
+#[tokio::test]
+async fn formula_meta_resolves_platform_url_and_ignores_head() {
+    let Some(ruby) = find_ruby() else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let rb = tmp.path().join("fixture.rb");
+    std::fs::write(&rb, FORMULA).unwrap();
+    let meta = eval_formula_meta(&ruby, &rb).await.unwrap();
+    let expected = match (cfg!(target_os = "macos"), cfg!(target_arch = "aarch64")) {
+        (true, true) => "https://example.invalid/fixture-2.1.0-darwin-arm64.tar.gz",
+        (true, false) => "https://example.invalid/fixture-2.1.0-darwin-x64.tar.gz",
+        _ => "https://example.invalid/fixture-2.1.0-linux.tar.gz",
+    };
+    assert_eq!(meta.url.as_deref(), Some(expected));
+    assert_eq!(meta.version.as_deref(), Some("2.1.0"));
+    assert!(!meta.patches);
+    assert!(!meta.keg_only);
+}
+
+#[tokio::test]
+async fn formula_install_runs_homebrew_install_api() {
+    let Some(ruby) = find_ruby() else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let rb = tmp.path().join("fixture.rb");
+    std::fs::write(&rb, FORMULA).unwrap();
+    let build = tmp.path().join("build");
+    std::fs::create_dir_all(build.join("data")).unwrap();
+    std::fs::write(
+        build.join("fixture.sh"),
+        "#!/bin/sh\nif [ \"$1\" = completion ]; then echo \"complete $2\"; else echo @VERSION@; fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            build.join("fixture.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    std::fs::write(build.join("README"), "readme").unwrap();
+    let keg = tmp.path().join("Cellar/fixture/2.1.0");
+    std::fs::create_dir_all(&keg).unwrap();
+
+    run_formula_install(
+        &ruby,
+        &rb,
+        FormulaInstall {
+            name: "fixture",
+            version: "2.1.0",
+            buildpath: &build,
+            prefix: &keg,
+            path_prefix: tmp.path(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let script = std::fs::read_to_string(keg.join("libexec/fixture.sh")).unwrap();
+    assert!(script.contains("echo 2.1.0"));
+    assert!(std::fs::read_to_string(keg.join("bin/fixture.sh"))
+        .unwrap()
+        .contains(&keg.join("libexec/fixture.sh").display().to_string()));
+    assert_eq!(
+        std::fs::read_link(keg.join("bin/fx")).unwrap(),
+        std::path::Path::new("../libexec/fixture.sh")
+    );
+    assert!(keg.join("libexec/data").is_dir());
+    assert!(keg.join("share/doc/README").exists());
+    assert_eq!(
+        std::fs::read_to_string(keg.join("share/zsh/site-functions/_fixture")).unwrap(),
+        "complete zsh\n"
+    );
+}
+
+#[tokio::test]
+async fn formula_install_reports_unsupported_api_and_patches() {
+    let Some(ruby) = find_ruby() else {
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let rb = tmp.path().join("odd.rb");
+    std::fs::write(
+        &rb,
+        r##"
+class Odd < Formula
+  url "https://example.invalid/odd-1.0.tar.gz"
+  sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  patch do
+    url "https://example.invalid/fix.patch"
+  end
+  def install
+    some_future_helper "x"
+  end
+end
+"##,
+    )
+    .unwrap();
+    assert!(eval_formula_meta(&ruby, &rb).await.unwrap().patches);
+    let keg = tmp.path().join("keg");
+    std::fs::create_dir_all(&keg).unwrap();
+    let err = run_formula_install(
+        &ruby,
+        &rb,
+        FormulaInstall {
+            name: "odd",
+            version: "1.0",
+            buildpath: tmp.path(),
+            prefix: &keg,
+            path_prefix: tmp.path(),
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("some_future_helper"), "{err}");
+}

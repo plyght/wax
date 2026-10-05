@@ -290,7 +290,7 @@ impl FormulaParser {
         )))
     }
 
-    fn extract_version_from_url(url: &str) -> String {
+    pub(crate) fn extract_version_from_url(url: &str) -> String {
         let re = RE_VERSION.get_or_init(|| {
             Regex::new(r"(?:[-_/]|^)v?(?P<version>\d+\.\d+(?:\.\d+)*(?:[_-][a-z\d]+)*)").unwrap()
         });
