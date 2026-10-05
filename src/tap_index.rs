@@ -270,16 +270,8 @@ async fn read_inputs(tap: &Tap) -> Result<BTreeMap<PathBuf, Input>> {
             (tap.formula_dir(), FileKind::Formula),
             (tap.cask_dir(), FileKind::Cask),
         ] {
-            let mut children = match fs::read_dir(dir).await {
-                Ok(children) => children,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
-            };
-            while let Some(child) = children.next_entry().await? {
-                let path = child.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("rb") {
-                    paths.push((path, kind));
-                }
+            for path in crate::tap::tap_rb_files(tap, &dir).await? {
+                paths.push((path, kind));
             }
         }
     }

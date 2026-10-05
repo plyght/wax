@@ -577,13 +577,7 @@ impl TapManager {
                 }
 
                 let mut formulae = Vec::new();
-                let mut entries = fs::read_dir(&formula_dir).await?;
-
-                while let Some(entry) = entries.next_entry().await? {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) != Some("rb") {
-                        continue;
-                    }
+                for path in tap_rb_files(tap, &formula_dir).await? {
                     let content = match fs::read_to_string(&path).await {
                         Ok(c) => c,
                         Err(e) => {
@@ -666,13 +660,7 @@ impl TapManager {
         }
 
         let mut casks = Vec::new();
-        let mut entries = fs::read_dir(&cask_dir).await?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("rb") {
-                continue;
-            }
+        for path in tap_rb_files(tap, &cask_dir).await? {
             let token = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -696,6 +684,33 @@ impl TapManager {
 
         Ok(casks)
     }
+}
+
+pub(crate) async fn tap_rb_files(tap: &Tap, dir: &Path) -> Result<Vec<PathBuf>> {
+    let shard = !matches!(tap.full_name.as_str(), "homebrew/core" | "homebrew/cask")
+        && dir != tap.path.as_path();
+    let mut files = Vec::new();
+    let mut entries = match fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(files),
+        Err(e) => return Err(e.into()),
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("rb") {
+            files.push(path);
+        } else if shard && entry.file_name().len() == 1 && entry.file_type().await?.is_dir() {
+            let mut shard_entries = fs::read_dir(&path).await?;
+            while let Some(child) = shard_entries.next_entry().await? {
+                let child = child.path();
+                if child.extension().and_then(|s| s.to_str()) == Some("rb") {
+                    files.push(child);
+                }
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 impl Default for TapManager {

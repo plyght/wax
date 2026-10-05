@@ -339,3 +339,25 @@ async fn incremental_index_matches_existing_formula_and_cask_loaders() {
         serde_json::to_value(manager.load_casks_from_tap(&tap).await.unwrap()).unwrap()
     );
 }
+
+#[tokio::test]
+async fn sharded_letter_directories_are_indexed() {
+    let (_tmp, tap, store) = fixture();
+    fs::create_dir_all(tap.path.join("Casks/b")).await.unwrap();
+    fs::create_dir_all(tap.path.join("Formula/e"))
+        .await
+        .unwrap();
+    fs::write(tap.path.join("Casks/b/example.rb"), cask("1.0"))
+        .await
+        .unwrap();
+    fs::write(tap.path.join("Formula/e/example.rb"), formula("1.0"))
+        .await
+        .unwrap();
+    let _lock = store.lock().await.unwrap();
+    let index = store.refresh(&tap).await.unwrap();
+    assert_eq!(index.casks().len(), 1);
+    assert_eq!(index.formulae().len(), 1);
+    let manager = TapManager::for_test(tap.clone(), tap.path.join("taps.json"));
+    assert_eq!(manager.load_casks_from_tap(&tap).await.unwrap().len(), 1);
+    assert_eq!(manager.load_formulae_from_tap(&tap).await.unwrap().len(), 1);
+}
