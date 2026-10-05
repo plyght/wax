@@ -738,9 +738,6 @@ impl BottleDownloader {
         Ok(())
     }
 
-    /// Path checks above are textual; symlinks laid down by earlier entries can
-    /// still redirect a later entry. Resolve the deepest existing ancestor on
-    /// disk before creating anything, and never write through a symlink.
     fn ensure_on_disk_inside(full_path: &Path, canonical_dest: &Path) -> Result<()> {
         let mut ancestor = full_path.parent();
         while let Some(dir) = ancestor {

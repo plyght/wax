@@ -77,7 +77,6 @@ impl TapIndexStore {
         .map_err(|e| WaxError::CacheError(format!("tap lock task: {e}")))?
     }
 
-    /// Non-blocking variant for readers, so lookups never wait on a fetch.
     pub(crate) async fn try_lock(&self) -> Result<Option<std::fs::File>> {
         let path = self.lock_path.clone();
         tokio::task::spawn_blocking(move || {
@@ -132,8 +131,6 @@ impl TapIndexStore {
             let inputs = read_inputs(tap).await?;
             let mut entries = BTreeMap::new();
             let mut changed = previous.is_none();
-            // Files that became unreadable keep their last good entry; new
-            // unreadable files are skipped like the direct loaders do.
             if let Some(previous) = &previous {
                 for (path, entry) in &previous.entries {
                     if !inputs.contains_key(path) && path.exists() {
@@ -190,7 +187,6 @@ impl TapIndexStore {
             staged.write_all(&bytes)?;
             staged.as_file().sync_all()?;
             staged.persist(&path).map_err(|e| e.error)?;
-            // Drop pre-index taps/<name>.json caches; nothing reads them now.
             if let Some(legacy) = parent.parent() {
                 for entry in std::fs::read_dir(legacy)?.flatten() {
                     let legacy_path = entry.path();
