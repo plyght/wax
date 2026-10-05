@@ -521,7 +521,7 @@ impl CaskState {
 
         // Try to create symlinks inside version_dir based on app_name or binary_paths
         if let Some(app_name) = &cask.app_name {
-            let app_path = PathBuf::from("/Applications").join(app_name);
+            let app_path = CaskInstaller::applications_dir()?.join(app_name);
             let link_path = version_dir.join(app_name);
             if app_path.exists() && !link_path.exists() {
                 #[cfg(unix)]
@@ -673,7 +673,7 @@ pub async fn relink_installed_cask(cask: &InstalledCask) -> Result<Vec<PathBuf>>
     if let Some(app_name) = &cask.app_name {
         #[cfg(target_os = "macos")]
         {
-            let app_path = PathBuf::from("/Applications").join(app_name);
+            let app_path = CaskInstaller::applications_dir()?.join(app_name);
             let link_path = version_dir.join(app_name);
             if app_path.exists() {
                 replace_path_with_link(&app_path, &link_path).await?;
@@ -1087,7 +1087,35 @@ impl CaskInstaller {
         }
     }
 
+    fn appdir_override(wax_appdir: Option<&str>, cask_opts: Option<&str>) -> Option<PathBuf> {
+        let raw = wax_appdir
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                let opts = cask_opts?;
+                let mut words = opts.split_whitespace();
+                while let Some(word) = words.next() {
+                    if let Some(value) = word.strip_prefix("--appdir=") {
+                        return Some(value.trim_matches(['"', '\'']).to_string());
+                    }
+                    if word == "--appdir" {
+                        return words
+                            .next()
+                            .map(|v| v.trim_matches(['"', '\'']).to_string());
+                    }
+                }
+                None
+            })?;
+        Some(PathBuf::from(shellexpand::tilde(&raw).into_owned()))
+    }
+
     pub fn applications_dir() -> Result<PathBuf> {
+        if let Some(dir) = Self::appdir_override(
+            std::env::var("WAX_APPDIR").ok().as_deref(),
+            std::env::var("HOMEBREW_CASK_OPTS").ok().as_deref(),
+        ) {
+            return Ok(dir);
+        }
         #[cfg(target_os = "macos")]
         {
             Ok(PathBuf::from("/Applications"))
@@ -1150,6 +1178,7 @@ impl CaskInstaller {
         let allowed_prefixes: Vec<PathBuf> = vec![
             crate::bottle::homebrew_prefix(),
             staging.staging_root.clone(),
+            Self::applications_dir().unwrap_or_else(|_| PathBuf::from("/Applications")),
             #[cfg(target_os = "macos")]
             PathBuf::from("/Applications"),
             #[cfg(not(target_os = "macos"))]
@@ -1914,6 +1943,25 @@ pub fn detect_artifact_type_from_disposition(disposition: &str) -> Option<&'stat
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn appdir_override_honours_wax_env_and_homebrew_cask_opts() {
+        let f = CaskInstaller::appdir_override;
+        assert_eq!(f(None, None), None);
+        assert_eq!(
+            f(Some("/tmp/apps"), Some("--appdir=/x")),
+            Some("/tmp/apps".into())
+        );
+        assert_eq!(
+            f(None, Some("--no-quarantine --appdir=/Users/me/Apps")),
+            Some("/Users/me/Apps".into())
+        );
+        assert_eq!(
+            f(None, Some("--appdir '/opt/apps'")),
+            Some("/opt/apps".into())
+        );
+        assert_eq!(f(Some(""), Some("--no-quarantine")), None);
+    }
 
     #[test]
     fn test_detect_artifact_type_from_disposition() {

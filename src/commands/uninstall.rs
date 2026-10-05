@@ -402,6 +402,9 @@ async fn uninstall_cask(
             // On Linux: check ~/Applications only (no system /Applications).
             #[cfg(target_os = "macos")]
             let candidates: Vec<std::path::PathBuf> = vec![
+                crate::cask::CaskInstaller::applications_dir()
+                    .map(|d| d.join(&app_basename))
+                    .unwrap_or_default(),
                 std::path::PathBuf::from("/Applications").join(&app_basename),
                 dirs::home_dir()
                     .map(|h| h.join("Applications").join(&app_basename))
