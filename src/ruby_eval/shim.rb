@@ -1,4 +1,7 @@
 require "json"
+require "open3"
+require "pathname"
+require "fileutils"
 
 $stdout.sync = true
 $wax_real_stdout = $stdout.dup
@@ -175,7 +178,10 @@ class WaxCask
     @version = nil
     @sha256 = nil
     @url = nil
+    @hooks = {}
   end
+
+  attr_reader :hooks
 
   def version(value = nil)
     return @version if value.nil?
@@ -235,7 +241,9 @@ class WaxCask
 
   %i[preflight postflight uninstall_preflight uninstall_postflight].each do |hook|
     define_method(hook) do |&block|
-      @artifacts << { hook.to_s => block.source_location.join(":") } if block
+      next unless block
+      @hooks[hook.to_s] = block
+      @artifacts << { hook.to_s => block.source_location.join(":") }
     end
   end
 
@@ -289,6 +297,76 @@ class WaxCask
   end
 end
 
+class WaxCommandResult
+  attr_reader :stdout, :stderr, :exit_status
+
+  def initialize(stdout, stderr, status)
+    @stdout = stdout
+    @stderr = stderr
+    @exit_status = status.exitstatus
+    @success = status.success?
+  end
+
+  def success?; @success; end
+  def merged_output; stdout + stderr; end
+  def to_s; stdout; end
+end
+
+class WaxHook
+  def initialize(cask)
+    @cask = cask
+  end
+
+  def token; @cask.token; end
+  def version; @cask.version; end
+  def appdir; Pathname.new(@cask.appdir); end
+  def staged_path; Pathname.new(ENV["WAX_STAGED_PATH"] || @cask.staged_path); end
+  def caskroom_path; Pathname.new(@cask.caskroom_path); end
+
+  def system_command(executable, args: [], sudo: false, must_succeed: false, print_stdout: false,
+                     print_stderr: true, input: nil, env: {}, **_rest)
+    command = [executable.to_s, *Array(args).map(&:to_s)]
+    command = ["/usr/bin/sudo", "-E", "--", *command] if sudo
+    environment = env.each_with_object({}) { |(k, v), h| h[k.to_s] = v.nil? ? nil : v.to_s }
+    stdout, stderr, status = Open3.capture3(environment, *command, stdin_data: Array(input).join)
+    $stderr.print(stdout) if print_stdout
+    $stderr.print(stderr) if print_stderr
+    if must_succeed && !status.success?
+      raise "#{command.join(" ")} exited with #{status.exitstatus}: #{stderr.strip}"
+    end
+    WaxCommandResult.new(stdout, stderr, status)
+  end
+
+  def system_command!(executable, **options)
+    system_command(executable, **options, must_succeed: true)
+  end
+
+  def set_permissions(paths, permissions)
+    Array(paths).each do |path|
+      next unless File.exist?(path.to_s)
+      system_command!("/bin/chmod", args: ["-R", permissions.to_s, path.to_s],
+                                    sudo: !File.writable?(path.to_s))
+    end
+  end
+
+  def set_ownership(paths, user: ENV.fetch("USER", "root"), group: "staff")
+    existing = Array(paths).map(&:to_s).select { |p| File.exist?(p) }
+    return if existing.empty?
+    system_command!("/usr/sbin/chown", args: ["-R", "#{user}:#{group}", *existing], sudo: true)
+  end
+
+  def ohai(*message); $stderr.puts("==> #{message.join(" ")}"); end
+  def opoo(*message); $stderr.puts("Warning: #{message.join(" ")}"); end
+  def odebug(*); end
+
+  def method_missing(name, *args, **options, &block)
+    return @cask.public_send(name, *args, **options, &block) if @cask.respond_to?(name)
+    super
+  end
+
+  def respond_to_missing?(*); true; end
+end
+
 def odie(message)
   raise message.to_s
 end
@@ -296,13 +374,22 @@ end
 def cask(token, &block)
   cask = WaxCask.new(token.to_s)
   cask.instance_eval(&block)
-  $wax_real_stdout.puts("__WAX_JSON__#{JSON.generate(cask.to_h)}")
+  if $wax_hook
+    hook = cask.hooks[$wax_hook]
+    raise "cask #{token} has no #{$wax_hook} block" unless hook
+    WaxHook.new(cask).instance_exec(&hook)
+    $wax_real_stdout.puts("__WAX_HOOK_OK__")
+  else
+    $wax_real_stdout.puts("__WAX_JSON__#{JSON.generate(cask.to_h)}")
+  end
   $wax_real_stdout.flush
   exit!(0)
 end
 
-kind, path = ARGV
-abort("usage: shim.rb cask <file>") unless kind == "cask" && path
+kind, path, $wax_hook = ARGV
+valid = path && (kind == "cask" || (kind == "hook" && $wax_hook))
+abort("usage: shim.rb cask <file> | shim.rb hook <file> <name>") unless valid
+$wax_hook = nil if kind == "cask"
 begin
   load File.expand_path(path)
 rescue SystemExit

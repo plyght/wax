@@ -612,12 +612,18 @@ impl Cache {
             })?;
         if let Some(ruby) = crate::ruby_eval::find_ruby() {
             match crate::ruby_eval::eval_cask(&ruby, rb_path).await {
-                Ok(details) => return Ok(details),
+                Ok(mut details) => {
+                    details.rb_path = Some(rb_path.to_path_buf());
+                    return Ok(details);
+                }
                 Err(e) => warn!("{}; falling back to the static cask parser", e),
             }
         }
         let content = fs::read_to_string(rb_path).await?;
-        crate::formula_parser::FormulaParser::parse_ruby_cask_details(token, &content)
+        let mut details =
+            crate::formula_parser::FormulaParser::parse_ruby_cask_details(token, &content)?;
+        details.rb_path = Some(rb_path.to_path_buf());
+        Ok(details)
     }
 
     pub async fn fetch_cask_details_from_index(

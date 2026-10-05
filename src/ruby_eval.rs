@@ -7,6 +7,8 @@ use tracing::debug;
 const SHIM: &str = include_str!("ruby_eval/shim.rb");
 const MARKER: &str = "__WAX_JSON__";
 const ERROR_MARKER: &str = "__WAX_ERROR__";
+const HOOK_OK: &str = "__WAX_HOOK_OK__";
+const HOOK_TIMEOUT: Duration = Duration::from_secs(600);
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn candidates() -> Vec<PathBuf> {
@@ -83,13 +85,12 @@ fn parse_output(stdout: &str) -> Option<&str> {
     stdout.lines().rev().find_map(|l| l.strip_prefix(MARKER))
 }
 
-pub async fn eval_cask(ruby: &Path, rb_path: &Path) -> Result<CaskDetails> {
+fn shim_command(ruby: &Path, args: &[&std::ffi::OsStr]) -> Result<tokio::process::Command> {
     let shim = shim_path()?;
     let mut cmd = tokio::process::Command::new(ruby);
     cmd.arg("-W0")
         .arg(&shim)
-        .arg("cask")
-        .arg(rb_path)
+        .args(args)
         .env(
             "WAX_OS",
             if cfg!(target_os = "macos") {
@@ -114,6 +115,40 @@ pub async fn eval_cask(ruby: &Path, rb_path: &Path) -> Result<CaskDetails> {
         )
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
+    Ok(cmd)
+}
+
+fn error_message(stdout: &str) -> Option<&str> {
+    stdout.lines().find_map(|l| l.strip_prefix(ERROR_MARKER))
+}
+
+pub async fn run_hook(
+    ruby: &Path,
+    rb_path: &Path,
+    hook: &str,
+    staged_path: &Path,
+) -> Result<String> {
+    let mut cmd = shim_command(ruby, &["hook".as_ref(), rb_path.as_os_str(), hook.as_ref()])?;
+    cmd.env("WAX_STAGED_PATH", staged_path);
+    let output = tokio::time::timeout(HOOK_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| WaxError::InstallError(format!("{hook} timed out")))??;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let log = String::from_utf8_lossy(&output.stderr).into_owned();
+    if let Some(message) = error_message(&stdout) {
+        return Err(WaxError::InstallError(format!("{hook} failed: {message}")));
+    }
+    if !stdout.lines().any(|l| l == HOOK_OK) {
+        return Err(WaxError::InstallError(format!(
+            "{hook} did not complete: {}",
+            log.lines().last().unwrap_or("no output")
+        )));
+    }
+    Ok(log)
+}
+
+pub async fn eval_cask(ruby: &Path, rb_path: &Path) -> Result<CaskDetails> {
+    let mut cmd = shim_command(ruby, &["cask".as_ref(), rb_path.as_os_str()])?;
     let output = tokio::time::timeout(TIMEOUT, cmd.output())
         .await
         .map_err(|_| {
@@ -123,7 +158,7 @@ pub async fn eval_cask(ruby: &Path, rb_path: &Path) -> Result<CaskDetails> {
             ))
         })??;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if let Some(message) = stdout.lines().find_map(|l| l.strip_prefix(ERROR_MARKER)) {
+    if let Some(message) = error_message(&stdout) {
         return Err(WaxError::ParseError(format!(
             "Ruby could not evaluate {}: {}",
             rb_path.display(),

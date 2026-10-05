@@ -2597,6 +2597,46 @@ async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -
 
 /// Install a cask from an already-downloaded file (skips download).
 /// `line` must already be switched to an install spinner (see `reuse_download_bar_as_install_spinner`).
+fn cask_has_hook(cask: &crate::api::CaskDetails, hook: &str) -> bool {
+    cask.artifacts
+        .iter()
+        .flatten()
+        .any(|artifact| match artifact {
+            CaskArtifact::Preflight { preflight } => hook == "preflight" && preflight.is_some(),
+            CaskArtifact::Postflight { postflight } => hook == "postflight" && postflight.is_some(),
+            _ => false,
+        })
+}
+
+async fn run_cask_hook(
+    cask: &crate::api::CaskDetails,
+    hook: &str,
+    staged_path: &std::path::Path,
+) -> Result<()> {
+    let ruby = match (&cask.rb_path, crate::ruby_eval::find_ruby()) {
+        (Some(rb_path), Some(ruby)) => Some((rb_path, ruby)),
+        _ => None,
+    };
+    let Some((rb_path, ruby)) = ruby else {
+        crate::signal::println_through_active_multi(format!(
+            "warning: cask {} has a {} block that was not run (needs a tap .rb and Ruby)",
+            cask.token, hook
+        ));
+        return Ok(());
+    };
+    if tokio::fs::read_to_string(rb_path)
+        .await
+        .is_ok_and(|source| source.contains("sudo") || source.contains("set_ownership"))
+    {
+        crate::sudo::acquire_sudo()?;
+    }
+    let log = crate::ruby_eval::run_hook(&ruby, rb_path, hook, staged_path).await?;
+    for line in log.lines().filter(|l| !l.trim().is_empty()) {
+        crate::signal::println_through_active_multi(format!("  {}", line));
+    }
+    Ok(())
+}
+
 async fn install_from_downloaded(
     cask: &crate::api::CaskDetails,
     artifact_type: &str,
@@ -2637,6 +2677,11 @@ async fn install_from_downloaded(
     let mut binary_paths: Vec<String> = Vec::new();
     let mut installed_app_name: Option<String> = None;
     let mut installed_paths: Vec<String> = Vec::new();
+
+    if cask_has_hook(cask, "preflight") {
+        step!("running preflight...");
+        run_cask_hook(cask, "preflight", &staging.staging_root).await?;
+    }
 
     if let Some(artifacts) = &cask.artifacts {
         for artifact in artifacts {
@@ -3017,28 +3062,7 @@ async fn install_from_downloaded(
                         );
                     }
                 }
-                CaskArtifact::Preflight {
-                    preflight: Some(script),
-                } => {
-                    step!("skipping preflight script (not supported yet)");
-                    debug!("Preflight script: {}", script);
-                    eprintln!(
-                        "warning: cask {} has preflight scripts that were not executed. Run `brew postinstall {}` if needed.",
-                        cask.token, cask.token
-                    );
-                }
-                CaskArtifact::Preflight { preflight: None } => {}
-                CaskArtifact::Postflight {
-                    postflight: Some(script),
-                } => {
-                    step!("skipping postflight script (not supported yet)");
-                    debug!("Postflight script: {}", script);
-                    eprintln!(
-                        "warning: cask {} has postflight scripts that were not executed. Run `brew postinstall {}` if needed.",
-                        cask.token, cask.token
-                    );
-                }
-                CaskArtifact::Postflight { postflight: None } => {}
+                CaskArtifact::Preflight { .. } | CaskArtifact::Postflight { .. } => {}
                 _ => {}
             }
         }
@@ -3063,6 +3087,11 @@ async fn install_from_downloaded(
                 }
             }
         }
+    }
+
+    if cask_has_hook(cask, "postflight") {
+        step!("running postflight...");
+        run_cask_hook(cask, "postflight", &staging.staging_root).await?;
     }
 
     step!("registering...");
