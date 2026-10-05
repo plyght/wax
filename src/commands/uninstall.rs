@@ -327,6 +327,31 @@ async fn resolve_cask_app_name(
     format!("{}.app", cask_name)
 }
 
+async fn run_uninstall_hook(details: &crate::api::CaskDetails, hook: &str, quiet: bool) {
+    let declared = details.artifacts.iter().flatten().any(|artifact| {
+        matches!(artifact, crate::api::CaskArtifact::Other(serde_json::Value::Object(map)) if map.contains_key(hook))
+    });
+    let (Some(rb_path), true) = (&details.rb_path, declared) else {
+        return;
+    };
+    let Some(ruby) = crate::ruby_eval::find_ruby() else {
+        return;
+    };
+    let staged = CaskState::caskroom_dir()
+        .join(&details.token)
+        .join(&details.version);
+    match crate::ruby_eval::run_hook(&ruby, rb_path, hook, &staged).await {
+        Ok(log) if !quiet => {
+            for line in log.lines().filter(|l| !l.trim().is_empty()) {
+                println!("  {line}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) if !quiet => eprintln!("{} {}", style("warning:").yellow(), e),
+        Err(_) => {}
+    }
+}
+
 async fn uninstall_cask(
     cache: &Cache,
     cask_name: &str,
@@ -357,6 +382,33 @@ async fn uninstall_cask(
         return Ok(());
     }
 
+    let details = match cache.load_all_casks().await {
+        Ok(casks) => cache
+            .fetch_cask_details_from_index(&casks, cask_name)
+            .await
+            .ok(),
+        Err(_) => None,
+    };
+    let directives = details
+        .as_ref()
+        .and_then(|d| d.artifacts.as_deref())
+        .map(crate::cask_uninstall::parse)
+        .unwrap_or_default();
+    let pkgutil_handled = !directives.pkgutil.is_empty();
+    if let Some(details) = &details {
+        run_uninstall_hook(details, "uninstall_preflight", quiet).await;
+    }
+    if !directives.is_empty() {
+        let warnings = tokio::task::spawn_blocking(move || crate::cask_uninstall::run(&directives))
+            .await
+            .unwrap_or_default();
+        if !quiet {
+            for warning in warnings {
+                eprintln!("{} {}", style("warning:").yellow(), warning);
+            }
+        }
+    }
+
     let artifact_type = cask.artifact_type.as_deref().unwrap_or("dmg");
 
     match artifact_type {
@@ -370,6 +422,7 @@ async fn uninstall_cask(
                 }
             }
         }
+        "pkg" if pkgutil_handled => {}
         "pkg" => {
             // Best-effort: forget packages matching the cask token.
             let pkgutil_output = std::process::Command::new("pkgutil")
@@ -453,6 +506,10 @@ async fn uninstall_cask(
                 }
             }
         }
+    }
+
+    if let Some(details) = &details {
+        run_uninstall_hook(details, "uninstall_postflight", quiet).await;
     }
 
     // Remove all tracked installed paths
