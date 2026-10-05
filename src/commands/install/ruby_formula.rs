@@ -34,6 +34,27 @@ async fn keg_has_files(keg: &Path) -> bool {
     matches!(entries.next_entry().await, Ok(Some(_)))
 }
 
+async fn mark_executables(keg: &Path) -> Result<()> {
+    #[cfg(unix)]
+    for dir in ["bin", "sbin"] {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(mut entries) = tokio::fs::read_dir(keg.join(dir)).await else {
+            continue;
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let meta = tokio::fs::symlink_metadata(entry.path()).await?;
+            if meta.is_file() && meta.permissions().mode() & 0o111 == 0 {
+                let mut perms = meta.permissions();
+                perms.set_mode(perms.mode() | 0o555);
+                tokio::fs::set_permissions(entry.path(), perms).await?;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = keg;
+    Ok(())
+}
+
 pub(super) struct Installed {
     pub version: String,
 }
@@ -139,6 +160,7 @@ pub(super) async fn install(
         }
     };
     debug!("ruby install log for {}:\n{}", formula.name, log);
+    mark_executables(&keg).await?;
 
     if meta.keg_only {
         create_opt_link(&formula.name, &version, cellar, install_mode).await?;
