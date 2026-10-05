@@ -1508,7 +1508,11 @@ pub(crate) async fn install_impl(
                     Ok(()) => {
                         spinner.finish_and_clear();
                         if !quiet {
-                            println!("+ {}@{}", style(&name).magenta(), style(&version).dim());
+                            let _ = multi.println(format!(
+                                "+ {}@{}",
+                                style(&name).magenta(),
+                                style(&version).dim()
+                            ));
                         }
                     }
                     Err(e) => {
@@ -2374,7 +2378,15 @@ async fn postinstall_impl(name: &str, _install_mode: InstallMode, quiet: bool) -
 
         // We might need to set HOMEBREW_PREFIX or similar if wax's prefix is different
         // but for now let's assume standard prefix
-        match cmd.status().await {
+        let status = if quiet {
+            cmd.stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .map(|output| output.status)
+        } else {
+            cmd.status().await
+        };
+        match status {
             Ok(status) if status.success() => return Ok(()),
             _ => {
                 if !quiet {

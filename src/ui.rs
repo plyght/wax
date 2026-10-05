@@ -67,8 +67,16 @@ fn ditto_app_bundle(src: &Path, dst: &Path, use_sudo: bool) -> Result<bool> {
         c.args(["--noextattr", "--noqtn"]);
         c
     };
-    let status = cmd.arg(src).arg(dst).status().map_err(WaxError::IoError)?;
-    Ok(status.success())
+    let output = cmd.arg(src).arg(dst).output().map_err(WaxError::IoError)?;
+    if !output.status.success() {
+        debug!(
+            "ditto {} -> {} failed: {}",
+            src.display(),
+            dst.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.status.success())
 }
 
 pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {

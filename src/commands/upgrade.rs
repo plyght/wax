@@ -271,12 +271,14 @@ async fn apply_one_formula_package_upgrade(
                 .await;
                 install_pb.finish_and_clear();
                 if r.is_err() {
-                    eprintln!(
-                        "{} upgrade of {} failed. Old version was removed but new version could not be installed.",
-                        style("warning:").yellow().bold(),
-                        style(&pkg.name).magenta()
-                    );
-                    eprintln!("Try: wax install {}@{}", pkg.name, old_version);
+                    multi.suspend(|| {
+                        eprintln!(
+                            "{} upgrade of {} failed. Old version was removed but new version could not be installed.",
+                            style("warning:").yellow().bold(),
+                            style(&pkg.name).magenta()
+                        );
+                        eprintln!("Try: wax install {}@{}", pkg.name, old_version);
+                    });
                 }
                 r
             } else {
