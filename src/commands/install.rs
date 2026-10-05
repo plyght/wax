@@ -30,6 +30,7 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, instrument};
 
 mod libexec;
+mod taps;
 
 fn formula_belongs_to_tap(formula: &Formula, tap: &str) -> bool {
     if tap == "homebrew/core" {
@@ -949,7 +950,48 @@ pub(crate) async fn install_impl(
         }
     }
 
-    let formulae = cache.load_all_formulae().await?;
+    let mut formulae = cache.load_all_formulae().await?;
+    let all_casks = cache.load_all_casks().await?;
+    let migrated: Vec<String> = package_names
+        .iter()
+        .map(|name| {
+            let target = taps::migrated_name(name, &tap_manager, |n| {
+                formulae.iter().any(|f| f.full_name == n)
+                    || all_casks.iter().any(|c| c.full_token == n)
+            });
+            match target {
+                Some(target) => {
+                    if !quiet {
+                        println!(
+                            "{} {} moved to {}",
+                            style("→").cyan(),
+                            style(name).magenta(),
+                            style(&target).magenta()
+                        );
+                    }
+                    target
+                }
+                None => name.clone(),
+            }
+        })
+        .collect();
+    let package_names = migrated.as_slice();
+    if !dry_run {
+        for _ in 0..3 {
+            let missing = taps::missing_dependency_taps(&formulae, package_names, &tap_manager);
+            if missing.is_empty() {
+                break;
+            }
+            for tap_name in missing {
+                if !quiet {
+                    println!("adding tap {}", style(&tap_name).cyan());
+                }
+                tap_manager.ensure_tap(&tap_name).await?;
+                cache.invalidate_tap_cache(&tap_name).await?;
+            }
+            formulae = cache.load_all_formulae().await?;
+        }
+    }
     let state = InstallState::new()?;
     let installed_packages = adopt::sync_formulae().await?;
     let installed: HashSet<String> = installed_packages
@@ -968,8 +1010,6 @@ pub(crate) async fn install_impl(
         formulae.iter().map(|f| (f.name.as_str(), f)).collect();
     let by_full_name: std::collections::HashMap<&str, &crate::api::Formula> =
         formulae.iter().map(|f| (f.full_name.as_str(), f)).collect();
-
-    let all_casks = cache.load_all_casks().await?;
 
     let mut all_to_install = Vec::new();
     let mut all_to_install_set = HashSet::new();

@@ -92,6 +92,8 @@ pub fn resolve_dependencies(
     debug!("Resolving dependencies for {}", formula.name);
 
     let by_name: HashMap<&str, &Formula> = formulae.iter().map(|f| (f.name.as_str(), f)).collect();
+    let by_full_name: HashMap<&str, &Formula> =
+        formulae.iter().map(|f| (f.full_name.as_str(), f)).collect();
 
     let mut graph = DependencyGraph::new();
     let mut visited = HashSet::new();
@@ -110,7 +112,16 @@ pub fn resolve_dependencies(
             .copied()
             .ok_or_else(|| WaxError::FormulaNotFound(name.clone()))?;
 
-        let deps = f.dependencies.clone().unwrap_or_default();
+        let deps: Vec<String> = f
+            .dependencies
+            .iter()
+            .flatten()
+            .map(|dep| {
+                by_full_name
+                    .get(dep.as_str())
+                    .map_or_else(|| dep.clone(), |f| f.name.clone())
+            })
+            .collect();
 
         graph.add_node(name.clone(), deps.clone());
 
@@ -135,6 +146,28 @@ pub fn resolve_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn formula(full_name: &str, deps: &[&str]) -> Formula {
+        let mut f: Formula = serde_json::from_value(serde_json::json!({
+            "name": full_name.rsplit('/').next().unwrap(),
+            "full_name": full_name,
+            "homepage": "",
+            "versions": {"stable": "1.0", "bottle": false},
+        }))
+        .unwrap();
+        f.dependencies = Some(deps.iter().map(|d| d.to_string()).collect());
+        f
+    }
+
+    #[test]
+    fn resolves_tap_qualified_dependencies() {
+        let formulae = vec![
+            formula("tursodatabase/tap/turso", &["libsql/sqld/sqld"]),
+            formula("libsql/sqld/sqld", &[]),
+        ];
+        let order = resolve_dependencies(&formulae[0], &formulae, &HashSet::new()).unwrap();
+        assert_eq!(order, vec!["sqld", "turso"]);
+    }
 
     #[test]
     fn test_empty_graph() {
