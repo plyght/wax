@@ -45,7 +45,18 @@ fn resolve_packages<T, U>(
                 "Specify package name(s) or use --all to reinstall everything".to_string(),
             ));
         }
-        packages.to_vec()
+        packages
+            .iter()
+            .map(|name| {
+                let short = name.rsplit('/').next().unwrap_or(name);
+                let known = |n: &str| installed.contains_key(n) || installed_casks.contains_key(n);
+                if !known(name) && known(short) {
+                    short.to_string()
+                } else {
+                    name.clone()
+                }
+            })
+            .collect()
     };
     Ok(resolved)
 }
@@ -255,4 +266,32 @@ pub async fn reinstall(cache: &Cache, packages: &[String], cask: bool, all: bool
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_packages;
+    use std::collections::HashMap;
+
+    #[test]
+    fn tap_qualified_names_resolve_to_installed_short_names() {
+        let formulae: HashMap<String, ()> = HashMap::from([("opencode".to_string(), ())]);
+        let casks: HashMap<String, ()> = HashMap::from([("pear-desktop".to_string(), ())]);
+        let resolved = resolve_packages(
+            &[
+                "sst/tap/opencode".into(),
+                "pear-devs/pear/pear-desktop".into(),
+                "other/tap/missing".into(),
+            ],
+            false,
+            false,
+            &formulae,
+            &casks,
+        )
+        .unwrap();
+        assert_eq!(
+            resolved,
+            vec!["opencode", "pear-desktop", "other/tap/missing"]
+        );
+    }
 }
