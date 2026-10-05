@@ -180,12 +180,21 @@ pub enum CaskArtifact {
         zap: Vec<serde_json::Value>,
     },
     Preflight {
+        #[serde(deserialize_with = "required_nullable")]
         preflight: Option<String>,
     },
     Postflight {
+        #[serde(deserialize_with = "required_nullable")]
         postflight: Option<String>,
     },
     Other(serde_json::Value),
+}
+
+fn required_nullable<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
 }
 
 impl CaskArtifact {
