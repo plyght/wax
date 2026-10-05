@@ -14,6 +14,7 @@ mod formula_parser;
 mod http_client;
 mod install;
 mod lockfile;
+mod ruby_eval;
 mod signal;
 mod sudo;
 mod system_pm;

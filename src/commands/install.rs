@@ -2155,6 +2155,25 @@ async fn install_casks(
         }
     }
 
+    let needs_ruby = to_install.iter().any(|name| {
+        casks
+            .iter()
+            .any(|c| (c.token == *name || c.full_token == *name) && c.rb_path.is_some())
+    });
+    if needs_ruby && crate::ruby_eval::find_ruby().is_none() {
+        let _ = multi.println(format!(
+            "{} installing ruby to evaluate tap casks",
+            style("→").cyan()
+        ));
+        if let Err(e) = crate::ruby_eval::provision().await {
+            let _ = multi.println(format!(
+                "{} could not install ruby ({}); using the static cask parser",
+                style("warning:").yellow(),
+                e
+            ));
+        }
+    }
+
     // --- Phase 1: fetch all details + probe artifact types concurrently ---
     let cache = Arc::new(cache.clone());
     let installer = Arc::new(CaskInstaller::new());

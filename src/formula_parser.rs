@@ -902,7 +902,12 @@ impl FormulaParser {
         content
             .lines()
             .map(str::trim)
-            .find(|line| !line.is_empty() && !line.starts_with('#'))
+            .find(|line| {
+                !line.is_empty()
+                    && !line.starts_with('#')
+                    && !line.starts_with("require ")
+                    && !line.starts_with("require_relative ")
+            })
             .is_some_and(|line| line.starts_with("cask "))
     }
 

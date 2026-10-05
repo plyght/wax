@@ -610,6 +610,12 @@ impl Cache {
             .ok_or_else(|| {
                 crate::error::WaxError::ParseError("Invalid cask file path".to_string())
             })?;
+        if let Some(ruby) = crate::ruby_eval::find_ruby() {
+            match crate::ruby_eval::eval_cask(&ruby, rb_path).await {
+                Ok(details) => return Ok(details),
+                Err(e) => warn!("{}; falling back to the static cask parser", e),
+            }
+        }
         let content = fs::read_to_string(rb_path).await?;
         crate::formula_parser::FormulaParser::parse_ruby_cask_details(token, &content)
     }
