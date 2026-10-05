@@ -1378,7 +1378,7 @@ pub async fn get_outdated_packages_scoped(
                         } else {
                             installed.platform.as_str()
                         };
-                        s.files.get(tag)
+                        s.file_for_platform(tag)
                     })
                     .map(|f| Some(&f.sha256) != installed.bottle_sha256.as_ref())
                     .unwrap_or(false);
