@@ -80,6 +80,7 @@ impl Builder {
             }
             BuildSystem::Make => self.build_make(&source_dir, install_prefix).await?,
             BuildSystem::Cargo => self.build_cargo(&source_dir, install_prefix).await?,
+            BuildSystem::Go => self.build_go(formula, &source_dir, install_prefix).await?,
             BuildSystem::Unknown => {
                 return Err(WaxError::BuildError(
                     "Unknown build system - cannot build from source".to_string(),
@@ -120,6 +121,7 @@ impl Builder {
             }
             BuildSystem::Make => self.build_make(source_dir, install_prefix).await?,
             BuildSystem::Cargo => self.build_cargo(source_dir, install_prefix).await?,
+            BuildSystem::Go => self.build_go(formula, source_dir, install_prefix).await?,
             BuildSystem::Unknown => {
                 return Err(WaxError::BuildError(
                     "Unknown build system - cannot build from source".to_string(),
@@ -318,6 +320,44 @@ impl Builder {
             .await?;
 
         Ok(())
+    }
+
+    async fn build_go(
+        &self,
+        formula: &ParsedFormula,
+        source_dir: &Path,
+        prefix: &Path,
+    ) -> Result<()> {
+        info!("Building with Go");
+        let go = formula.go_build.as_ref().ok_or_else(|| {
+            WaxError::BuildError("Unsupported go build invocation in formula".to_string())
+        })?;
+        if find_in_path("go").is_none() {
+            return Err(WaxError::BuildError(
+                "Go is required to build this formula; install it with `wax install go`"
+                    .to_string(),
+            ));
+        }
+        let work_dir = match &go.subdir {
+            Some(dir) if source_dir.join(dir).is_dir() => source_dir.join(dir),
+            _ => source_dir.to_path_buf(),
+        };
+        let bin_dir = prefix.join("bin");
+        std::fs::create_dir_all(&bin_dir)?;
+        let mut args = vec![
+            "build".to_string(),
+            "-trimpath".to_string(),
+            "-o".to_string(),
+            bin_dir.join(&go.output).display().to_string(),
+            "-ldflags".to_string(),
+            "-s -w".to_string(),
+        ];
+        if let Some(tags) = &go.tags {
+            args.push("-tags".to_string());
+            args.push(tags.clone());
+        }
+        args.push(go.target.clone());
+        self.run_command(&work_dir, "go", &args, "Building").await
     }
 
     /// Run `make` only (no `make install`). Used when formula has `bin.install`.

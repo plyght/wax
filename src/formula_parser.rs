@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use tracing::{debug, instrument};
 
+pub mod go;
 mod platform;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -16,6 +17,7 @@ pub enum BuildSystem {
     Meson,
     Make,
     Cargo,
+    Go,
     Unknown,
 }
 
@@ -43,6 +45,7 @@ pub struct ParsedFormula {
     pub bin_installs: Vec<String>,
     pub bin_install_targets: Vec<BinInstall>,
     pub share_install_targets: Vec<ShareInstall>,
+    pub go_build: Option<go::GoBuild>,
 }
 
 pub struct FormulaParser;
@@ -115,6 +118,9 @@ impl FormulaParser {
 
         let install_block = Self::resolve_install_block(ruby_content)?;
         let build_system = Self::detect_build_system(&install_block);
+        let go_build = (build_system == BuildSystem::Go)
+            .then(|| go::extract(&install_block, name))
+            .flatten();
         let configure_args = Self::extract_configure_args(&install_block);
 
         let bin_install_targets = Self::extract_bin_install_targets(&install_block);
@@ -146,6 +152,7 @@ impl FormulaParser {
             bin_installs,
             bin_install_targets,
             share_install_targets,
+            go_build,
         })
     }
 
@@ -474,7 +481,9 @@ impl FormulaParser {
     }
 
     fn detect_build_system(install_block: &str) -> BuildSystem {
-        if install_block.contains("cargo") {
+        if go::is_go_build(install_block) {
+            BuildSystem::Go
+        } else if install_block.contains("cargo") {
             BuildSystem::Cargo
         } else if install_block.contains("./configure") || install_block.contains("./bootstrap") {
             BuildSystem::Autotools
