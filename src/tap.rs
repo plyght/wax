@@ -341,6 +341,12 @@ impl TapManager {
         Ok(())
     }
 
+    fn is_missing_repo_error(stderr: &str) -> bool {
+        stderr.contains("could not read Username")
+            || stderr.contains("Repository not found")
+            || stderr.contains("terminal prompts disabled")
+    }
+
     #[instrument(skip(self))]
     async fn clone_tap(&self, tap: &Tap) -> Result<()> {
         let url = tap.url().ok_or_else(|| {
@@ -356,11 +362,18 @@ impl TapManager {
             .arg("--")
             .arg(&url)
             .arg(&tap.path)
+            .env("GIT_TERMINAL_PROMPT", "0")
             .output()
             .await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if Self::is_missing_repo_error(&stderr) {
+                return Err(WaxError::TapError(format!(
+                    "Tap {} not found (no public repository at {})",
+                    tap.full_name, url
+                )));
+            }
             return Err(WaxError::TapError(format!(
                 "Failed to clone tap: {}",
                 stderr
@@ -505,6 +518,7 @@ impl TapManager {
                 let fetch_output = tokio::process::Command::new("git")
                     .args(["fetch", "--depth=1"])
                     .current_dir(&tap.path)
+                    .env("GIT_TERMINAL_PROMPT", "0")
                     .output()
                     .await?;
 
@@ -830,6 +844,19 @@ end
             .is_err());
         assert_eq!(snapshot_bytes(&cache).await, changed);
         assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), head);
+    }
+
+    #[test]
+    fn missing_repo_errors_are_detected() {
+        assert!(TapManager::is_missing_repo_error(
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+        ));
+        assert!(TapManager::is_missing_repo_error(
+            "remote: Repository not found.\nfatal: repository not found"
+        ));
+        assert!(!TapManager::is_missing_repo_error(
+            "fatal: unable to access: Could not resolve host"
+        ));
     }
 
     // ── Tap::from_spec ────────────────────────────────────────────────────────
