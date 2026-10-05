@@ -413,6 +413,15 @@ impl CaskState {
     }
 
     pub fn caskroom_dir() -> PathBuf {
+        if user_scope() {
+            if let Ok(dir) = Self::user_caskroom_dir() {
+                return dir;
+            }
+        }
+        homebrew_prefix().join("Caskroom")
+    }
+
+    pub fn global_caskroom_dir() -> PathBuf {
         homebrew_prefix().join("Caskroom")
     }
 
@@ -1058,6 +1067,16 @@ impl Drop for StagingContext {
     }
 }
 
+static USER_SCOPE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_user_scope(enabled: bool) {
+    USER_SCOPE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn user_scope() -> bool {
+    USER_SCOPE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct CaskInstaller {
     downloader: BottleDownloader,
 }
@@ -1116,6 +1135,9 @@ impl CaskInstaller {
         ) {
             return Ok(dir);
         }
+        if user_scope() {
+            return Ok(dirs::home_dir()?.join("Applications"));
+        }
         #[cfg(target_os = "macos")]
         {
             Ok(PathBuf::from("/Applications"))
@@ -1127,6 +1149,11 @@ impl CaskInstaller {
     }
 
     pub async fn detect_writable_bin_dir() -> Result<PathBuf> {
+        if user_scope() {
+            let local_bin = Self::user_bin_dir()?;
+            tokio::fs::create_dir_all(&local_bin).await?;
+            return Ok(local_bin);
+        }
         let candidates = vec![
             crate::bottle::homebrew_prefix().join("bin"),
             PathBuf::from("/usr/local/bin"),
