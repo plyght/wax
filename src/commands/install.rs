@@ -172,6 +172,14 @@ async fn install_from_source_task(
         let mut copied_bins = 0usize;
         let mut missing_bins = Vec::new();
         for target in &parsed_formula.bin_install_targets {
+            if target.destination.is_empty() {
+                let matched = install_bin_glob(&src_dir, &target.source, &bin_dir).await?;
+                if matched == 0 {
+                    missing_bins.push(target.source.clone());
+                }
+                copied_bins += matched;
+                continue;
+            }
             let dest_path = Path::new(&target.destination);
             if dest_path.is_absolute() || target.destination.split('/').any(|part| part == "..") {
                 return Err(WaxError::BuildError(format!(
@@ -434,6 +442,41 @@ async fn install_from_source_task(
     );
 
     Ok(())
+}
+
+async fn install_bin_glob(root: &Path, glob: &str, bin_dir: &Path) -> Result<usize> {
+    let Some((prefix, suffix)) = glob.split_once('*') else {
+        return Ok(0);
+    };
+    if glob.contains('/') || suffix.contains('*') {
+        return Err(WaxError::BuildError(format!(
+            "Unsupported bin.install glob '{}'",
+            glob
+        )));
+    }
+    let mut installed = 0;
+    let mut entries = tokio::fs::read_dir(root).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !entry.file_type().await?.is_file()
+            || !name_str.starts_with(prefix)
+            || !name_str.ends_with(suffix)
+        {
+            continue;
+        }
+        let dst = bin_dir.join(&name);
+        tokio::fs::copy(entry.path(), &dst).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = tokio::fs::metadata(&dst).await?.permissions();
+            perms.set_mode(perms.mode() | 0o111);
+            tokio::fs::set_permissions(&dst, perms).await?;
+        }
+        installed += 1;
+    }
+    Ok(installed)
 }
 
 async fn resolve_bin_install_source(root: &Path, source: &str) -> Result<std::path::PathBuf> {

@@ -316,15 +316,28 @@ impl FormulaParser {
     }
 
     fn extract_install_block(content: &str) -> Result<String> {
-        let start_marker = "def install";
-        if let Some(start_idx) = content.find(start_marker) {
+        let is_install_def = |line: &str| {
+            line.trim()
+                .strip_prefix("def install")
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '(', ';', '#']))
+        };
+        let start_idx = content
+            .split_inclusive('\n')
+            .scan(0usize, |offset, line| {
+                let start = *offset;
+                *offset += line.len();
+                Some((start, line))
+            })
+            .find(|(_, line)| is_install_def(line))
+            .map(|(start, _)| start);
+        if let Some(start_idx) = start_idx {
             let mut depth = 0;
             let mut block = String::new();
             let mut started = false;
 
             for line in content[start_idx..].lines() {
                 let trimmed = line.trim();
-                if trimmed.starts_with("def install") {
+                if !started && is_install_def(trimmed) {
                     started = true;
                     depth = 1;
                     continue;
@@ -630,6 +643,16 @@ impl FormulaParser {
                         source,
                     }
                 }));
+            }
+            if let Some(glob) = trimmed
+                .strip_prefix("bin.install Dir[\"")
+                .and_then(|rest| rest.strip_suffix("\"]"))
+            {
+                targets.push(BinInstall {
+                    source: glob.to_string(),
+                    destination: String::new(),
+                    optional: false,
+                });
             }
             targets.extend(dir_re.captures_iter(line).map(|c| {
                 let source = c[1].to_string();
@@ -1437,6 +1460,34 @@ end
         let bins = FormulaParser::extract_bin_install_targets(install_block);
         assert_eq!(bins[0].source, "amp-darwin-arm64");
         assert_eq!(bins[0].destination, "amp");
+    }
+
+    #[test]
+    fn install_block_ignores_helper_methods_named_install_prefix() {
+        let formula = r#"class Sqld < Formula
+  def install_binary_aliases!
+    bin.install_symlink bin/"x" => "y"
+  end
+
+  def install
+    if OS.mac? && Hardware::CPU.arm?
+      bin.install "sqld"
+    end
+    install_binary_aliases!
+  end
+end
+"#;
+        let block = FormulaParser::extract_install_block(formula).unwrap();
+        assert!(block.contains(r#"bin.install "sqld""#));
+        assert!(!block.contains("install_symlink"));
+    }
+
+    #[test]
+    fn extract_bin_install_targets_finds_dir_globs() {
+        let bins = FormulaParser::extract_bin_install_targets("    bin.install Dir[\"*\"]\n");
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].source, "*");
+        assert!(bins[0].destination.is_empty());
     }
 
     #[test]
