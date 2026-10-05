@@ -912,7 +912,6 @@ fn hint_user_prefix_path_if_needed(install_mode: InstallMode, quiet: bool) {
     println!("  export PATH=\"{}:$PATH\"", bin_dir.display());
 }
 
-#[cfg_attr(target_os = "windows", allow(unreachable_code, unused_variables))]
 async fn ensure_install_taps(
     cache: &Cache,
     tap_manager: &mut TapManager,
@@ -948,6 +947,7 @@ async fn ensure_install_taps(
     Ok(())
 }
 
+#[cfg_attr(target_os = "windows", allow(unreachable_code, unused_variables))]
 pub(crate) async fn install_impl(
     cache: &Cache,
     package_names: &[String],
