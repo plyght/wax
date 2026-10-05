@@ -44,7 +44,17 @@ pub fn api() -> &'static reqwest::Client {
 
 /// Bottle/cask downloads: 5 minute timeout, raw bytes (no double decompression).
 pub fn download() -> &'static reqwest::Client {
-    DOWNLOAD_CLIENT.get_or_init(|| build_client(Duration::from_secs(300), false))
+    DOWNLOAD_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60))
+            .user_agent(user_agent())
+            .https_only(true)
+            .gzip(false)
+            .brotli(false)
+            .build()
+            .expect("Failed to create HTTP client")
+    })
 }
 
 /// General-purpose client (GitHub, GHCR, ecosystem indexes): 60s, compressed.
