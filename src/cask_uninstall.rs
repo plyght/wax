@@ -59,12 +59,23 @@ fn scripts(value: &Value) -> Vec<Script> {
 }
 
 pub fn parse(artifacts: &[CaskArtifact]) -> Directives {
+    parse_entries(artifacts.iter().filter_map(|artifact| match artifact {
+        CaskArtifact::Uninstall { uninstall } => Some(uninstall),
+        _ => None,
+    }))
+}
+
+pub fn parse_zap(artifacts: &[CaskArtifact]) -> Directives {
+    parse_entries(artifacts.iter().filter_map(|artifact| match artifact {
+        CaskArtifact::Zap { zap } => Some(zap),
+        _ => None,
+    }))
+}
+
+fn parse_entries<'a>(stanzas: impl Iterator<Item = &'a Vec<Value>>) -> Directives {
     let mut d = Directives::default();
-    for artifact in artifacts {
-        let CaskArtifact::Uninstall { uninstall } = artifact else {
-            continue;
-        };
-        for entry in uninstall {
+    for stanza in stanzas {
+        for entry in stanza {
             let Some(map) = entry.as_object() else {
                 continue;
             };
@@ -456,5 +467,5 @@ pub fn run(d: &Directives) -> Vec<String> {
     warnings
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
