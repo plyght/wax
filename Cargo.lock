@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "waxpkg"
-version = "0.20.30"
+version = "0.20.31"
 dependencies = [
  "bincode",
  "clap",
