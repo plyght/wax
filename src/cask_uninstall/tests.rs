@@ -103,3 +103,18 @@ fn delete_trash_and_rmdir_with_globs() {
     assert_eq!(run(&protected).len(), 1);
     assert!(home.path().join("Library").exists());
 }
+
+#[test]
+fn zap_stanzas_parse_separately_from_uninstall() {
+    let artifacts = artifacts(
+        r#"[
+            {"uninstall": [{"quit": "com.example.foo"}]},
+            {"zap": [{"trash": ["~/Library/Caches/Foo", "~/Library/Preferences/com.example.foo.plist"], "rmdir": "~/Library/Foo"}]}
+        ]"#,
+    );
+    let zap = parse_zap(&artifacts);
+    assert_eq!(zap.trash.len(), 2);
+    assert_eq!(zap.rmdir, vec!["~/Library/Foo"]);
+    assert!(zap.quit.is_empty());
+    assert_eq!(parse(&artifacts).quit, vec!["com.example.foo"]);
+}

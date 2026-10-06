@@ -249,6 +249,11 @@ enum Commands {
         cask: bool,
         #[arg(long, help = "Uninstall all installed formulae")]
         all: bool,
+        #[arg(
+            long,
+            help = "Also remove a cask's settings, caches and other zap files"
+        )]
+        zap: bool,
     },
 
     #[command(about = "Reinstall a formula or cask  [alias: ri]")]
@@ -782,7 +787,11 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             dry_run,
             cask,
             all,
-        } => commands::uninstall::uninstall(cache, &formulae, dry_run, cask, yes, all).await,
+            zap,
+        } => {
+            commands::uninstall::set_zap(zap);
+            commands::uninstall::uninstall(cache, &formulae, dry_run, cask, yes, all).await
+        }
         Commands::Reinstall {
             packages,
             cask,
