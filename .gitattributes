@@ -1,3 +1,4 @@
 # Omit installer scripts from GitHub language statistics (Linguist)
 *.sh linguist-vendored
 *.ps1 linguist-vendored
+*.rb linguist-vendored
