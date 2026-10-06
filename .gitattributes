@@ -2,3 +2,5 @@
 *.sh linguist-vendored
 *.ps1 linguist-vendored
 *.rb linguist-vendored
+.agents/resume linguist-vendored
+.agents/setup linguist-vendored
