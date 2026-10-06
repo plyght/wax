@@ -18,6 +18,12 @@ use std::time::Instant;
 #[cfg(target_os = "windows")]
 use crate::windows_state::{self, WindowsPackageManifest};
 
+static ZAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_zap(enabled: bool) {
+    ZAP.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub async fn uninstall(
     cache: &Cache,
     formulae: &[String],
@@ -389,19 +395,26 @@ async fn uninstall_cask(
             .ok(),
         Err(_) => None,
     };
-    let directives = details
-        .as_ref()
-        .and_then(|d| d.artifacts.as_deref())
+    let artifacts = details.as_ref().and_then(|d| d.artifacts.as_deref());
+    let directives = artifacts
         .map(crate::cask_uninstall::parse)
+        .unwrap_or_default();
+    let zap = artifacts
+        .filter(|_| ZAP.load(std::sync::atomic::Ordering::Relaxed))
+        .map(crate::cask_uninstall::parse_zap)
         .unwrap_or_default();
     let pkgutil_handled = !directives.pkgutil.is_empty();
     if let Some(details) = &details {
         run_uninstall_hook(details, "uninstall_preflight", quiet).await;
     }
-    if !directives.is_empty() {
-        let warnings = tokio::task::spawn_blocking(move || crate::cask_uninstall::run(&directives))
-            .await
-            .unwrap_or_default();
+    if !directives.is_empty() || !zap.is_empty() {
+        let warnings = tokio::task::spawn_blocking(move || {
+            let mut warnings = crate::cask_uninstall::run(&directives);
+            warnings.extend(crate::cask_uninstall::run(&zap));
+            warnings
+        })
+        .await
+        .unwrap_or_default();
         if !quiet {
             for warning in warnings {
                 eprintln!("{} {}", style("warning:").yellow(), warning);
