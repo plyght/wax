@@ -1,3 +1,4 @@
+use crate::advisory::{AdvisoryStore, Freshness};
 use crate::cache::{Cache, CacheMetadata};
 use crate::error::Result;
 use crate::signal::check_cancelled;
@@ -29,10 +30,30 @@ pub async fn update(cache: &Cache) -> Result<()> {
         .map(|m| (m.casks_etag.as_deref(), m.casks_last_modified.as_deref()))
         .unwrap_or((None, None));
 
-    let (formulae_result, casks_result) = tokio::join!(
+    // Only revalidate advisories for users who have scanned before, so
+    // `wax update` doesn't pull the advisory index for everyone.
+    let advisories = AdvisoryStore::new(cache);
+    let refresh_advisories = advisories.is_present();
+
+    let (formulae_result, casks_result, advisories_result) = tokio::join!(
         cache.fetch_formulae_conditional(formulae_etag, formulae_last_modified, None),
-        cache.fetch_casks_conditional(casks_etag, casks_last_modified, None)
+        cache.fetch_casks_conditional(casks_etag, casks_last_modified, None),
+        async {
+            if refresh_advisories {
+                Some(advisories.load(Freshness::Revalidate, false).await)
+            } else {
+                None
+            }
+        }
     );
+
+    if let Some(Err(e)) = advisories_result {
+        eprintln!(
+            "  {} failed to update security advisories: {}",
+            style("!").yellow(),
+            e
+        );
+    }
 
     let mut formulae_fetch = formulae_result?;
     let mut casks_fetch = casks_result?;

@@ -127,12 +127,60 @@ fn subcommand_help_exits_zero() {
         "upgrade",
         "uninstall",
         "tap",
+        "vulns",
     ] {
         let out = wax().args([sub, "--help"]).output().unwrap();
         assert!(
             out.status.success(),
             "wax {sub} --help failed: {:?}",
             out.status.code()
+        );
+    }
+}
+
+#[test]
+fn vulns_help_mentions_severity_and_json() {
+    let out = wax().args(["vulns", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--severity"), "{stdout}");
+    assert!(stdout.contains("--json"), "{stdout}");
+    assert!(stdout.contains("critical"), "{stdout}");
+}
+
+#[test]
+fn vulns_rejects_unknown_severity() {
+    let out = wax()
+        .args(["vulns", "--severity", "severe"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn upgrade_and_outdated_help_mention_vulnerable() {
+    for sub in ["upgrade", "outdated"] {
+        let out = wax().args([sub, "--help"]).output().unwrap();
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("--vulnerable"), "{sub}: {stdout}");
+        assert!(stdout.contains("--severity"), "{sub}: {stdout}");
+    }
+}
+
+#[test]
+fn severity_requires_vulnerable_and_vulnerable_rejects_self() {
+    for args in [
+        &["upgrade", "--severity", "high"][..],
+        &["outdated", "--severity", "high"][..],
+        &["upgrade", "--vulnerable", "--self"][..],
+        &["upgrade", "--vulnerable", "--system"][..],
+    ] {
+        let out = wax().args(args).output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "wax {args:?} should be a usage error"
         );
     }
 }

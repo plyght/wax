@@ -24,3 +24,4 @@ pub mod update;
 pub mod upgrade;
 pub mod uses;
 pub mod version_install;
+pub mod vulns;

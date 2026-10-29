@@ -27,6 +27,7 @@ use tokio::task::JoinSet;
 use tracing::instrument;
 
 pub(crate) mod keg_backup;
+pub(crate) mod vulnerable;
 use keg_backup::KegBackup;
 
 #[derive(Debug, Clone)]
@@ -360,6 +361,18 @@ async fn upgrade_all(
         return Ok(());
     }
 
+    upgrade_outdated(cache, outdated, dry_run, ask, start).await
+}
+
+/// Upgrade an already-selected set of outdated packages: bottles download in
+/// parallel and each keg is backed up and restored if its upgrade fails.
+async fn upgrade_outdated(
+    cache: &Cache,
+    outdated: Vec<OutdatedPackage>,
+    dry_run: bool,
+    ask: bool,
+    start: std::time::Instant,
+) -> Result<()> {
     let global_count = outdated
         .iter()
         .filter(|pkg| pkg.install_mode == Some(InstallMode::Global) || pkg.is_cask)

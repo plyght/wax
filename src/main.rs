@@ -1,4 +1,5 @@
 mod adopt;
+mod advisory;
 mod api;
 mod bottle;
 mod builder;
@@ -64,6 +65,7 @@ fn command_prints_timing(command: &Commands) -> bool {
             | Commands::Upgrade { .. }
             | Commands::Outdated { .. }
             | Commands::Sync
+            | Commands::Vulns { .. }
     )
 }
 
@@ -306,6 +308,19 @@ enum Commands {
         user: bool,
         #[arg(long, conflicts_with = "user")]
         global: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["upgrade_self", "system"],
+            help = "Only upgrade formulae whose available version fixes an open security advisory"
+        )]
+        vulnerable: bool,
+        #[arg(
+            long,
+            value_enum,
+            requires = "vulnerable",
+            help = "With --vulnerable: only consider advisories at or above this severity"
+        )]
+        severity: Option<advisory::Severity>,
     },
 
     #[command(about = "Manage OS-level packages via the native package manager")]
@@ -320,6 +335,18 @@ enum Commands {
         user: bool,
         #[arg(long, conflicts_with = "user")]
         global: bool,
+        #[arg(
+            long,
+            help = "Only show vulnerable formulae, and whether upgrading fixes them"
+        )]
+        vulnerable: bool,
+        #[arg(
+            long,
+            value_enum,
+            requires = "vulnerable",
+            help = "With --vulnerable: only consider advisories at or above this severity"
+        )]
+        severity: Option<advisory::Severity>,
     },
 
     #[command(about = "Re-create symlinks for installed packages  [alias: ln]")]
@@ -424,8 +451,24 @@ enum Commands {
         formula: String,
     },
 
-    #[command(about = "Check installed packages for issues (deprecated, disabled, outdated)")]
+    #[command(
+        about = "Check installed packages for issues (vulnerable, deprecated, disabled, outdated)"
+    )]
     Audit,
+
+    #[command(about = "Check installed formulae for known vulnerabilities (CVEs)")]
+    Vulns {
+        #[arg(help = "Formulae to check (default: all installed)")]
+        formulae: Vec<String>,
+        #[arg(
+            long,
+            value_enum,
+            help = "Only report advisories at or above this severity"
+        )]
+        severity: Option<advisory::Severity>,
+        #[arg(long, help = "Print results as JSON")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -549,6 +592,8 @@ fn print_error_and_exit(err: error::WaxError) -> ! {
         WaxError::InstallError(message) => {
             eprintln!("{} {}", prefix, message);
         }
+        // The report has already been printed; only the exit status remains.
+        WaxError::VulnerabilitiesFound(_) => {}
         other => {
             eprintln!("{} {}", prefix, other);
         }
@@ -596,6 +641,8 @@ async fn execute_upgrade(
     system: bool,
     user: bool,
     global: bool,
+    vulnerable: bool,
+    severity: Option<advisory::Severity>,
     cache: &Cache,
     yes: bool,
 ) -> Result<()> {
@@ -606,6 +653,18 @@ async fn execute_upgrade(
 
     #[cfg(target_os = "windows")]
     crate::error::reject_homebrew_cli("upgrade")?;
+
+    if vulnerable {
+        return commands::upgrade::vulnerable::upgrade_vulnerable(
+            cache,
+            &packages,
+            severity,
+            dry_run,
+            ask && !yes,
+            install_scope(user, global)?,
+        )
+        .await;
+    }
 
     let explicit_packages_requested = !packages.is_empty();
 
@@ -821,6 +880,8 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             system,
             user,
             global,
+            vulnerable,
+            severity,
         } => {
             execute_upgrade(
                 packages,
@@ -833,16 +894,28 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
                 system,
                 user,
                 global,
+                vulnerable,
+                severity,
                 cache,
                 yes,
             )
             .await
         }
         Commands::System { action } => execute_system(action).await,
-        Commands::Outdated { user, global } => {
+        Commands::Outdated {
+            user,
+            global,
+            vulnerable,
+            severity,
+        } => {
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("outdated")?;
-            commands::outdated::outdated(cache, install_scope(user, global)?).await
+            let scope = install_scope(user, global)?;
+            if vulnerable {
+                commands::upgrade::vulnerable::outdated_vulnerable(cache, severity, scope).await
+            } else {
+                commands::outdated::outdated(cache, scope).await
+            }
         }
         Commands::Link { packages } => {
             #[cfg(target_os = "windows")]
@@ -923,6 +996,15 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             #[cfg(target_os = "windows")]
             crate::error::reject_homebrew_cli("audit")?;
             commands::audit::audit(cache).await
+        }
+        Commands::Vulns {
+            formulae,
+            severity,
+            json,
+        } => {
+            #[cfg(target_os = "windows")]
+            crate::error::reject_homebrew_cli("vulns")?;
+            commands::vulns::vulns(cache, &formulae, severity, json).await
         }
     }
 }

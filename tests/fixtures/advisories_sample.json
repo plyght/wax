@@ -1,0 +1,296 @@
+{
+  "meta": {
+    "count": 4,
+    "schema_version": "1.7.3"
+  },
+  "advisories": {
+    "abcde": [
+      {
+        "schema_version": "1.7.3",
+        "id": "BREW-abcde-CVE-2020-36829",
+        "published": "2026-08-13T09:10:09Z",
+        "modified": "2026-10-08T00:55:40Z",
+        "upstream": [
+          "CVE-2020-36829"
+        ],
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "Homebrew",
+              "name": "abcde",
+              "purl": "pkg:brew/abcde"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "2.9.3_1"
+                  }
+                ]
+              }
+            ],
+            "ecosystem_specific": {
+              "fix": null,
+              "range_state": "affected",
+              "upstream_fixed_in": "8.65",
+              "resource": "Mojo::Base",
+              "resource_purl": "pkg:cpan/SRI/Mojolicious@8.64"
+            }
+          }
+        ],
+        "database_specific": {
+          "source": "matched",
+          "strategy": "cpansa",
+          "confidence": "medium",
+          "upstream_evidence": [
+            {
+              "strategy": "cpansa",
+              "ecosystem": "CPAN",
+              "name": "Mojolicious",
+              "subject_version": "8.64",
+              "key": "pkg:cpan/SRI/Mojolicious@8.64",
+              "resource": "Mojo::Base"
+            }
+          ]
+        },
+        "severity": [
+          {
+            "type": "CVSS_V3",
+            "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+          }
+        ],
+        "references": [
+          {
+            "type": "WEB",
+            "url": "https://lists.debian.org/debian-lts-announce/2024/06/msg00025.html"
+          },
+          {
+            "type": "REPORT",
+            "url": "https://github.com/mojolicious/mojo/issues/1599"
+          }
+        ]
+      }
+    ],
+    "abi3audit": [
+      {
+        "schema_version": "1.7.3",
+        "id": "BREW-abi3audit-CVE-2024-35195",
+        "published": "2026-08-13T16:34:56Z",
+        "modified": "2026-10-08T00:42:45Z",
+        "upstream": [
+          "GHSA-9wx4-h78v-vm56",
+          "CVE-2024-35195",
+          "PYSEC-2026-1873"
+        ],
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "Homebrew",
+              "name": "abi3audit",
+              "purl": "pkg:brew/abi3audit"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0.0.8"
+                  },
+                  {
+                    "fixed": "0.0.11"
+                  }
+                ]
+              }
+            ],
+            "ecosystem_specific": {
+              "fix": "bump",
+              "range_state": "fixed",
+              "upstream_fixed_in": "2.32.0",
+              "resource": "requests",
+              "resource_purl": "pkg:pypi/requests@2.34.2"
+            }
+          }
+        ],
+        "database_specific": {
+          "source": "matched",
+          "strategy": "registry",
+          "confidence": "high",
+          "upstream_evidence": [
+            {
+              "strategy": "registry",
+              "ecosystem": "PyPI",
+              "name": "requests",
+              "subject_version": "2.34.2",
+              "key": "pkg:pypi/requests@2.34.2",
+              "resource": "requests"
+            }
+          ]
+        },
+        "summary": "Requests `Session` object does not verify requests after making first request with verify=False",
+        "severity": [
+          {
+            "type": "CVSS_V3",
+            "score": "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:H/I:H/A:N"
+          }
+        ],
+        "references": [
+          {
+            "type": "WEB",
+            "url": "https://github.com/psf/requests/security/advisories/GHSA-9wx4-h78v-vm56"
+          },
+          {
+            "type": "ADVISORY",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2024-35195"
+          }
+        ]
+      }
+    ],
+    "hermes-agent": [
+      {
+        "schema_version": "1.7.3",
+        "id": "BREW-hermes-agent-CVE-2026-102275",
+        "published": "2026-10-06T10:05:10Z",
+        "modified": "2026-10-27T17:56:27Z",
+        "upstream": [
+          "GHSA-x33g-cr3x-6449",
+          "CVE-2026-102275",
+          "PYSEC-2026-4183"
+        ],
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "Homebrew",
+              "name": "hermes-agent",
+              "purl": "pkg:brew/hermes-agent"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0.21.6"
+                  },
+                  {
+                    "fixed": "0.22.4"
+                  }
+                ]
+              },
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "2026.4.30"
+                  },
+                  {
+                    "last_affected": "2026.9.24"
+                  }
+                ]
+              }
+            ],
+            "ecosystem_specific": {
+              "fix": "bump",
+              "range_state": "fixed",
+              "upstream_fixed_in": "2.15.0",
+              "resource": "pyjwt",
+              "resource_purl": "pkg:pypi/pyjwt@2.15.1"
+            }
+          }
+        ],
+        "database_specific": {
+          "source": "matched",
+          "strategy": "registry",
+          "confidence": "high",
+          "upstream_evidence": [
+            {
+              "strategy": "registry",
+              "ecosystem": "PyPI",
+              "name": "pyjwt",
+              "subject_version": "2.15.1",
+              "key": "pkg:pypi/pyjwt@2.15.1",
+              "resource": "pyjwt"
+            }
+          ]
+        },
+        "summary": "PyJWT accepts inconsistent OKP x/d JWKs, causing public/private key identity confusion",
+        "severity": [
+          {
+            "type": "CVSS_V3",
+            "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:H/A:N"
+          }
+        ],
+        "references": [
+          {
+            "type": "WEB",
+            "url": "https://github.com/jpadilla/pyjwt/security/advisories/GHSA-x33g-cr3x-6449"
+          },
+          {
+            "type": "ADVISORY",
+            "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-102275"
+          }
+        ]
+      }
+    ],
+    "lrzsz": [
+      {
+        "schema_version": "1.7.3",
+        "id": "BREW-lrzsz-CVE-2018-10195",
+        "published": "2026-06-28T21:29:54Z",
+        "modified": "2026-09-04T06:45:30Z",
+        "upstream": [
+          "CVE-2018-10195"
+        ],
+        "affected": [
+          {
+            "package": {
+              "ecosystem": "Homebrew",
+              "name": "lrzsz",
+              "purl": "pkg:brew/lrzsz"
+            },
+            "ranges": [
+              {
+                "type": "ECOSYSTEM",
+                "events": [
+                  {
+                    "introduced": "0"
+                  },
+                  {
+                    "fixed": "0.12.20_1"
+                  }
+                ]
+              }
+            ],
+            "ecosystem_specific": {
+              "fix": "patch",
+              "patches": [
+                {
+                  "type": "unofficial",
+                  "url": "https://raw.githubusercontent.com/macports/macports-ports/2319730/comms/lrzsz/files/patch-CVE-2018-10195.diff"
+                }
+              ]
+            }
+          }
+        ],
+        "database_specific": {
+          "source": "generated"
+        },
+        "severity": [
+          {
+            "type": "CVSS_V3",
+            "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:H"
+          }
+        ],
+        "references": [
+          {
+            "type": "ADVISORY",
+            "url": "https://lists.suse.com/pipermail/sle-security-updates/2018-April/003955.html?_ga=2.81625751.1026327980.1622040648-1950393542.1547130931"
+          },
+          {
+            "type": "ADVISORY",
+            "url": "https://lists.suse.com/pipermail/sle-security-updates/2018-April/003956.html?_ga=2.81625751.1026327980.1622040648-1950393542.1547130931"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -63,6 +63,9 @@ pub enum WaxError {
     #[error("TOML error: {0}")]
     TomlError(#[from] toml::de::Error),
 
+    #[error("{0} open security advisories")]
+    VulnerabilitiesFound(usize),
+
     #[error("operation interrupted")]
     Interrupted,
 }

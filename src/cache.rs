@@ -115,7 +115,6 @@ impl Cache {
         Ok(())
     }
 
-    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn cache_dir_path(&self) -> &Path {
         &self.cache_dir
     }
