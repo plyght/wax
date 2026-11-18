@@ -82,6 +82,236 @@ fn cask_uninstall_requires_the_recorded_path_and_bundle_identity() {
     assert!(renamed.is_dir() && neighbor.is_dir());
 }
 
+#[cfg(target_os = "macos")]
+mod cask_receipt_regressions {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
+    use std::process::Output;
+
+    const TOKEN: &str = "wax-fixture-receipts";
+
+    struct Fixture {
+        _home: tempfile::TempDir,
+        root: PathBuf,
+        app: PathBuf,
+        state: PathBuf,
+        receipts: Value,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let home = tempfile::tempdir().unwrap();
+            let root = home.path().canonicalize().unwrap();
+            fs::create_dir_all(root.join(".wax/cache")).unwrap();
+            fs::write(root.join(".wax/cache/casks.json"), "[]").unwrap();
+            let app = root.join("Custom/Recorded.app");
+            Self::bundle(&app);
+            Self {
+                state: root.join(".wax/installed_casks.json"),
+                receipts: json!({(TOKEN): {
+                    "name": TOKEN, "version": "1", "install_date": 0,
+                    "artifact_type": "dmg", "app_name": "Recorded.app",
+                    "binary_paths": null, "installed_paths": [],
+                    "apps": [{"path": app, "identifier": "test.recorded"}]
+                }}),
+                _home: home,
+                root,
+                app,
+            }
+        }
+
+        fn bundle(path: &Path) {
+            fs::create_dir_all(path.join("Contents")).unwrap();
+            fs::write(path.join("Contents/Info.plist"), "<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>test.recorded</string></dict></plist>").unwrap();
+            fs::write(path.join("Contents/payload"), b"keep this payload").unwrap();
+        }
+
+        fn remove(&self, args: &[&str]) -> Output {
+            fs::write(&self.state, self.receipts.to_string()).unwrap();
+            wax_with_home(&self.root)
+                .current_dir(&self.root)
+                .env("WAX_CACHE_DIR", self.root.join(".wax/cache"))
+                .args(["uninstall", "--cask", TOKEN])
+                .args(args)
+                .output()
+                .unwrap()
+        }
+
+        fn assert_receipt_retained(&self) {
+            let after: Value = serde_json::from_slice(&fs::read(&self.state).unwrap()).unwrap();
+            assert_eq!(after[TOKEN], self.receipts[TOKEN]);
+        }
+    }
+
+    #[test]
+    fn unsafe_app_receipts_preserve_bundles_and_ownership() {
+        for case in [
+            "symlink",
+            "ancestor-symlink",
+            "missing-id",
+            "relative",
+            "extension",
+        ] {
+            let mut f = Fixture::new();
+            let path = match case {
+                "symlink" => {
+                    let link = f.root.join("Alias.app");
+                    symlink(&f.app, &link).unwrap();
+                    link
+                }
+                "ancestor-symlink" => {
+                    let link = f.root.join("Alias");
+                    symlink(f.app.parent().unwrap(), &link).unwrap();
+                    link.join("Recorded.app")
+                }
+                "missing-id" => {
+                    fs::write(
+                        f.app.join("Contents/Info.plist"),
+                        "<plist version=\"1.0\"><dict/></plist>",
+                    )
+                    .unwrap();
+                    f.app.clone()
+                }
+                "relative" => PathBuf::from("Custom/Recorded.app"),
+                "extension" => {
+                    let path = f.root.join("Custom/Recorded.bundle");
+                    Fixture::bundle(&path);
+                    path
+                }
+                _ => unreachable!(),
+            };
+            f.receipts[TOKEN]["apps"][0]["path"] = json!(path);
+            let result = f.remove(&[]);
+            assert!(!result.status.success(), "accepted {case}");
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains("identity changed"),
+                "{case}: {:?}",
+                result
+            );
+            assert_eq!(
+                fs::read(f.app.join("Contents/payload")).unwrap(),
+                b"keep this payload",
+                "{case}"
+            );
+            assert!(f.root.join(&path).exists(), "removed {case}");
+            f.assert_receipt_retained();
+        }
+    }
+
+    #[test]
+    fn all_app_receipts_are_checked_before_any_deletion() {
+        let mut f = Fixture::new();
+        let second = f.root.join("Custom/Second.app");
+        Fixture::bundle(&second);
+        f.receipts[TOKEN]["apps"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "path": second, "identifier": "test.expected-other-id"
+            }));
+        let auxiliary = f.root.join("auxiliary-file");
+        fs::write(&auxiliary, b"do not delete before validation").unwrap();
+        f.receipts[TOKEN]["installed_paths"] = json!([auxiliary]);
+        let result = f.remove(&[]);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("identity changed"));
+        assert!(f.app.is_dir() && second.is_dir() && auxiliary.is_file());
+        f.assert_receipt_retained();
+
+        f.receipts[TOKEN]["apps"][1]["identifier"] = json!("test.recorded");
+        let result = f.remove(&[]);
+        assert!(result.status.success(), "{:?}", result);
+        assert!(!f.app.exists() && !second.exists() && !auxiliary.exists());
+    }
+
+    #[test]
+    fn case_aliased_claims_cannot_delete_another_casks_bundle() {
+        for legacy in [false, true] {
+            let mut f = Fixture::new();
+            let alias = f.app.with_file_name("recorded.app");
+            if !alias.exists() {
+                eprintln!("case-alias scenario requires a case-insensitive volume");
+                return;
+            }
+            let mut other = f.receipts[TOKEN].clone();
+            other["name"] = json!("wax-fixture-other-owner");
+            if legacy {
+                other["apps"] = json!([]);
+                other["installed_paths"] = json!([alias]);
+            } else {
+                other["apps"][0]["path"] = json!(alias);
+            }
+            f.receipts["wax-fixture-other-owner"] = other;
+            let result = f.remove(&[]);
+            assert!(
+                !result.status.success(),
+                "deleted shared bundle (legacy={legacy})"
+            );
+            assert!(String::from_utf8_lossy(&result.stderr).contains("Multiple casks claim"));
+            assert_eq!(
+                fs::read(f.app.join("Contents/payload")).unwrap(),
+                b"keep this payload"
+            );
+            f.assert_receipt_retained();
+
+            let separate = f.root.join("Other/Recorded.app");
+            Fixture::bundle(&separate);
+            if legacy {
+                f.receipts["wax-fixture-other-owner"]["installed_paths"] = json!([separate]);
+            } else {
+                f.receipts["wax-fixture-other-owner"]["apps"][0]["path"] = json!(separate);
+            }
+            let result = f.remove(&[]);
+            assert!(result.status.success(), "{:?}", result);
+            assert!(!f.app.exists());
+            assert_eq!(
+                fs::read(separate.join("Contents/payload")).unwrap(),
+                b"keep this payload"
+            );
+        }
+    }
+
+    #[test]
+    fn dry_run_preserves_apps_auxiliary_files_and_receipt_contents() {
+        let mut f = Fixture::new();
+        let auxiliary = f.root.join("auxiliary-file");
+        fs::write(&auxiliary, b"keep this file").unwrap();
+        f.receipts[TOKEN]["installed_paths"] = json!([auxiliary]);
+        let result = f.remove(&["--dry-run"]);
+        assert!(result.status.success(), "{:?}", result);
+        assert_eq!(
+            fs::read(f.app.join("Contents/payload")).unwrap(),
+            b"keep this payload"
+        );
+        assert_eq!(fs::read(auxiliary).unwrap(), b"keep this file");
+        f.assert_receipt_retained();
+    }
+
+    #[test]
+    fn legacy_binary_only_receipts_still_uninstall_without_touching_apps() {
+        let mut f = Fixture::new();
+        let binary = f.root.join("legacy-tool");
+        fs::write(&binary, b"fixture binary").unwrap();
+        let receipt = f.receipts[TOKEN].as_object_mut().unwrap();
+        receipt.remove("apps");
+        receipt.insert("app_name".into(), Value::Null);
+        receipt.insert("artifact_type".into(), json!("binary"));
+        receipt.insert("binary_paths".into(), json!([binary]));
+        let result = f.remove(&[]);
+        assert!(result.status.success(), "{:?}", result);
+        assert!(!binary.exists());
+        assert_eq!(
+            fs::read(f.app.join("Contents/payload")).unwrap(),
+            b"keep this payload"
+        );
+        let after: Value = serde_json::from_slice(&fs::read(&f.state).unwrap()).unwrap();
+        assert!(after.get(TOKEN).is_none());
+    }
+}
+
 #[cfg(windows)]
 fn write_windows_manifest(home: &Path, ecosystem: &str, id: &str, version: &str) {
     let root = home.join(".local").join("wax");

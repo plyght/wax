@@ -359,6 +359,8 @@ async fn uninstall_cask(
     let artifacts = details.as_ref().and_then(|d| d.artifacts.as_deref());
     #[cfg(target_os = "macos")]
     {
+        use std::os::unix::fs::MetadataExt;
+
         if cask.apps.is_empty()
             && (cask.app_name.is_some()
                 || cask.artifact_type.is_none()
@@ -371,18 +373,31 @@ async fn uninstall_cask(
             return Err(WaxError::InvalidInput(format!("No verified app receipt for {cask_name}; use the original installer or remove it manually")));
         }
         for app in &cask.apps {
-            if installed_casks.iter().any(|(other, record)| {
-                other != cask_name
-                    && (record.apps.iter().any(|r| r.path == app.path)
-                        || record
-                            .installed_paths
-                            .iter()
-                            .any(|p| Path::new(p) == app.path))
-            }) {
-                return Err(WaxError::InvalidInput(format!(
-                    "Multiple casks claim {}; leaving it untouched",
-                    app.path.display()
-                )));
+            let metadata = tokio::fs::metadata(&app.path).await.ok();
+            for (_, record) in installed_casks
+                .iter()
+                .filter(|(other, _)| *other != cask_name)
+            {
+                for path in record
+                    .apps
+                    .iter()
+                    .map(|r| r.path.as_path())
+                    .chain(record.installed_paths.iter().map(Path::new))
+                {
+                    let same_app = path == app.path
+                        || match (&metadata, tokio::fs::metadata(path).await) {
+                            (Some(expected), Ok(actual)) => {
+                                expected.dev() == actual.dev() && expected.ino() == actual.ino()
+                            }
+                            _ => false,
+                        };
+                    if same_app {
+                        return Err(WaxError::InvalidInput(format!(
+                            "Multiple casks claim {}; leaving it untouched",
+                            app.path.display()
+                        )));
+                    }
+                }
             }
             app.present().await?;
         }
