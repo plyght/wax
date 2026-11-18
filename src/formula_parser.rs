@@ -957,11 +957,15 @@ impl FormulaParser {
         let mut artifacts = Vec::new();
 
         static RE_APP: OnceLock<Regex> = OnceLock::new();
-        let re_app = RE_APP.get_or_init(|| Regex::new(r#"(?m)^\s*app\s+"([^"]+)""#).unwrap());
+        let re_app = RE_APP.get_or_init(|| {
+            Regex::new(r#"(?m)^\s*app\s+"([^"]+)"(?:\s*,\s*\{?\s*target:\s*"([^"]+)")?"#).unwrap()
+        });
         for cap in re_app.captures_iter(content) {
-            artifacts.push(CaskArtifact::App {
-                app: vec![serde_json::Value::String(cap[1].to_string())],
-            });
+            let mut app = vec![serde_json::Value::String(cap[1].to_string())];
+            if let Some(target) = cap.get(2) {
+                app.push(serde_json::json!({"target": target.as_str()}));
+            }
+            artifacts.push(CaskArtifact::App { app });
         }
 
         static RE_PKG: OnceLock<Regex> = OnceLock::new();
@@ -1352,6 +1356,19 @@ end
 end"#;
         assert!(!FormulaParser::is_homebrew_cask_rb(formula));
         assert!(FormulaParser::is_homebrew_cask_rb(cask));
+    }
+
+    #[test]
+    fn app_destination_comes_from_the_artifact() {
+        let artifacts = FormulaParser::extract_cask_artifacts("app \"build/Payload.app\", target: \"Paper.app\"\napp \"extras/Viewer.app\"\napp \"Extras.app\", target: \"../Other.app\"");
+        let targets: Vec<_> = artifacts
+            .iter()
+            .map(|artifact| match artifact {
+                CaskArtifact::App { app } => crate::cask::app_artifact_name(app),
+                _ => panic!("expected app"),
+            })
+            .collect();
+        assert_eq!(targets, [Some("Paper.app"), Some("Viewer.app"), None]);
     }
 
     #[test]

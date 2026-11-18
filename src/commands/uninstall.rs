@@ -7,7 +7,6 @@ use crate::error::{Result, WaxError};
 use crate::install::{remove_symlinks, InstallState};
 use crate::lockfile::Lockfile;
 use crate::signal::{clear_current_op, set_current_op};
-use crate::ui::dirs;
 use crate::ui::SPINNER_TICK_CHARS;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -288,51 +287,6 @@ async fn uninstall_package_direct(
     Ok(())
 }
 
-async fn resolve_cask_app_name(
-    cache: &Cache,
-    cask_name: &str,
-    version: &str,
-    stored_app_name: Option<&str>,
-) -> String {
-    if let Some(name) = stored_app_name {
-        let basename = std::path::Path::new(name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(name);
-        return if basename.ends_with(".app") {
-            basename.to_string()
-        } else {
-            format!("{}.app", basename)
-        };
-    }
-
-    if let Some(app_name) = find_app_in_caskroom(cask_name, version) {
-        return app_name;
-    }
-
-    if let Ok(details) = cache.fetch_cask_details(cask_name).await {
-        if let Some(artifacts) = details.artifacts {
-            for artifact in artifacts {
-                if let crate::api::CaskArtifact::App { app } = artifact {
-                    if let Some(source) = app.first().and_then(|v| v.as_str()) {
-                        let basename = std::path::Path::new(source)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(source);
-                        return if basename.ends_with(".app") {
-                            basename.to_string()
-                        } else {
-                            format!("{}.app", basename)
-                        };
-                    }
-                }
-            }
-        }
-    }
-
-    format!("{}.app", cask_name)
-}
-
 async fn run_uninstall_hook(details: &crate::api::CaskDetails, hook: &str, quiet: bool) {
     let declared = details.artifacts.iter().flatten().any(|artifact| {
         matches!(artifact, crate::api::CaskArtifact::Other(serde_json::Value::Object(map)) if map.contains_key(hook))
@@ -389,6 +343,13 @@ async fn uninstall_cask(
     }
 
     let details = match cache.load_all_casks().await {
+        Ok(casks)
+            if !casks
+                .iter()
+                .any(|c| c.token == cask_name || c.full_token == cask_name) =>
+        {
+            None
+        }
         Ok(casks) => cache
             .fetch_cask_details_from_index(&casks, cask_name)
             .await
@@ -396,6 +357,60 @@ async fn uninstall_cask(
         Err(_) => None,
     };
     let artifacts = details.as_ref().and_then(|d| d.artifacts.as_deref());
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if cask.apps.is_empty()
+            && (cask.app_name.is_some()
+                || cask.artifact_type.is_none()
+                || cask.artifact_type.as_deref() == Some("app")
+                || artifacts
+                    .iter()
+                    .flat_map(|a| a.iter())
+                    .any(|a| matches!(a, crate::api::CaskArtifact::App { .. })))
+        {
+            return Err(WaxError::InvalidInput(format!("No verified app receipt for {cask_name}; use the original installer or remove it manually")));
+        }
+        for app in &cask.apps {
+            let metadata = tokio::fs::metadata(&app.path).await.ok();
+            for (_, record) in installed_casks
+                .iter()
+                .filter(|(other, _)| *other != cask_name)
+            {
+                for path in record
+                    .apps
+                    .iter()
+                    .map(|r| r.path.as_path())
+                    .chain(record.installed_paths.iter().map(Path::new))
+                {
+                    let same_app = path == app.path
+                        || match (&metadata, tokio::fs::metadata(path).await) {
+                            (Some(expected), Ok(actual)) => {
+                                expected.dev() == actual.dev() && expected.ino() == actual.ino()
+                            }
+                            _ => false,
+                        };
+                    if same_app {
+                        return Err(WaxError::InvalidInput(format!(
+                            "Multiple casks claim {}; leaving it untouched",
+                            app.path.display()
+                        )));
+                    }
+                }
+            }
+            app.present().await?;
+        }
+    }
+    if cask
+        .installed_paths
+        .iter()
+        .any(|p| Path::new(p).extension().is_some_and(|ext| ext == "app"))
+    {
+        return Err(WaxError::InvalidInput(format!(
+            "Unverified legacy app path for {cask_name}; remove it manually"
+        )));
+    }
     let directives = artifacts
         .map(crate::cask_uninstall::parse)
         .unwrap_or_default();
@@ -403,7 +418,6 @@ async fn uninstall_cask(
         .filter(|_| ZAP.load(std::sync::atomic::Ordering::Relaxed))
         .map(crate::cask_uninstall::parse_zap)
         .unwrap_or_default();
-    let pkgutil_handled = !directives.pkgutil.is_empty();
     if let Some(details) = &details {
         run_uninstall_hook(details, "uninstall_preflight", quiet).await;
     }
@@ -422,110 +436,31 @@ async fn uninstall_cask(
         }
     }
 
-    let artifact_type = cask.artifact_type.as_deref().unwrap_or("dmg");
-
-    match artifact_type {
-        "tar.gz" | "binary" => {
-            if let Some(binary_paths) = &cask.binary_paths {
-                for binary_path in binary_paths {
-                    let path = std::path::PathBuf::from(binary_path);
-                    if path.exists() {
-                        tokio::fs::remove_file(&path).await?;
-                    }
-                }
-            }
-        }
-        "pkg" if pkgutil_handled => {}
-        "pkg" => {
-            // Best-effort: forget packages matching the cask token.
-            let pkgutil_output = std::process::Command::new("pkgutil")
-                .args(["--packages"])
-                .output();
-            if let Ok(out) = pkgutil_output {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                for pkg_id in stdout.lines() {
-                    if pkg_id.contains(cask_name) {
-                        let _ = std::process::Command::new("pkgutil")
-                            .args(["--forget", pkg_id])
-                            .output();
-                    }
-                }
-            }
-            if !quiet {
-                println!(
-                    "{} - removed PKG receipts for {}",
-                    style("!").yellow(),
-                    cask_name
-                );
-            }
-        }
-        _ => {
-            let app_basename =
-                resolve_cask_app_name(cache, cask_name, &cask.version, cask.app_name.as_deref())
-                    .await;
-
-            // On macOS: check /Applications, then ~/Applications.
-            // On Linux: check ~/Applications only (no system /Applications).
-            #[cfg(target_os = "macos")]
-            let candidates: Vec<std::path::PathBuf> = vec![
-                crate::cask::CaskInstaller::applications_dir()
-                    .map(|d| d.join(&app_basename))
-                    .unwrap_or_default(),
-                std::path::PathBuf::from("/Applications").join(&app_basename),
-                dirs::home_dir()
-                    .map(|h| h.join("Applications").join(&app_basename))
-                    .unwrap_or_default(),
-            ];
-            #[cfg(not(target_os = "macos"))]
-            let candidates: Vec<std::path::PathBuf> = vec![dirs::home_dir()
-                .map(|h| h.join("Applications").join(&app_basename))
-                .unwrap_or_default()];
-
-            let mut removed = false;
-            for app_path in &candidates {
-                if app_path.exists() {
-                    #[cfg(target_os = "macos")]
-                    if tokio::fs::remove_dir_all(app_path).await.is_err() {
-                        // Fall back to sudo for system-installed apps.
-                        crate::sudo::sudo_remove(app_path)?;
-                        removed = true;
-                        break;
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    tokio::fs::remove_dir_all(app_path).await?;
-                    removed = true;
-                    break;
-                }
-            }
-
-            if !removed && !quiet {
-                eprintln!(
-                    "warning: could not find {} in Applications — \
-                    you may need to remove it manually",
-                    app_basename
-                );
-            }
-
-            if let Some(ref paths) = cask.binary_paths {
-                for bin_path in paths {
-                    let link = Path::new(bin_path);
-                    if link.is_symlink() {
-                        if let Ok(target) = tokio::fs::read_link(link).await {
-                            if target.to_string_lossy().contains(cask_name) {
-                                let _ = tokio::fs::remove_file(link).await;
-                            }
-                        }
-                    }
-                }
-            }
+    #[cfg(target_os = "macos")]
+    for app in &cask.apps {
+        if app.present().await? {
+            tokio::fs::remove_dir_all(&app.path).await?;
+        } else if !quiet {
+            eprintln!(
+                "{} no longer exists; not searching for another copy",
+                app.path.display()
+            );
         }
     }
 
-    if let Some(details) = &details {
-        run_uninstall_hook(details, "uninstall_postflight", quiet).await;
+    // Older binary-only receipts predate installed_paths.
+    if matches!(cask.artifact_type.as_deref(), Some("tar.gz" | "binary")) {
+        for path in cask.binary_paths.iter().flatten() {
+            if Path::new(path).is_file() || Path::new(path).is_symlink() {
+                tokio::fs::remove_file(path).await?;
+            }
+        }
     }
 
     // Remove all tracked installed paths
+    if let Some(details) = &details {
+        run_uninstall_hook(details, "uninstall_postflight", quiet).await;
+    }
     for path_str in &cask.installed_paths {
         let path = Path::new(path_str);
         if path.exists() {
@@ -582,24 +517,6 @@ async fn uninstall_cask(
     Ok(())
 }
 
-fn find_app_in_caskroom(cask_name: &str, version: &str) -> Option<String> {
-    let caskroom = CaskState::caskroom_dir();
-    let version_dir = caskroom.join(cask_name).join(version);
-    if !version_dir.exists() {
-        return None;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(&version_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("app") {
-                return path.file_name().map(|n| n.to_string_lossy().into_owned());
-            }
-        }
-    }
-    None
-}
-
 #[cfg(target_os = "windows")]
 async fn uninstall_windows_package(
     manifest: &WindowsPackageManifest,
@@ -649,15 +566,4 @@ async fn uninstall_windows_package(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_find_app_in_caskroom_nonexistent() {
-        let result = find_app_in_caskroom("nonexistent", "1.0.0");
-        assert_eq!(result, None);
-    }
 }
