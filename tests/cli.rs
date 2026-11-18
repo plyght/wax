@@ -21,6 +21,67 @@ fn wax_with_home(home: &Path) -> Command {
     cmd
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn cask_uninstall_requires_the_recorded_path_and_bundle_identity() {
+    use std::fs;
+    let home = tempfile::tempdir().unwrap();
+    let canonical_home = home.path().canonicalize().unwrap();
+    let root = canonical_home.as_path();
+    let cache = root.join(".wax/cache");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("casks.json"), "[]").unwrap();
+    let state = root.join(".wax/installed_casks.json");
+    let token = "wax-fixture-paper-desktop";
+    let recorded = root.join("Custom/Paper.app");
+    let neighbor = root.join("Applications/Paper.app");
+    let bundle = |p: &Path, id: &str| {
+        fs::create_dir_all(p.join("Contents")).unwrap();
+        fs::write(p.join("Contents/Info.plist"), format!("<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{id}</string></dict></plist>")).unwrap();
+    };
+    let receipt = serde_json::json!({(token): {"name":token,"version":"1","install_date":0,"artifact_type":"dmg","app_name":"Paper.app","apps":[{"path":recorded,"identifier":"test.paper"}]}});
+    let reset = || fs::write(&state, receipt.to_string()).unwrap();
+    let remove = || {
+        wax_with_home(root)
+            .env("WAX_CACHE_DIR", &cache)
+            .env("WAX_APPDIR", neighbor.parent().unwrap())
+            .args(["uninstall", "--cask", token])
+            .output()
+            .unwrap()
+    };
+    reset();
+    bundle(&neighbor, "test.paper");
+    bundle(&recorded, "other.paper");
+    let result = remove();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("identity changed"));
+    assert!(recorded.is_dir() && neighbor.is_dir());
+    let renamed = root.join("Custom/Renamed.app");
+    bundle(&recorded, "test.paper");
+    fs::rename(&recorded, &renamed).unwrap();
+    assert!(remove().status.success());
+    assert!(renamed.is_dir() && neighbor.is_dir());
+    reset();
+    bundle(&recorded, "test.paper");
+    let mut ambiguous = receipt.clone();
+    ambiguous["wax-fixture-paper-beta"] = receipt[token].clone();
+    fs::write(&state, ambiguous.to_string()).unwrap();
+    let result = remove();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("Multiple casks claim"));
+    assert!(recorded.is_dir());
+    let mut legacy = receipt.clone();
+    legacy[token].as_object_mut().unwrap().remove("apps");
+    legacy[token]["installed_paths"] = serde_json::json!([recorded]);
+    fs::write(&state, legacy.to_string()).unwrap();
+    assert!(!remove().status.success());
+    assert!(recorded.is_dir());
+    reset();
+    assert!(remove().status.success());
+    assert!(!recorded.exists());
+    assert!(renamed.is_dir() && neighbor.is_dir());
+}
+
 #[cfg(windows)]
 fn write_windows_manifest(home: &Path, ecosystem: &str, id: &str, version: &str) {
     let root = home.join(".local").join("wax");

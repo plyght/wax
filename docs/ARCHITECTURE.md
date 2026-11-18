@@ -20,7 +20,7 @@ Wax replaces Homebrew's git-based tap system with direct JSON API access and par
 
 **Async-First**: Uses tokio runtime for all I/O operations. Parallel downloads with configurable concurrency limits (default 8 simultaneous).
 
-**Homebrew Coexistence**: Installs to the same Cellar structure and reads existing Homebrew-installed packages. It also performs best-effort discovery of manually installed macOS apps and Linux dpkg/rpm packages so the installed-package view reflects software added outside Wax.
+**Homebrew Coexistence**: Wax reads existing Cellar and Caskroom installs and discovers Linux dpkg/rpm packages. On macOS, finding a matching app in Applications does not make it a managed cask. For new app installs, Wax records the destination path and the bundle identifier from `Info.plist`. Uninstall checks both; it does not search for moved apps or delete a bundle on the strength of a legacy name alone.
 
 ## Module Architecture
 

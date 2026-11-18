@@ -2777,7 +2777,7 @@ async fn install_from_downloaded(
     rollback.add(version_dir.clone());
 
     let mut binary_paths: Vec<String> = Vec::new();
-    let mut installed_app_name: Option<String> = None;
+    let mut apps = Vec::new();
     let mut installed_paths: Vec<String> = Vec::new();
 
     if cask_has_hook(cask, "preflight") {
@@ -2791,16 +2791,14 @@ async fn install_from_downloaded(
                 CaskArtifact::App { app } => {
                     if let Some(source) = app.first().and_then(|v| v.as_str()) {
                         step!(format!("installing app: {}", source));
-                        installer
-                            .install_app(&staging, &mut rollback, source)
-                            .await?;
-                        let app_name = std::path::Path::new(source)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(source);
-                        installed_app_name = Some(app_name.to_string());
-                        let app_dest = CaskInstaller::applications_dir()?.join(app_name);
-                        installed_paths.push(app_dest.display().to_string());
+                        let target = crate::cask::app_artifact_name(app).ok_or_else(|| {
+                            WaxError::InstallError(format!("Invalid app target: {app:?}"))
+                        })?;
+                        apps.extend(
+                            installer
+                                .install_app(&staging, &mut rollback, source, target)
+                                .await?,
+                        );
                     }
                 }
                 CaskArtifact::Pkg { pkg } => {
@@ -3172,21 +3170,26 @@ async fn install_from_downloaded(
         // Fallback if no artifacts are explicitly defined (try to guess .app)
         if artifact_type == "dmg" || artifact_type == "zip" {
             let mut entries = tokio::fs::read_dir(&staging.staging_root).await?;
+            let mut found = None;
             while let Some(entry) = entries.next_entry().await? {
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("app") {
                     let Some(app_name) = path.file_name().and_then(|name| name.to_str()) else {
                         continue;
                     };
-                    step!(format!("installing guessed app: {}", app_name));
-                    installer
-                        .install_app(&staging, &mut rollback, app_name)
-                        .await?;
-                    installed_app_name = Some(app_name.to_string());
-                    let app_dest = CaskInstaller::applications_dir()?.join(app_name);
-                    installed_paths.push(app_dest.display().to_string());
-                    break;
+                    if found.replace(app_name.to_owned()).is_some() {
+                        return Err(WaxError::InstallError(
+                            "Multiple app bundles without a declared app artifact".into(),
+                        ));
+                    }
                 }
+            }
+            if let Some(name) = found {
+                apps.extend(
+                    installer
+                        .install_app(&staging, &mut rollback, &name, &name)
+                        .await?,
+                );
             }
         }
     }
@@ -3212,7 +3215,10 @@ async fn install_from_downloaded(
         } else {
             Some(binary_paths)
         },
-        app_name: installed_app_name,
+        app_name: apps
+            .first()
+            .and_then(|app| app.path.file_name()?.to_str().map(str::to_owned)),
+        apps,
         installed_paths,
     })
 }

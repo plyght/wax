@@ -5,128 +5,28 @@
 //! specific locations and merge any matches back into Wax’s installed-package
 //! view so lockfiles, sync, and status commands stay accurate.
 
-#[cfg(target_os = "macos")]
-use crate::api::Cask;
 #[cfg(target_os = "linux")]
 use crate::api::Formula;
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use crate::bottle::detect_platform;
-#[cfg(target_os = "macos")]
-use crate::cask::InstalledCask;
-#[cfg_attr(target_os = "windows", allow(unused_imports))]
+#[cfg(target_os = "linux")]
 use crate::error::Result;
 #[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 use crate::install::{InstallMode, InstalledPackage};
 #[cfg(target_os = "macos")]
 use crate::ui::dirs;
-#[cfg_attr(target_os = "windows", allow(unused_imports))]
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg_attr(target_os = "windows", allow(unused_imports))]
 use tokio::process::Command;
-#[cfg(target_os = "macos")]
-use tracing::debug;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use tracing::info;
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AppBundleMetadata {
-    bundle_name: String,
-    file_name: String,
-    bundle_identifier: Option<String>,
-    short_version: Option<String>,
-    bundle_version: Option<String>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CaskMatch {
-    cask_index: usize,
-    version: Option<String>,
-}
-
-#[cfg(target_os = "macos")]
-pub async fn discover_manually_installed_casks(
-    casks: &[Cask],
-) -> Result<HashMap<String, InstalledCask>> {
-    // Match application bundles against every known cask token/name alias,
-    // but keep all candidates so ambiguous names can be resolved by
-    // stronger bundle metadata instead of whichever cask appears first.
-    let candidate_index = build_cask_candidate_index(casks);
-    let mut discovered = HashMap::new();
-
-    // Scan the standard application roots so manually installed apps are
-    // visible to Wax even when they were not installed through brew.
-    for root in macos_application_roots() {
-        if !root.exists() {
-            continue;
-        }
-
-        let mut entries = match tokio::fs::read_dir(&root).await {
-            Ok(entries) => entries,
-            Err(err) => {
-                debug!("Skipping {:?}: {}", root, err);
-                continue;
-            }
-        };
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().to_string();
-
-            if !path.is_dir() && !path.is_symlink() {
-                continue;
-            }
-            if !file_name.ends_with(".app") {
-                continue;
-            }
-            if file_name.starts_with('.') {
-                continue;
-            }
-
-            let app = read_app_bundle_metadata(&path, &file_name).await;
-            let Some(cask_match) = resolve_cask_match(casks, &candidate_index, &app) else {
-                continue;
-            };
-            let cask = &casks[cask_match.cask_index];
-
-            let version = cask_match.version.unwrap_or_else(|| "unknown".to_string());
-            let install_date = entry
-                .metadata()
-                .await
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(system_time_to_unix_seconds)
-                .unwrap_or_else(unix_seconds_now);
-
-            discovered
-                .entry(cask.token.clone())
-                .or_insert_with(|| InstalledCask {
-                    name: cask.token.clone(),
-                    version,
-                    install_date,
-                    artifact_type: Some("app".to_string()),
-                    binary_paths: None,
-                    app_name: Some(app.bundle_name),
-                    installed_paths: Vec::new(),
-                });
-        }
-    }
-
-    if !discovered.is_empty() {
-        info!(
-            "Discovered {} cask(s) from manual installs in application roots",
-            discovered.len()
-        );
-    }
-    Ok(discovered)
-}
 
 #[cfg(target_os = "linux")]
 pub async fn discover_linux_system_packages(
@@ -166,68 +66,6 @@ pub async fn discover_linux_system_packages(
     Ok(discovered)
 }
 
-#[cfg(target_os = "macos")]
-pub(crate) fn matching_manual_app_name<'a>(
-    requested_name: &str,
-    app_names: impl IntoIterator<Item = &'a str>,
-) -> Option<String> {
-    let requested = normalize_package_token(requested_name);
-    app_names
-        .into_iter()
-        .find(|app_name| {
-            let normalized_app_name = normalize_package_token(app_name);
-            normalized_app_name == requested
-                || normalized_app_name
-                    .strip_prefix(&requested)
-                    .is_some_and(|suffix| suffix.starts_with('-'))
-        })
-        .map(str::to_owned)
-}
-
-#[cfg(target_os = "macos")]
-pub async fn manually_installed_app_matching(requested_name: &str) -> Option<String> {
-    for root in macos_application_roots() {
-        let Ok(mut entries) = tokio::fs::read_dir(root).await else {
-            continue;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            if !file_name.ends_with(".app") || (!path.is_dir() && !path.is_symlink()) {
-                continue;
-            }
-            let app = read_app_bundle_metadata(&path, &file_name).await;
-            if matching_manual_app_name(
-                requested_name,
-                [file_name.as_str(), app.bundle_name.as_str()],
-            )
-            .is_some()
-            {
-                return Some(file_name);
-            }
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn build_cask_candidate_index(casks: &[Cask]) -> HashMap<String, Vec<usize>> {
-    let mut index = HashMap::new();
-
-    for (cask_index, cask) in casks.iter().enumerate() {
-        for alias in cask_tokens(cask) {
-            let candidates = index
-                .entry(normalize_package_token(&alias))
-                .or_insert_with(Vec::new);
-            if candidates.last() != Some(&cask_index) {
-                candidates.push(cask_index);
-            }
-        }
-    }
-
-    index
-}
-
 #[cfg(target_os = "linux")]
 fn build_formula_token_index(formulae: &[Formula]) -> HashMap<String, String> {
     let mut index = HashMap::new();
@@ -244,86 +82,7 @@ fn build_formula_token_index(formulae: &[Formula]) -> HashMap<String, String> {
     index
 }
 
-#[cfg(target_os = "macos")]
-fn cask_tokens(cask: &Cask) -> Vec<String> {
-    let mut aliases = vec![cask.token.clone(), cask.full_token.clone()];
-    aliases.extend(cask.name.clone());
-    aliases
-}
-
-#[cfg(target_os = "macos")]
-fn candidate_indices_for_value(
-    candidate_index: &HashMap<String, Vec<usize>>,
-    value: &str,
-) -> Vec<usize> {
-    let mut candidates = Vec::new();
-    let normalized = normalize_package_token(value);
-    if let Some(indices) = candidate_index.get(&normalized) {
-        candidates.extend(indices.iter().copied());
-    }
-
-    let stripped = value.trim_end_matches(".app");
-    let normalized_stripped = normalize_package_token(stripped);
-    if normalized_stripped != normalized {
-        if let Some(indices) = candidate_index.get(&normalized_stripped) {
-            candidates.extend(indices.iter().copied());
-            candidates.sort_unstable();
-            candidates.dedup();
-        }
-    }
-
-    candidates
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_cask_match(
-    casks: &[Cask],
-    candidate_index: &HashMap<String, Vec<usize>>,
-    app: &AppBundleMetadata,
-) -> Option<CaskMatch> {
-    let mut candidate_indices = candidate_indices_for_value(candidate_index, &app.bundle_name);
-    candidate_indices.extend(candidate_indices_for_value(candidate_index, &app.file_name));
-    candidate_indices.sort_unstable();
-    candidate_indices.dedup();
-
-    if candidate_indices.is_empty() {
-        return None;
-    }
-
-    if candidate_indices.len() == 1 {
-        let cask_index = candidate_indices[0];
-        return Some(CaskMatch {
-            cask_index,
-            version: app_version_for_cask(app, &casks[cask_index]),
-        });
-    }
-
-    let mut scored = candidate_indices
-        .into_iter()
-        .map(|cask_index| {
-            let cask = &casks[cask_index];
-            let score = cask_match_score(app, cask);
-            (cask_index, score)
-        })
-        .collect::<Vec<_>>();
-    scored.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then_with(|| casks[a.0].token.cmp(&casks[b.0].token))
-    });
-
-    let (best_index, best_score) = scored[0];
-    let second_score = scored.get(1).map(|(_, score)| *score).unwrap_or(0);
-    if best_score >= 50 && best_score > second_score {
-        Some(CaskMatch {
-            cask_index: best_index,
-            version: app_version_for_cask(app, &casks[best_index]),
-        })
-    } else {
-        None
-    }
-}
-
-#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn normalize_package_token(value: &str) -> String {
     let value = value
         .replace(".app", "")
@@ -358,80 +117,7 @@ pub(crate) fn normalize_package_token(value: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn cask_match_score(app: &AppBundleMetadata, cask: &Cask) -> i32 {
-    let mut score = 0;
-    if cask_version_matches_app(app, cask) {
-        score += 100;
-    }
-    if bundle_identifier_matches_cask(app.bundle_identifier.as_deref(), cask) {
-        score += 60;
-    }
-    score
-}
-
-#[cfg(target_os = "macos")]
-fn app_version_for_cask(app: &AppBundleMetadata, cask: &Cask) -> Option<String> {
-    if let (Some(short), Some(bundle)) = (&app.short_version, &app.bundle_version) {
-        if let Some(version) = combine_bundle_version_for_cask(short, bundle, &cask.version) {
-            return Some(version);
-        }
-    }
-
-    app.short_version
-        .clone()
-        .or_else(|| app.bundle_version.clone())
-}
-
-#[cfg(target_os = "macos")]
-fn cask_version_matches_app(app: &AppBundleMetadata, cask: &Cask) -> bool {
-    if app
-        .short_version
-        .as_deref()
-        .is_some_and(|version| version == cask.version)
-    {
-        return true;
-    }
-    if app
-        .bundle_version
-        .as_deref()
-        .is_some_and(|version| version == cask.version)
-    {
-        return true;
-    }
-
-    if let (Some(short), Some(bundle)) = (&app.short_version, &app.bundle_version) {
-        return combine_bundle_version_for_cask(short, bundle, &cask.version).is_some();
-    }
-
-    false
-}
-
-#[cfg(target_os = "macos")]
-fn bundle_identifier_matches_cask(bundle_identifier: Option<&str>, cask: &Cask) -> bool {
-    let Some(vendor) = bundle_identifier_vendor(bundle_identifier) else {
-        return false;
-    };
-
-    let token = normalize_package_token(&cask.token);
-    let full_token = normalize_package_token(&cask.full_token);
-    let homepage = normalize_package_token(&cask.homepage);
-
-    token.split('-').any(|part| part == vendor)
-        || full_token.split('-').any(|part| part == vendor)
-        || homepage.split('-').any(|part| part == vendor)
-}
-
-#[cfg(target_os = "macos")]
-fn bundle_identifier_vendor(bundle_identifier: Option<&str>) -> Option<String> {
-    let common_prefixes = ["app", "co", "com", "io", "net", "org"];
-    bundle_identifier?
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .map(|part| part.to_ascii_lowercase())
-        .find(|part| !part.is_empty() && !common_prefixes.contains(&part.as_str()))
-}
-
-#[cfg(target_os = "macos")]
-fn macos_application_roots() -> Vec<PathBuf> {
+pub(crate) fn macos_application_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/Applications")];
     if let Ok(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
@@ -440,52 +126,7 @@ fn macos_application_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-async fn read_app_bundle_metadata(path: &Path, file_name: &str) -> AppBundleMetadata {
-    AppBundleMetadata {
-        bundle_name: read_app_bundle_name(path)
-            .await
-            .unwrap_or_else(|| file_name.trim_end_matches(".app").to_string()),
-        file_name: file_name.to_string(),
-        bundle_identifier: read_info_plist_string(path, "CFBundleIdentifier").await,
-        short_version: read_info_plist_string(path, "CFBundleShortVersionString").await,
-        bundle_version: read_info_plist_string(path, "CFBundleVersion").await,
-    }
-}
-
-#[cfg(target_os = "macos")]
-async fn read_app_bundle_name(path: &Path) -> Option<String> {
-    if let Some(name) = read_info_plist_string(path, "CFBundleDisplayName").await {
-        return Some(name);
-    }
-    if let Some(name) = read_info_plist_string(path, "CFBundleName").await {
-        return Some(name);
-    }
-
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn combine_bundle_version_for_cask(
-    short_version: &str,
-    bundle_version: &str,
-    cask_version: &str,
-) -> Option<String> {
-    if !cask_version.contains(',') || bundle_version.is_empty() || short_version.is_empty() {
-        return None;
-    }
-
-    let combined = format!("{short_version},{bundle_version}");
-    if cask_version == combined || cask_version.starts_with(&format!("{combined},")) {
-        Some(combined)
-    } else {
-        None
-    }
-}
-
-#[cfg(target_os = "macos")]
-async fn read_info_plist_string(path: &Path, key: &str) -> Option<String> {
+pub(crate) async fn read_info_plist_string(path: &Path, key: &str) -> Option<String> {
     let plist = path.join("Contents/Info.plist");
     if !plist.exists() {
         return None;
@@ -709,14 +350,14 @@ fn parse_apk_inventory_lines(stdout: &[u8], package_names: &[String]) -> Vec<(St
         })
         .collect()
 }
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn system_time_to_unix_seconds(time: SystemTime) -> Option<i64> {
     time.duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs() as i64)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn unix_seconds_now() -> i64 {
     system_time_to_unix_seconds(SystemTime::now()).unwrap_or(0)
 }
@@ -737,157 +378,6 @@ mod tests {
         );
         assert_eq!(normalize_package_token("Docker Desktop"), "docker-desktop");
     }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn matches_manual_beta_app_to_versioned_request() {
-        assert_eq!(
-            matching_manual_app_name("raycast@beta", ["Raycast Beta.app"]),
-            Some("Raycast Beta.app".to_string())
-        );
-        assert_eq!(
-            matching_manual_app_name("raycast", ["Raycast Beta.app"]),
-            Some("Raycast Beta.app".to_string())
-        );
-        assert_eq!(matching_manual_app_name("cast", ["Raycast Beta.app"]), None);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn matches_cask_aliases() {
-        let cask = Cask {
-            token: "google-chrome".to_string(),
-            full_token: "homebrew/cask/google-chrome".to_string(),
-            name: vec!["Google Chrome".to_string()],
-            desc: None,
-            homepage: "https://www.google.com/chrome/".to_string(),
-            version: "1.0".to_string(),
-            deprecated: false,
-            disabled: false,
-            rb_path: None,
-        };
-        let casks = vec![cask];
-        let index = build_cask_candidate_index(&casks);
-        let app = AppBundleMetadata {
-            bundle_name: "Google Chrome".to_string(),
-            file_name: "Google Chrome.app".to_string(),
-            bundle_identifier: None,
-            short_version: Some("1.0".to_string()),
-            bundle_version: None,
-        };
-        let resolved = resolve_cask_match(&casks, &index, &app).unwrap();
-
-        assert_eq!(casks[resolved.cask_index].token, "google-chrome");
-        assert_eq!(resolved.version.as_deref(), Some("1.0"));
-    }
-
-    #[cfg(target_os = "macos")]
-    fn test_cask(token: &str, names: &[&str], homepage: &str, version: &str) -> Cask {
-        Cask {
-            token: token.to_string(),
-            full_token: token.to_string(),
-            name: names.iter().map(|name| name.to_string()).collect(),
-            desc: None,
-            homepage: homepage.to_string(),
-            version: version.to_string(),
-            deprecated: false,
-            disabled: false,
-            rb_path: None,
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn prefers_exact_version_when_app_name_is_ambiguous() {
-        let casks = vec![
-            test_cask("example", &["Example"], "https://example.invalid/", "9.9.9"),
-            test_cask(
-                "vendor-example",
-                &["Example"],
-                "https://vendor.invalid/example",
-                "1.2.3",
-            ),
-        ];
-        let index = build_cask_candidate_index(&casks);
-        let app = AppBundleMetadata {
-            bundle_name: "Example".to_string(),
-            file_name: "Example.app".to_string(),
-            bundle_identifier: None,
-            short_version: Some("1.2.3".to_string()),
-            bundle_version: None,
-        };
-        let resolved = resolve_cask_match(&casks, &index, &app).unwrap();
-
-        assert_eq!(casks[resolved.cask_index].token, "vendor-example");
-        assert_eq!(resolved.version.as_deref(), Some("1.2.3"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn uses_bundle_identifier_to_break_ambiguous_app_name_tie() {
-        let casks = vec![
-            test_cask("example", &["Example"], "https://example.invalid/", "9.9.9"),
-            test_cask(
-                "vendor-example",
-                &["Example"],
-                "https://vendor.invalid/example",
-                "8.8.8",
-            ),
-        ];
-        let index = build_cask_candidate_index(&casks);
-        let app = AppBundleMetadata {
-            bundle_name: "Example".to_string(),
-            file_name: "Example.app".to_string(),
-            bundle_identifier: Some("com.vendor.Example".to_string()),
-            short_version: Some("1.2.3".to_string()),
-            bundle_version: None,
-        };
-        let resolved = resolve_cask_match(&casks, &index, &app).unwrap();
-
-        assert_eq!(casks[resolved.cask_index].token, "vendor-example");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn does_not_guess_when_app_name_is_ambiguous() {
-        let casks = vec![
-            test_cask("example", &["Example"], "https://example.invalid/", "9.9.9"),
-            test_cask(
-                "vendor-example",
-                &["Example"],
-                "https://vendor.invalid/example",
-                "8.8.8",
-            ),
-        ];
-        let index = build_cask_candidate_index(&casks);
-        let app = AppBundleMetadata {
-            bundle_name: "Example".to_string(),
-            file_name: "Example.app".to_string(),
-            bundle_identifier: None,
-            short_version: Some("1.2.3".to_string()),
-            bundle_version: None,
-        };
-
-        assert_eq!(resolve_cask_match(&casks, &index, &app), None);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn combines_bundle_version_when_cask_uses_build_suffix() {
-        assert_eq!(
-            combine_bundle_version_for_cask("1.2.3", "456", "1.2.3,456"),
-            Some("1.2.3,456".to_string())
-        );
-        assert_eq!(
-            combine_bundle_version_for_cask("1.2.3", "456", "1.2.3,456,789"),
-            Some("1.2.3,456".to_string())
-        );
-        assert_eq!(
-            combine_bundle_version_for_cask("1.2.3", "123", "1.2.3,456"),
-            None
-        );
-    }
-
     #[test]
     #[cfg(target_os = "linux")]
     fn parses_tab_inventory_lines() {

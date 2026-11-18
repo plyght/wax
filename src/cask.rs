@@ -25,7 +25,51 @@ pub struct InstalledCask {
     #[serde(default)]
     pub app_name: Option<String>,
     #[serde(default)]
+    pub apps: Vec<AppReceipt>,
+    #[serde(default)]
     pub installed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppReceipt {
+    pub path: PathBuf,
+    pub identifier: String,
+}
+
+pub fn app_artifact_name(app: &[serde_json::Value]) -> Option<&str> {
+    let source = app.first()?.as_str()?;
+    let name = match app.iter().skip(1).find_map(|v| v.get("target")) {
+        Some(target) => target.as_str()?,
+        None => Path::new(source).file_name()?.to_str()?,
+    };
+    (Path::new(name).file_name()?.to_str()? == name && name.ends_with(".app")).then_some(name)
+}
+
+#[cfg(target_os = "macos")]
+impl AppReceipt {
+    pub async fn present(&self) -> Result<bool> {
+        let metadata = match fs::symlink_metadata(&self.path).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+            Ok(m) => m,
+        };
+        if metadata.is_dir()
+            && self.path.is_absolute()
+            && self.path.extension().is_some_and(|s| s == "app")
+            && fs::canonicalize(&self.path).await? == self.path
+            && crate::discovery::read_info_plist_string(&self.path, "CFBundleIdentifier")
+                .await
+                .as_ref()
+                == Some(&self.identifier)
+        {
+            Ok(true)
+        } else {
+            Err(WaxError::InvalidInput(format!(
+                "App identity changed at {}; leaving it untouched",
+                self.path.display()
+            )))
+        }
+    }
 }
 
 // ponytail: process-local lock; concurrent wax processes race load-modify-save
@@ -232,6 +276,10 @@ fn merge_caskroom_entry(
                 .and_then(|cask| cask.artifact_type.clone()),
             binary_paths: existing.as_ref().and_then(|cask| cask.binary_paths.clone()),
             app_name: existing.as_ref().and_then(|cask| cask.app_name.clone()),
+            apps: existing
+                .as_ref()
+                .map(|c| c.apps.clone())
+                .unwrap_or_default(),
             installed_paths: existing
                 .as_ref()
                 .map(|cask| cask.installed_paths.clone())
@@ -528,13 +576,15 @@ impl CaskState {
         let version_dir = cask_dir.join(&cask.version);
         fs::create_dir_all(&version_dir).await?;
 
-        // Try to create symlinks inside version_dir based on app_name or binary_paths
-        if let Some(app_name) = &cask.app_name {
-            let app_path = CaskInstaller::applications_dir()?.join(app_name);
+        for app in &cask.apps {
+            let app_path = &app.path;
+            let Some(app_name) = app_path.file_name() else {
+                continue;
+            };
             let link_path = version_dir.join(app_name);
             if app_path.exists() && !link_path.exists() {
                 #[cfg(unix)]
-                if let Err(e) = tokio::fs::symlink(&app_path, &link_path).await {
+                if let Err(e) = tokio::fs::symlink(app_path, &link_path).await {
                     tracing::warn!(
                         "Failed to create Caskroom symlink {:?} -> {:?}: {}",
                         link_path,
@@ -679,21 +729,13 @@ pub async fn relink_installed_cask(cask: &InstalledCask) -> Result<Vec<PathBuf>>
         return Ok(links);
     };
 
-    if let Some(app_name) = &cask.app_name {
-        #[cfg(target_os = "macos")]
-        {
-            let app_path = CaskInstaller::applications_dir()?.join(app_name);
-            let link_path = version_dir.join(app_name);
-            if app_path.exists() {
-                replace_path_with_link(&app_path, &link_path).await?;
-                links.push(link_path);
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let link_path = version_dir.join(app_name);
-            if link_path.exists() {
-                links.push(link_path);
+    #[cfg(target_os = "macos")]
+    for app in &cask.apps {
+        if app.present().await? {
+            let link = version_dir.join(app.path.file_name().unwrap());
+            if !link.exists() && !link.is_symlink() {
+                fs::symlink(&app.path, &link).await?;
+                links.push(link);
             }
         }
     }
@@ -719,11 +761,14 @@ pub async fn unlink_installed_cask(cask: &InstalledCask) -> Result<Vec<PathBuf>>
     let mut removed = Vec::new();
     let version_dir = installed_cask_version_dir(cask).await?;
 
-    if let Some(app_name) = &cask.app_name {
-        if let Some(version_dir) = &version_dir {
+    if let Some(version_dir) = &version_dir {
+        for app in &cask.apps {
+            let Some(app_name) = app.path.file_name() else {
+                continue;
+            };
             let link_path = version_dir.join(app_name);
-            if link_path.exists() {
-                remove_path_if_present(&link_path).await?;
+            if fs::read_link(&link_path).await.is_ok_and(|p| p == app.path) {
+                fs::remove_file(&link_path).await?;
                 removed.push(link_path);
             }
         }
@@ -1450,21 +1495,17 @@ impl CaskInstaller {
         _staging: &StagingContext,
         _rollback: &mut RollbackContext,
         source_rel: &str,
-    ) -> Result<()> {
+        _app_name: &str,
+    ) -> Result<Option<AppReceipt>> {
         #[cfg(not(target_os = "macos"))]
         {
             debug!("Skipping .app bundle install on non-macOS: {}", source_rel);
-            return Ok(());
+            return Ok(None);
         }
         #[cfg(target_os = "macos")]
         {
             let source = self.resolve_source_path(_staging, source_rel);
-            let app_name = Path::new(source_rel)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| {
-                    WaxError::InstallError(format!("Invalid app source: {}", source_rel))
-                })?;
+            let app_name = _app_name;
 
             info!("Installing app: {}", app_name);
 
@@ -1475,10 +1516,23 @@ impl CaskInstaller {
                 )));
             }
 
-            let app_dest = Self::applications_dir()?.join(app_name);
+            let root = Self::applications_dir()?;
+            fs::create_dir_all(&root).await?;
+            let app_dest = fs::canonicalize(root).await?.join(app_name);
+            let receipt = AppReceipt {
+                path: app_dest.clone(),
+                identifier: crate::discovery::read_info_plist_string(&source, "CFBundleIdentifier")
+                    .await
+                    .ok_or_else(|| {
+                        WaxError::InstallError(format!(
+                            "Missing bundle identifier in {}",
+                            source.display()
+                        ))
+                    })?,
+            };
 
             // Remove existing app bundle before copying (upgrade path)
-            if app_dest.exists() {
+            if receipt.present().await? {
                 tokio::fs::remove_dir_all(&app_dest).await?;
             }
 
@@ -1487,7 +1541,7 @@ impl CaskInstaller {
             crate::ui::copy_app_bundle(&source, &app_dest)?;
             strip_macos_quarantine(&app_dest);
 
-            Ok(())
+            Ok(Some(receipt))
         }
     }
 
@@ -2167,6 +2221,7 @@ mod tests {
             artifact_type: Some("dmg".to_string()),
             binary_paths: Some(vec!["/opt/homebrew/bin/example".to_string()]),
             app_name: Some("Example.app".to_string()),
+            apps: Vec::new(),
             installed_paths: Vec::new(),
         };
 
