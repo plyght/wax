@@ -217,7 +217,7 @@ Migration transfers the complete receipted bin set, not only `ENTRY`. Wax verifi
 `migrate --dry-run` prints the discovered package as JSON and checks ownership and entrypoint conflicts. It does not import payloads, snapshot originals, or execute the removal plan, so it does not prove that native removal will succeed. Node discovery can run `npm ls` for receipt corroboration.
 
 `list`
-Print each migration record's qualified ID, recorded version, and lifecycle state. This list is separate from the Homebrew-oriented `wax list` and includes retained removed or restored records.
+Print each migration record's qualified ID, selected generation's version, and lifecycle state. Inactive records retain the last recorded version. This list is separate from the Homebrew-oriented `wax list` and includes retained removed or restored records.
 
 `upgrade ID --version VERSION [--artifact ABS] [--dry-run]`
 Upgrade an active migrated package to an exact SemVer, not a version range or `latest`. Wax installs into a new private generation with the selected ecosystem backend, verifies the resulting name, version, and unchanged bin set, and switches its current pointer. Published generations are treated as immutable rather than updated in place. Prior generations remain until removal or restoration.
@@ -247,6 +247,7 @@ Restore the original package artifacts and manager receipts from their verified 
 - Do not run foreign package managers concurrently with migration, upgrade, removal, or restoration. Wax's lifecycle lock coordinates Wax operations, not external managers. Snapshots and identity checks are not an atomic transaction with another manager or protection from a hostile process under the same user.
 - State, snapshots, and generations live separately under `~/.wax/tools`, not in the formula installation state. Existing Wax bin entries and an existing migration record block a new migration. A restored record is retained, so restore does not by itself enable remigration of the same ID.
 - Wax retains the runtime and manager backend rather than replacing them. Later upgrades still require a safe ecosystem backend on PATH. Imported Node scripts still require their runtime.
+- Backends must be trusted-owned executable files, without group/world write permissions or unsafe parents. Trusted-owned children beneath sticky directories are allowed. Wax reports the rejected path and permissions rather than silently changing them.
 - No command edits global PATH. Wax entrypoints take effect only if `~/.local/wax/bin` is already on PATH in the intended position. Current-shell aliases, functions, and cached command resolution are outside this lifecycle's scope.
 
 ### install

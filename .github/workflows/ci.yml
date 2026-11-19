@@ -28,6 +28,11 @@ jobs:
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
 
+      - name: Use native Rust executables for lifecycle fixtures
+        if: runner.os != 'Windows'
+        shell: bash
+        run: dirname "$(rustup which cargo)" >> "$GITHUB_PATH"
+
       - name: Check formatting
         run: cargo fmt --check
 
@@ -40,6 +45,9 @@ jobs:
       - name: Set up Node for isolated tool migration fixtures
         if: runner.os != 'Windows'
         uses: actions/setup-node@v4
+        env:
+          # Hosted image npm files can be world-writable; keep the backend safety gate.
+          RUNNER_TOOL_CACHE: ${{ runner.temp }}/wax-node-tool-cache
         with:
           node-version: '22'
 
