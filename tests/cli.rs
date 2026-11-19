@@ -21,6 +21,518 @@ fn wax_with_home(home: &Path) -> Command {
     cmd
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod provenance {
+    use super::*;
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::path::PathBuf;
+    use std::process::Output;
+
+    const PACKAGE: &str = "wax-fixture-origin";
+
+    struct Home {
+        _temp: tempfile::TempDir,
+        root: PathBuf,
+    }
+
+    impl Home {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            for dir in [".wax/cache", ".local/bin", ".cargo/bin", ".bun/bin"] {
+                fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            fs::write(root.join(".wax/cache/formulae.json"), "[]").unwrap();
+            fs::write(root.join(".wax/cache/casks.json"), "[]").unwrap();
+            Self { _temp: temp, root }
+        }
+
+        fn path(&self, path: &str) -> PathBuf {
+            self.root.join(path)
+        }
+
+        fn command(&self) -> Command {
+            let mut cmd = wax_with_home(&self.root);
+            cmd.env("WAX_CACHE_DIR", self.path(".wax/cache"))
+                .env("CARGO_HOME", self.path(".cargo"))
+                .env("BUN_INSTALL", self.path(".bun"))
+                .env("PATH", "/usr/bin:/bin")
+                .env_remove("HOMEBREW_PREFIX")
+                .env_remove("WAX_TEST_CELLAR");
+            cmd
+        }
+
+        fn run(&self, args: &[&str]) -> Value {
+            let out = self.command().args(args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            serde_json::from_slice(&out.stdout).unwrap()
+        }
+
+        fn replace(&self, path: &Path, dry_run: bool) -> Output {
+            let mut cmd = self.command();
+            cmd.args(["provenance", "replace"])
+                .arg(path)
+                .args(["--with", PACKAGE]);
+            if dry_run {
+                cmd.arg("--dry-run");
+            }
+            cmd.output().unwrap()
+        }
+
+        fn restore(&self, path: &Path, dry_run: bool) -> Output {
+            let mut cmd = self.command();
+            cmd.args(["provenance", "restore"]).arg(path);
+            if dry_run {
+                cmd.arg("--dry-run");
+            }
+            cmd.output().unwrap()
+        }
+
+        fn package(&self, version: &str) -> PathBuf {
+            let prefix = self.path(".local/wax");
+            let keg = prefix.join("Cellar").join(PACKAGE).join(version);
+            executable(&keg.join("bin/tool"), version.as_bytes());
+            fs::create_dir_all(prefix.join("opt")).unwrap();
+            let opt = prefix.join("opt").join(PACKAGE);
+            if fs::symlink_metadata(&opt).is_ok() {
+                fs::remove_file(&opt).unwrap();
+            }
+            symlink(&keg, &opt).unwrap();
+            fs::write(
+                self.path(".wax/installed.json"),
+                serde_json::to_vec(&json!({PACKAGE: {
+                    "name": PACKAGE, "version": version, "platform": "fixture",
+                    "install_date": 0, "install_mode": "user"
+                }}))
+                .unwrap(),
+            )
+            .unwrap();
+            keg
+        }
+
+        fn journal(&self) -> PathBuf {
+            fs::read_dir(self.path(".wax/provenance"))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| p.extension().is_some_and(|e| e == "json"))
+                .unwrap()
+        }
+    }
+
+    fn executable(path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn success(out: &Output) {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn inspect_preserves_path_order_duplicates_receipts_and_raw_symlinks_without_execution() {
+        let h = Home::new();
+        let payload = h.path(".local/share/fixture/standalone/1.2.3/tool");
+        let marker = h.path("executed");
+        executable(
+            &payload,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()).as_bytes(),
+        );
+        let entry = h.path(".local/bin/tool");
+        symlink("../share/fixture/standalone/1.2.3/tool", &entry).unwrap();
+        executable(&h.path(".cargo/bin/tool"), b"cargo fixture");
+        fs::write(h.path(".cargo/.crates2.json"), r#"{"installs":{"fixture 4.5.6 (registry+https://example.invalid)":{"bins":["tool"]}}}"#).unwrap();
+        let keg = h.package("2.0.0");
+        fs::create_dir_all(h.path(".local/wax/bin")).unwrap();
+        symlink(keg.join("bin/tool"), h.path(".local/wax/bin/tool")).unwrap();
+        let paths = std::env::join_paths([
+            h.path(".local/bin"),
+            h.path(".local/wax/bin"),
+            h.path(".cargo/bin"),
+            h.path(".local/bin"),
+        ])
+        .unwrap();
+        let out = h
+            .command()
+            .args(["provenance", "inspect", "tool", "--json"])
+            .env("PATH", paths)
+            .output()
+            .unwrap();
+        success(&out);
+        let hits: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(hits.as_array().unwrap().len(), 4);
+        for (i, manager) in ["standalone", "wax", "cargo", "standalone"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(hits[i]["path_index"], i);
+            assert_eq!(hits[i]["active"], i == 0);
+            assert_eq!(hits[i]["origin"]["manager"], *manager);
+        }
+        assert_eq!(hits[0]["executable"], payload.to_str().unwrap());
+        assert_eq!(
+            hits[0]["symlinks"][0]["target"],
+            "../share/fixture/standalone/1.2.3/tool"
+        );
+        assert_eq!(hits[2]["origin"]["version"], "4.5.6");
+        assert_eq!(
+            hits[2]["origin"]["receipt"],
+            h.path(".cargo/.crates2.json").to_str().unwrap()
+        );
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("example.invalid"));
+        assert!(!marker.exists());
+        assert!(!h.path(".wax/provenance").exists());
+        fs::write(h.path(".cargo/.crates2.json"), "broken JSON").unwrap();
+        fs::write(
+            h.path(".cargo/.crates.toml"),
+            "[v1]\n\"fixture 7.8.9 (registry+private)\" = [\"tool\"]\n",
+        )
+        .unwrap();
+        let fallback = h.run(&[
+            "provenance",
+            "inspect",
+            h.path(".cargo/bin/tool").to_str().unwrap(),
+            "--json",
+        ]);
+        assert_eq!(fallback[0]["origin"]["version"], "7.8.9");
+        symlink(h.path(".cargo/bin/tool"), h.path(".local/bin/alias")).unwrap();
+        let alias = h.run(&[
+            "provenance",
+            "inspect",
+            h.path(".local/bin/alias").to_str().unwrap(),
+            "--json",
+        ]);
+        assert_eq!(alias[0]["origin"]["package"], "fixture");
+    }
+
+    #[test]
+    fn inspect_distinguishes_broken_cycles_nonexecutables_and_ambiguous_node_origins() {
+        let h = Home::new();
+        symlink("missing", h.path(".local/bin/broken")).unwrap();
+        symlink("cycle", h.path(".local/bin/cycle")).unwrap();
+        fs::write(h.path(".local/bin/plain"), "not executable").unwrap();
+        for (name, status) in [
+            ("broken", "broken"),
+            ("cycle", "cycle"),
+            ("plain", "non_executable"),
+        ] {
+            let hits = h.run(&[
+                "provenance",
+                "inspect",
+                h.path(&format!(".local/bin/{name}")).to_str().unwrap(),
+                "--json",
+            ]);
+            assert_eq!(hits[0]["status"], status);
+            assert_eq!(hits[0]["active"], false);
+        }
+        fs::create_dir_all(h.path("broken-bin")).unwrap();
+        fs::create_dir_all(h.path("plain-bin")).unwrap();
+        symlink("missing", h.path("broken-bin/tool")).unwrap();
+        fs::write(h.path("plain-bin/tool"), "not executable").unwrap();
+        executable(&h.path(".local/bin/tool"), b"fixture");
+        let paths = std::env::join_paths([
+            h.path("broken-bin"),
+            h.path("plain-bin"),
+            h.path(".local/bin"),
+        ])
+        .unwrap();
+        let out = h
+            .command()
+            .args(["provenance", "inspect", "tool", "--json"])
+            .env("PATH", paths)
+            .output()
+            .unwrap();
+        success(&out);
+        let hits: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(hits[0]["active"], false);
+        assert_eq!(hits[1]["active"], false);
+        assert_eq!(hits[2]["active"], true);
+        fs::remove_file(h.path(".local/bin/tool")).unwrap();
+        for (base, manager) in [
+            ("node", "node"),
+            (".bun/install/global", "bun"),
+            ("pnpm/.pnpm/fixture", "pnpm"),
+        ] {
+            let root = h.path(base).join("node_modules/fixture");
+            executable(&root.join("cli.js"), b"node fixture");
+            fs::write(
+                root.join("package.json"),
+                r#"{"name":"fixture","version":"3.2.1","bin":{"tool":"cli.js"}}"#,
+            )
+            .unwrap();
+            let entry = h.path(".local/bin/tool");
+            symlink(root.join("cli.js"), &entry).unwrap();
+            let hit = h.run(&["provenance", "inspect", entry.to_str().unwrap(), "--json"]);
+            assert_eq!(hit[0]["origin"]["manager"], manager);
+            assert_eq!(hit[0]["origin"]["version"], "3.2.1");
+            if manager == "node" {
+                fs::write(
+                    root.parent().unwrap().join(".package-lock.json"),
+                    r#"{"packages":{"node_modules/fixture":{"version":"3.2.1"}}}"#,
+                )
+                .unwrap();
+                let hit = h.run(&["provenance", "inspect", entry.to_str().unwrap(), "--json"]);
+                assert_eq!(hit[0]["origin"]["manager"], "npm");
+                fs::write(
+                    root.join("package.json"),
+                    r#"{"name":"fixture","version":"3.2.1","bin":{"other":"cli.js"}}"#,
+                )
+                .unwrap();
+                let mismatch = h.run(&["provenance", "inspect", entry.to_str().unwrap(), "--json"]);
+                assert!(mismatch[0]["origin"]["package"].is_null());
+            }
+            fs::remove_file(entry).unwrap();
+        }
+    }
+
+    #[test]
+    fn record_adopts_observations_without_package_ownership_or_entrypoint_changes() {
+        let h = Home::new();
+        let entry = h.path(".cargo/bin/tool");
+        executable(&entry, b"foreign tool");
+        let record = h.run(&["provenance", "record", entry.to_str().unwrap()]);
+        assert_eq!(record["observations"][0]["origin"]["manager"], "cargo");
+        assert!(record["replacement"].is_null());
+        assert_eq!(fs::read(entry).unwrap(), b"foreign tool");
+        assert!(!h.path(".wax/installed.json").exists());
+        assert!(h.journal().exists());
+    }
+
+    #[test]
+    fn replacement_preserves_file_link_or_absence_follows_opt_and_restores_idempotently() {
+        for kind in ["file", "symlink", "missing"] {
+            let h = Home::new();
+            h.package("1.0.0");
+            let entry = h.path(".local/bin/tool");
+            match kind {
+                "file" => executable(&entry, b"original tool"),
+                "symlink" => {
+                    executable(&h.path(".local/original"), b"original tool");
+                    symlink("../original", &entry).unwrap();
+                }
+                _ => {}
+            }
+            let state = fs::read(h.path(".wax/installed.json")).unwrap();
+            success(&h.replace(&entry, true));
+            assert!(!h.path(".wax/provenance").exists());
+            assert_eq!(fs::read(h.path(".wax/installed.json")).unwrap(), state);
+            let out = h.replace(&entry, false);
+            success(&out);
+            let record: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let backup = PathBuf::from(record["replacement"]["backup"].as_str().unwrap());
+            assert_eq!(fs::read(&entry).unwrap(), b"1.0.0");
+            assert_eq!(
+                fs::read_link(&entry).unwrap(),
+                h.path(&format!(".local/wax/opt/{PACKAGE}/bin/tool"))
+            );
+            success(&h.replace(&entry, false));
+            h.package("2.0.0");
+            assert_eq!(fs::read(&entry).unwrap(), b"2.0.0");
+            let journal = fs::read(h.journal()).unwrap();
+            success(&h.restore(&entry, true));
+            assert_eq!(fs::read(h.journal()).unwrap(), journal);
+            assert_eq!(fs::read(&entry).unwrap(), b"2.0.0");
+            success(&h.restore(&entry, false));
+            success(&h.restore(&entry, false));
+            if kind == "missing" {
+                assert!(fs::symlink_metadata(&entry).is_err());
+            } else {
+                assert_eq!(fs::read(&entry).unwrap(), b"original tool");
+                assert_eq!(
+                    fs::symlink_metadata(&entry).unwrap().is_symlink(),
+                    kind == "symlink"
+                );
+                if kind == "symlink" {
+                    assert_eq!(fs::read_link(&entry).unwrap(), Path::new("../original"));
+                }
+            }
+            assert!(fs::symlink_metadata(backup).is_err());
+        }
+    }
+
+    #[test]
+    fn replacement_refuses_manager_entries_unsafe_parents_and_mismatched_wax_targets() {
+        let h = Home::new();
+        h.package("1.0.0");
+        for path in [".cargo/bin/tool", ".bun/bin/tool", ".local/wax/bin/tool"] {
+            let entry = h.path(path);
+            executable(&entry, b"manager tool");
+            assert!(!h.replace(&entry, false).status.success());
+            assert_eq!(fs::read(entry).unwrap(), b"manager tool");
+        }
+        let entry = h.path(".local/bin/tool");
+        symlink(h.path(".cargo/bin/tool"), &entry).unwrap();
+        assert!(!h.replace(&entry, false).status.success());
+        assert_eq!(fs::read_link(&entry).unwrap(), h.path(".cargo/bin/tool"));
+        fs::remove_file(&entry).unwrap();
+        fs::remove_file(h.path(".cargo/bin/tool")).unwrap();
+        symlink("../../.cargo/bin/tool", &entry).unwrap();
+        let broken = h.run(&["provenance", "inspect", entry.to_str().unwrap(), "--json"]);
+        assert_eq!(broken[0]["origin"]["manager"], "cargo");
+        assert!(!h.replace(&entry, false).status.success());
+        assert_eq!(
+            fs::read_link(&entry).unwrap(),
+            Path::new("../../.cargo/bin/tool")
+        );
+        fs::remove_file(&entry).unwrap();
+        executable(&entry, b"original tool");
+        fs::set_permissions(h.path(".local/bin"), fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!h.replace(&entry, false).status.success());
+        fs::set_permissions(h.path(".local/bin"), fs::Permissions::from_mode(0o755)).unwrap();
+        let opt = h.path(&format!(".local/wax/opt/{PACKAGE}"));
+        fs::remove_file(&opt).unwrap();
+        symlink(h.path(".cargo"), &opt).unwrap();
+        assert!(!h.replace(&entry, false).status.success());
+        assert_eq!(fs::read(entry).unwrap(), b"original tool");
+    }
+
+    #[test]
+    fn restore_preserves_intervening_changes_and_uninstall_requires_restore() {
+        let h = Home::new();
+        let keg = h.package("1.0.0");
+        let entry = h.path(".local/bin/tool");
+        executable(&entry, b"original tool");
+        let out = h.replace(&entry, false);
+        success(&out);
+        let record: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let backup = PathBuf::from(record["replacement"]["backup"].as_str().unwrap());
+        let out = h
+            .command()
+            .args(["uninstall", PACKAGE, "--yes"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Restore provenance entrypoint"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(keg.join("bin/tool").exists());
+        fs::remove_file(&entry).unwrap();
+        executable(&entry, b"intervening user tool");
+        assert!(!h.restore(&entry, false).status.success());
+        assert_eq!(fs::read(&entry).unwrap(), b"intervening user tool");
+        assert_eq!(fs::read(&backup).unwrap(), b"original tool");
+        fs::remove_file(&entry).unwrap();
+        executable(&backup, b"changed backup");
+        assert!(!h.restore(&entry, false).status.success());
+        assert_eq!(fs::read(&backup).unwrap(), b"changed backup");
+        executable(&backup, b"original tool");
+        success(&h.restore(&entry, false));
+        let out = h
+            .command()
+            .args(["uninstall", PACKAGE, "--yes"])
+            .output()
+            .unwrap();
+        success(&out);
+        assert!(!keg.exists());
+        assert_eq!(fs::read(entry).unwrap(), b"original tool");
+    }
+
+    #[test]
+    fn restore_recovers_interrupted_replacement_and_completed_restore() {
+        for phase in ["prepared", "restoring"] {
+            let h = Home::new();
+            h.package("1.0.0");
+            let entry = h.path(".local/bin/tool");
+            executable(&entry, b"original tool");
+            success(&h.replace(&entry, false));
+            let journal = h.journal();
+            let mut record: Value = serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+            record["replacement"]["phase"] = json!(phase);
+            fs::write(&journal, serde_json::to_vec(&record).unwrap()).unwrap();
+            let backup = PathBuf::from(record["replacement"]["backup"].as_str().unwrap());
+            let holding = backup.with_file_name(
+                backup
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace("-backup", "-managed"),
+            );
+            if phase == "restoring" {
+                fs::rename(&entry, &holding).unwrap();
+                fs::rename(&backup, &entry).unwrap();
+            } else {
+                fs::remove_file(&entry).unwrap();
+            }
+            success(&h.restore(&entry, false));
+            assert_eq!(fs::read(entry).unwrap(), b"original tool");
+            assert!(fs::symlink_metadata(holding).is_err());
+        }
+    }
+
+    #[test]
+    fn concurrent_provenance_operations_preserve_entrypoints_and_package_payloads() {
+        use std::os::fd::AsRawFd;
+        let h = Home::new();
+        let keg = h.package("1.0.0");
+        let entry = h.path(".local/bin/tool");
+        executable(&entry, b"original tool");
+        fs::create_dir_all(h.path(".wax/provenance")).unwrap();
+        let lock = fs::File::create(h.path(".wax/provenance/.lock")).unwrap();
+        // SAFETY: this file owns the descriptor until it is dropped below.
+        assert_eq!(
+            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        let out = h.replace(&entry, false);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("Another Wax provenance operation"));
+        let out = h
+            .command()
+            .args(["uninstall", PACKAGE, "--yes"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("Another Wax provenance operation"));
+        assert_eq!(fs::read(&entry).unwrap(), b"original tool");
+        assert_eq!(fs::read(keg.join("bin/tool")).unwrap(), b"1.0.0");
+        drop(lock);
+        success(&h.replace(&entry, false));
+        success(&h.restore(&entry, false));
+        assert_eq!(fs::read(entry).unwrap(), b"original tool");
+    }
+
+    #[test]
+    fn formula_link_preserves_foreign_executables_and_relinks_its_own_versions() {
+        for kind in ["file", "symlink"] {
+            let h = Home::new();
+            h.package("1.0.0");
+            let entry = h.path(".local/wax/bin/tool");
+            executable(&h.path("foreign"), b"foreign tool");
+            fs::create_dir_all(entry.parent().unwrap()).unwrap();
+            if kind == "file" {
+                executable(&entry, b"foreign tool");
+            } else {
+                symlink(h.path("foreign"), &entry).unwrap();
+            }
+            let out = h.command().args(["link", PACKAGE]).output().unwrap();
+            assert!(!out.status.success());
+            assert_eq!(fs::read(&entry).unwrap(), b"foreign tool");
+            assert_eq!(
+                fs::symlink_metadata(&entry).unwrap().is_symlink(),
+                kind == "symlink"
+            );
+            fs::remove_file(&entry).unwrap();
+            success(&h.command().args(["link", PACKAGE]).output().unwrap());
+            h.package("2.0.0");
+            success(&h.command().args(["link", PACKAGE]).output().unwrap());
+            assert_eq!(fs::read(entry).unwrap(), b"2.0.0");
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn cask_uninstall_requires_the_recorded_path_and_bundle_identity() {
