@@ -388,16 +388,21 @@ fn backend(manager: Manager) -> Result<PathBuf> {
         Manager::Bun => "bun",
         _ => return Err(invalid("Not a Node manager")),
     };
+    let mut rejected = Vec::new();
     for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .filter(|p| p.is_absolute())
     {
         let candidate = directory.join(executable);
-        if candidate.is_file() && validate_backend(&candidate).is_ok() {
-            return Ok(candidate);
+        if candidate.is_file() {
+            match validate_backend(&candidate) {
+                Ok(()) => return Ok(candidate),
+                Err(error) => rejected.push(format!("{}: {error}", candidate.display())),
+            }
         }
     }
     Err(invalid(format!(
-        "No safe absolute {executable} backend on PATH"
+        "No safe absolute {executable} backend on PATH: {}",
+        rejected.join("; ")
     )))
 }
 
@@ -1115,8 +1120,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn rejects_native_addons_and_escape_links_but_accepts_internal_relative_links() {
-        let home = fs::canonicalize(crate::ui::dirs::home_dir().unwrap()).unwrap();
-        let temp = tempfile::tempdir_in(home).unwrap();
+        let home = crate::install::TestHome::new();
+        let temp = tempfile::tempdir_in(home.path()).unwrap();
         let root = temp.path().join("package");
         fs::create_dir(&root).unwrap();
         fs::write(root.join("cli.js"), b"fixture").unwrap();

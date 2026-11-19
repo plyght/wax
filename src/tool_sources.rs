@@ -547,9 +547,9 @@ mod tests {
 
     const ID: &str = "fixture-tool 1.2.3 (registry+https://github.com/rust-lang/crates.io-index)";
 
-    fn fixture() -> tempfile::TempDir {
-        let home = fs::canonicalize(crate::ui::dirs::home_dir().unwrap()).unwrap();
-        let dir = tempfile::tempdir_in(home).unwrap();
+    fn fixture() -> (crate::install::TestHome, tempfile::TempDir) {
+        let home = crate::install::TestHome::new();
+        let dir = tempfile::tempdir_in(home.path()).unwrap();
         fs::create_dir(dir.path().join("bin")).unwrap();
         for name in ["bin/fixture-tool", "cargo"] {
             let path = dir.path().join(name);
@@ -557,7 +557,7 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         write_receipts(dir.path(), ID, &["fixture-tool"]);
-        dir
+        (home, dir)
     }
 
     fn write_receipts(root: &Path, identity: &str, bins: &[&str]) {
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn discovers_agreeing_receipts_and_snapshots_missing_receipt_paths() {
-        let dir = fixture();
+        let (_home, dir) = fixture();
         fs::remove_file(dir.path().join(".crates.toml")).unwrap();
         let found = package(dir.path()).unwrap();
         assert_eq!(
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn rejects_receipt_version_conflicts() {
-        let dir = fixture();
+        let (_home, dir) = fixture();
         let path = dir.path().join(".crates.toml");
         let text = fs::read_to_string(&path).unwrap().replace("1.2.3", "1.2.4");
         fs::write(path, text).unwrap();
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn rejects_symlinked_cargo_binaries() {
-        let dir = fixture();
+        let (_home, dir) = fixture();
         let entry = dir.path().join("bin/fixture-tool");
         fs::remove_file(&entry).unwrap();
         symlink(dir.path().join("cargo"), entry).unwrap();
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn rejects_runtime_binary_in_selected_package() {
-        let dir = fixture();
+        let (_home, dir) = fixture();
         write_receipts(dir.path(), ID, &["fixture-tool", "rustc"]);
         assert!(package(dir.path()).is_err());
     }
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn rejects_git_source_but_accepts_path_install() {
-        let dir = fixture();
+        let (_home, dir) = fixture();
         write_receipts(
             dir.path(),
             "fixture-tool 1.2.3 (git+https://example.invalid/fixture)",
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn imports_only_claimed_binaries_preserving_bytes_and_mode() {
-        let dir = fixture();
+        let (_home, dir) = fixture();
         let found = package(dir.path()).unwrap();
         let destination = tempfile::tempdir_in(dir.path()).unwrap();
         import(&found, destination.path()).unwrap();

@@ -2,8 +2,9 @@ use super::*;
 use crate::api::CaskArtifact;
 
 async fn eval(source: &str) -> Option<Result<CaskDetails>> {
+    let _home = crate::install::TestHome::new();
     let ruby = find_ruby()?;
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(_home.path()).unwrap();
     let path = tmp.path().join("fixture.rb");
     std::fs::write(&path, source).unwrap();
     Some(eval_cask(&ruby, &path).await)
@@ -104,6 +105,7 @@ fn marker_line_is_found_after_noise() {
 
 #[tokio::test]
 async fn runs_postflight_with_homebrew_helpers() {
+    let _home = crate::install::TestHome::new();
     let Some(ruby) = find_ruby() else {
         return;
     };
@@ -202,6 +204,7 @@ end
 
 #[tokio::test]
 async fn formula_meta_resolves_platform_url_and_ignores_head() {
+    let _home = crate::install::TestHome::new();
     let Some(ruby) = find_ruby() else {
         return;
     };
@@ -222,6 +225,7 @@ async fn formula_meta_resolves_platform_url_and_ignores_head() {
 
 #[tokio::test]
 async fn formula_install_runs_homebrew_install_api() {
+    let _home = crate::install::TestHome::new();
     let Some(ruby) = find_ruby() else {
         return;
     };
@@ -281,6 +285,7 @@ async fn formula_install_runs_homebrew_install_api() {
 
 #[tokio::test]
 async fn formula_install_reports_unsupported_api_and_patches() {
+    let _home = crate::install::TestHome::new();
     let Some(ruby) = find_ruby() else {
         return;
     };
@@ -322,6 +327,7 @@ end
 
 #[tokio::test]
 async fn formula_install_applies_data_patches_before_install() {
+    let _home = crate::install::TestHome::new();
     let Some(ruby) = find_ruby() else {
         return;
     };
