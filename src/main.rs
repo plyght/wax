@@ -15,12 +15,15 @@ mod formula_parser;
 mod http_client;
 mod install;
 mod lockfile;
+mod provenance;
 mod ruby_eval;
 mod signal;
 mod sudo;
 mod system_pm;
 mod tap;
 mod tap_index;
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+mod tool_sources;
 mod ui;
 mod version;
 mod xcode;
@@ -47,7 +50,7 @@ mod winget_install;
 use cache::Cache;
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
-use error::Result;
+use error::{Result, WaxError};
 use std::time::Instant;
 use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -177,6 +180,18 @@ enum Commands {
         formula: String,
         #[arg(long)]
         cask: bool,
+    },
+
+    #[command(about = "Inspect executable origins and safely select Wax-managed entrypoints")]
+    Provenance {
+        #[command(subcommand)]
+        action: commands::provenance::Action,
+    },
+
+    #[command(about = "Migrate and manage supported Cargo, npm and Bun global tool packages")]
+    Tools {
+        #[command(subcommand)]
+        action: commands::tools::Action,
     },
 
     #[command(about = "List installed packages  [alias: ls]")]
@@ -604,6 +619,21 @@ async fn execute_upgrade(
         return Ok(());
     }
 
+    if packages.iter().any(|p| commands::tools::qualified(p)) {
+        if packages.iter().any(|p| !commands::tools::qualified(p))
+            || system
+            || user
+            || global
+            || ask
+        {
+            return Err(WaxError::InvalidInput("Upgrade migrated tools separately from formulae and system packages; use wax tools upgrade for local artifacts".into()));
+        }
+        for package in packages {
+            commands::tools::upgrade(&package, dry_run).await?;
+        }
+        return Ok(());
+    }
+
     #[cfg(target_os = "windows")]
     crate::error::reject_homebrew_cli("upgrade")?;
 
@@ -741,6 +771,8 @@ async fn execute_command(command: Commands, cache: &Cache, yes: bool) -> Result<
             crate::error::reject_homebrew_cli("info")?;
             commands::info::info(cache, &formula, cask).await
         }
+        Commands::Provenance { action } => commands::provenance::run(action).await,
+        Commands::Tools { action } => commands::tools::run(action).await,
         Commands::List {
             query,
             user,

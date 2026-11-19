@@ -31,6 +31,25 @@ pub async fn uninstall(
     yes: bool,
     all: bool,
 ) -> Result<()> {
+    if formulae
+        .iter()
+        .any(|p| crate::commands::tools::qualified(p))
+    {
+        if cask
+            || all
+            || formulae
+                .iter()
+                .any(|p| !crate::commands::tools::qualified(p))
+        {
+            return Err(WaxError::InvalidInput(
+                "Remove migrated tools separately from formulae and casks".into(),
+            ));
+        }
+        for package in formulae {
+            crate::commands::tools::remove(package, dry_run).await?;
+        }
+        return Ok(());
+    }
     let names: Vec<String> = if all {
         #[cfg(target_os = "windows")]
         {
@@ -197,6 +216,7 @@ async fn uninstall_package_direct(
         return Ok(());
     }
 
+    let _provenance_guard = crate::commands::provenance::guard_uninstall(formula_name)?;
     set_current_op(format!("removing {}", formula_name));
 
     let spinner = if !quiet {

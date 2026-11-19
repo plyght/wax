@@ -427,6 +427,9 @@ pub async fn create_symlinks(
 
     let prefix = install_mode.prefix()?;
 
+    #[cfg(unix)]
+    check_executable_conflicts(&formula_path, &prefix).await?;
+
     let mut created_links = Vec::new();
 
     let link_dirs = vec![
@@ -467,6 +470,54 @@ pub async fn create_symlinks(
 
     debug!("Created {} symlinks", created_links.len());
     Ok(created_links)
+}
+
+#[cfg(unix)]
+async fn check_executable_conflicts(formula: &Path, prefix: &Path) -> Result<()> {
+    let rack = formula
+        .parent()
+        .ok_or_else(|| WaxError::InstallError("Formula has no package directory".into()))?;
+    let mut pending = vec![
+        (formula.join("bin"), prefix.join("bin")),
+        (formula.join("sbin"), prefix.join("sbin")),
+    ];
+    while let Some((source, destination)) = pending.pop() {
+        let mut entries = match fs::read_dir(&source).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let target = destination.join(entry.file_name());
+            let directory = entry.file_type().await?.is_dir();
+            match fs::symlink_metadata(&target).await {
+                Ok(meta) if directory && meta.is_dir() => {
+                    pending.push((entry.path(), target));
+                }
+                Ok(meta) if meta.is_symlink() => {
+                    let raw = fs::read_link(&target).await?;
+                    let resolved = fs::canonicalize(&target)
+                        .await
+                        .unwrap_or_else(|_| normalize_path(&destination.join(raw)));
+                    if !resolved.starts_with(rack) {
+                        return Err(WaxError::InstallError(format!(
+                            "Executable conflict at {}; inspect it with wax provenance inspect before explicitly selecting an entrypoint",
+                            target.display()
+                        )));
+                    }
+                }
+                Ok(_) => return Err(WaxError::InstallError(format!(
+                    "Refusing to overwrite executable {}; preserve its original manager and use wax provenance replace on a separate user shim",
+                    target.display()
+                ))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if directory { pending.push((entry.path(), target)); }
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn create_opt_link(

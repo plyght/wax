@@ -34,19 +34,7 @@ pub fn verify_sha256_file(path: &Path, expected_sha256: &str) -> Result<()> {
 
     debug!("Verifying checksum for {:?}", path);
 
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = [0u8; 8192];
-
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-
-    let hash = sha256_hex(&hasher.finalize());
+    let hash = sha256_file(path)?;
 
     if hash != expected_sha256 {
         return Err(WaxError::ChecksumMismatch {
@@ -57,6 +45,20 @@ pub fn verify_sha256_file(path: &Path, expected_sha256: &str) -> Result<()> {
 
     debug!("Checksum verified: {}", hash);
     Ok(())
+}
+
+pub fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(sha256_hex(&hasher.finalize()))
 }
 
 #[cfg(test)]

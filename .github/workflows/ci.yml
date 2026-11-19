@@ -36,3 +36,19 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+      - name: Set up Node for isolated tool migration fixtures
+        if: runner.os != 'Windows'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Bun for isolated tool migration fixtures
+        if: runner.os != 'Windows'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - name: Verify genuine npm and Bun tool lifecycles
+        if: runner.os != 'Windows'
+        run: cargo test --locked --test tool_migration -- --ignored --nocapture
