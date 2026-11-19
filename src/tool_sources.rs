@@ -284,14 +284,21 @@ fn cargo_receipts(root: &Path) -> Result<Receipts> {
 
 fn cargo_backend() -> Result<PathBuf> {
     let paths = std::env::var_os("PATH").unwrap_or_default();
+    let mut rejected = Vec::new();
     for directory in std::env::split_paths(&paths).filter(|p| p.is_absolute()) {
         let path = directory.join("cargo");
-        if path.is_file() && validate_backend(&path).is_ok() {
-            // Keep the cargo filename: a rustup proxy dispatches by argv[0].
-            return Ok(path);
+        if path.is_file() {
+            match validate_backend(&path) {
+                // Keep the cargo filename: a rustup proxy dispatches by argv[0].
+                Ok(()) => return Ok(path),
+                Err(error) => rejected.push(format!("{}: {error}", path.display())),
+            }
         }
     }
-    Err(invalid("No safe absolute Cargo backend found on PATH"))
+    Err(invalid(format!(
+        "No safe absolute Cargo backend found on PATH: {}",
+        rejected.join("; ")
+    )))
 }
 
 fn validate_backend(path: &Path) -> Result<()> {
@@ -308,10 +315,16 @@ fn validate_backend(path: &Path) -> Result<()> {
         let resolved = fs::canonicalize(path)?;
         for ancestor in path.ancestors().skip(1).chain(resolved.ancestors().skip(1)) {
             let parent = fs::metadata(ancestor)?;
-            if parent.mode() & 0o022 != 0
+            // Sticky directories protect trusted-owned children, including in /tmp.
+            if (parent.mode() & 0o022 != 0 && parent.mode() & 0o1000 == 0)
                 || (parent.uid() != 0 && parent.uid() != nix::unistd::getuid().as_raw())
             {
-                return Err(invalid("Unsafe Cargo backend parent permissions"));
+                return Err(invalid(format!(
+                    "Unsafe Cargo backend parent {} (mode {:o}, uid {})",
+                    ancestor.display(),
+                    parent.mode() & 0o7777,
+                    parent.uid()
+                )));
             }
         }
         if meta.mode() & 0o6022 != 0
@@ -660,6 +673,26 @@ mod tests {
             0o755
         );
         assert!(!destination.path().join("cargo").exists());
+    }
+
+    #[test]
+    fn backend_accepts_sticky_parents_but_rejects_unprotected_writable_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared");
+        let private = shared.join("private");
+        fs::create_dir_all(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let backend = private.join("cargo");
+        fs::write(&backend, "fixture").unwrap();
+        fs::set_permissions(&backend, fs::Permissions::from_mode(0o755)).unwrap();
+        validate_backend(&backend).unwrap();
+
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(validate_backend(&backend).is_err());
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        fs::set_permissions(&backend, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(validate_backend(&backend).is_err());
     }
 
     #[test]

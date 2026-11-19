@@ -67,6 +67,19 @@ pub fn qualified(name: &str) -> bool {
         .any(|p| name.starts_with(p))
 }
 
+/// Read lifecycle ownership without running a package manager or the discovered executable.
+pub fn observed_origin(executable: &std::path::Path) -> Option<crate::provenance::Origin> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        unix::observed_origin(executable)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = executable;
+        None
+    }
+}
+
 pub async fn remove(package: &str, dry_run: bool) -> Result<()> {
     run(Action::Remove {
         package: package.into(),
@@ -122,6 +135,7 @@ mod unix {
     #[derive(Serialize, Deserialize)]
     struct Generation {
         path: PathBuf,
+        version: String,
         files: Tree,
     }
 
@@ -248,8 +262,7 @@ mod unix {
 
     fn load(id: &str) -> Result<Record> {
         let root = root(id)?;
-        let record: Record = serde_json::from_slice(&fs::read(root.join("record.json"))?)?;
-        validate_user_path(&record.source.root.join(".wax-root-check"))?;
+        let mut record: Record = serde_json::from_slice(&fs::read(root.join("record.json"))?)?;
         let mut paths = record.source.payloads.clone();
         paths.extend(record.source.bins.values().cloned());
         paths.extend(record.source.metadata.iter().cloned());
@@ -257,6 +270,11 @@ mod unix {
         paths.dedup();
         if record.schema_version != 1
             || record.id != id
+            || !record.source.root.is_absolute()
+            || !record
+                .source
+                .root
+                .starts_with(fs::canonicalize(dirs::home_dir()?)?)
             || format!("{}/{}", record.source.manager.label(), record.source.name) != id
             || record
                 .generations
@@ -284,7 +302,44 @@ mod unix {
         {
             return Err(conflict("Invalid tool ownership record"));
         }
+        // The selected generation is authoritative across a crash between pointer and receipt writes.
+        if record.state == State::Active {
+            if let Ok(selected) = fs::read_link(root.join("current")) {
+                if let Some(generation) = record.generations.iter().find(|g| g.path == selected) {
+                    record.version = generation.version.clone();
+                }
+            }
+        }
         Ok(record)
+    }
+
+    pub(super) fn observed_origin(executable: &Path) -> Option<crate::provenance::Origin> {
+        let registry = fs::canonicalize(registry().ok()?).ok()?;
+        let own_root = executable
+            .ancestors()
+            .find(|p| p.parent() == Some(registry.as_path()))?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(own_root.join("record.json")).ok()?).ok()?;
+        let record = load(value["id"].as_str()?).ok()?;
+        if record.state != State::Active
+            || fs::canonicalize(root(&record.id).ok()?).ok()? != own_root
+        {
+            return None;
+        }
+        let selected = fs::read_link(own_root.join("current")).ok()?;
+        let generation = record.generations.iter().find(|g| g.path == selected)?;
+        if !record.source.bins.keys().any(|n| {
+            fs::canonicalize(generation.path.join("bin").join(n)).is_ok_and(|p| p == executable)
+        }) {
+            return None;
+        }
+        Some(crate::provenance::Origin {
+            manager: crate::provenance::Manager::Wax,
+            package: Some(record.id),
+            version: Some(generation.version.clone()),
+            receipt: Some(own_root.join("record.json")),
+            evidence: format!("Wax lifecycle receipt and selected generation agree; migrated from {}; file bytes not authenticated", record.source.manager.label()),
+        })
     }
 
     fn target(id: &str, name: &str) -> Result<PathBuf> {
@@ -345,6 +400,7 @@ mod unix {
         }
         Ok(Generation {
             path: path.to_path_buf(),
+            version: package.version.clone(),
             files,
         })
     }
@@ -743,6 +799,7 @@ mod unix {
         let path = generation.keep();
         record.generations.push(Generation {
             path,
+            version: imported.version,
             files: imported.files,
         });
         check_links(&record, false)?;
@@ -909,13 +966,18 @@ mod unix {
                     for item in fs::read_dir(root)? {
                         let path = item?.path().join("record.json");
                         if path.is_file() {
-                            let record: serde_json::Value =
+                            let value: serde_json::Value =
                                 serde_json::from_slice(&fs::read(path)?)?;
+                            let record = load(
+                                value["id"]
+                                    .as_str()
+                                    .ok_or_else(|| conflict("Tool record has no identity"))?,
+                            )?;
                             println!(
                                 "{} {} {}",
-                                record["id"].as_str().unwrap_or("unknown"),
-                                record["version"].as_str().unwrap_or("unknown"),
-                                record["state"].as_str().unwrap_or("unknown")
+                                record.id,
+                                record.version,
+                                value["state"].as_str().unwrap_or("unknown")
                             );
                         }
                     }

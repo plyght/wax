@@ -412,10 +412,18 @@ fn validate_backend(path: &Path) -> Result<()> {
         for file in [path, resolved.as_path()] {
             for ancestor in file.ancestors() {
                 let meta = fs::metadata(ancestor)?;
-                if meta.mode() & 0o6022 != 0
+                let writable = meta.mode() & 0o022 != 0;
+                let protected_children = meta.is_dir() && meta.mode() & 0o1000 != 0;
+                if meta.mode() & 0o6000 != 0
+                    || (writable && !protected_children)
                     || (meta.uid() != 0 && meta.uid() != nix::unistd::getuid().as_raw())
                 {
-                    return Err(invalid("Unsafe Node backend ownership or permissions"));
+                    return Err(invalid(format!(
+                        "Unsafe Node backend path {} (mode {:o}, uid {})",
+                        ancestor.display(),
+                        meta.mode() & 0o7777,
+                        meta.uid()
+                    )));
                 }
             }
         }

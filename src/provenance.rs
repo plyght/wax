@@ -310,6 +310,9 @@ fn node_origin(entry: &Path, resolved: &Path, bun: Option<&Path>) -> Option<Orig
 }
 
 async fn origin(entry: &Path, resolved: Option<&Path>, hops: &[LinkHop]) -> Origin {
+    if let Some(owned) = resolved.and_then(crate::commands::tools::observed_origin) {
+        return owned;
+    }
     let home = dirs::home_dir().ok();
     let cargo = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)

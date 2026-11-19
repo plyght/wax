@@ -113,6 +113,27 @@ fn run_bin(h: &Home, path: &Path, expected: &str) {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), expected);
 }
 
+fn assert_origin(h: &Home, manager: &str, version: &str) {
+    let output = h.wax(&[
+        "provenance",
+        "inspect",
+        h.owned_bin().to_str().unwrap(),
+        "--json",
+    ]);
+    success(&output);
+    let observations: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(observations[0]["origin"]["manager"], "wax");
+    assert_eq!(
+        observations[0]["origin"]["package"],
+        format!("{manager}/{TOOL}")
+    );
+    assert_eq!(observations[0]["origin"]["version"], version);
+    assert!(observations[0]["origin"]["receipt"]
+        .as_str()
+        .unwrap()
+        .ends_with("record.json"));
+}
+
 fn crate_fixture(h: &Home, name: &str, version: &str) -> PathBuf {
     let root = h.root.join(format!("source-{name}-{version}"));
     fs::create_dir_all(root.join("src")).unwrap();
@@ -237,6 +258,7 @@ fn exercise_lifecycle(h: &Home, manager: &str, update: &Path) {
     assert!(fs::symlink_metadata(h.bin(TOOL)).is_err());
     assert_eq!(fs::read(h.owned_bin()).unwrap(), original);
     run_bin(h, &h.owned_bin(), &format!("{TOOL}@1.2.3"));
+    assert_origin(h, manager, "1.2.3");
     if manager != "cargo" {
         assert!(fs::symlink_metadata(h.bin(&format!("{TOOL}-alias"))).is_err());
         run_bin(
@@ -281,9 +303,25 @@ fn exercise_lifecycle(h: &Home, manager: &str, update: &Path) {
     }
     assert!(fs::symlink_metadata(h.bin(TOOL)).is_err());
     assert_eq!(fs::metadata(h.bin(NEIGHBOR)).unwrap().ino(), neighbor_inode);
+    // An interrupted receipt write cannot change the reported selected generation's version.
+    let updated = fs::read(h.record()).unwrap();
+    let mut stale: serde_json::Value = serde_json::from_slice(&updated).unwrap();
+    stale["version"] = "0.0.1".into();
+    let stale_bytes = serde_json::to_vec_pretty(&stale).unwrap();
+    fs::write(h.record(), &stale_bytes).unwrap();
+    assert_origin(h, manager, "2.3.4");
+    let listing = h.wax(&["tools", "list"]);
+    success(&listing);
+    assert!(String::from_utf8_lossy(&listing.stdout).contains(&format!("{id} 2.3.4 active")));
+    assert_eq!(fs::read(h.record()).unwrap(), stale_bytes);
+    fs::write(h.record(), updated).unwrap();
+    // Once migrated, removal must not depend on the old manager root still existing.
+    fs::rename(h.root.join("manager"), h.root.join("retired-manager")).unwrap();
+    assert_origin(h, manager, "2.3.4");
     success(&h.wax(&["uninstall", &id, "--dry-run"]));
     run_bin(h, &h.owned_bin(), &format!("{TOOL}@2.3.4"));
     success(&h.wax(&["uninstall", &id]));
+    fs::rename(h.root.join("retired-manager"), h.root.join("manager")).unwrap();
     assert!(fs::symlink_metadata(h.owned_bin()).is_err());
     if manager != "cargo" {
         assert!(
