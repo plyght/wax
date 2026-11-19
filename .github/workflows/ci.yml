@@ -45,11 +45,22 @@ jobs:
       - name: Set up Node for isolated tool migration fixtures
         if: runner.os != 'Windows'
         uses: actions/setup-node@v4
-        env:
-          # Hosted image npm files can be world-writable; keep the backend safety gate.
-          RUNNER_TOOL_CACHE: ${{ runner.temp }}/wax-node-tool-cache
         with:
           node-version: '22'
+
+      - name: Isolate Node backend permissions for lifecycle fixtures
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          node_root="$(dirname "$(dirname "$(node -p 'process.execPath')")")"
+          private="$(mktemp -d "$RUNNER_TEMP/wax-node.XXXXXX")"
+          mkdir -p "$private/bin" "$private/lib/node_modules"
+          cp "$node_root/bin/node" "$private/bin/node"
+          cp -R "$node_root/lib/node_modules/npm" "$private/lib/node_modules/"
+          ln -s ../lib/node_modules/npm/bin/npm-cli.js "$private/bin/npm"
+          # Normalize only this disposable copy, never the shared hosted tool cache.
+          chmod -R go-w "$private"
+          echo "$private/bin" >> "$GITHUB_PATH"
 
       - name: Set up Bun for isolated tool migration fixtures
         if: runner.os != 'Windows'
